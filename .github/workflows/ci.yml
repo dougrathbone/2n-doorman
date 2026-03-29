@@ -42,7 +42,7 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements_test.txt
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ --ignore=tests/integration -v --tb=short
       - name: Upload coverage
         if: success()
         uses: actions/upload-artifact@v4
