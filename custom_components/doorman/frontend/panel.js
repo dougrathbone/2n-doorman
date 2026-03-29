@@ -60,8 +60,11 @@ const BASE_CSS = `
     font-size: 11px;
     font-weight: 500;
   }
-  .badge-yes { background: #e8f5e9; color: #2e7d32; }
-  .badge-no  { background: #f5f5f5; color: #9e9e9e; }
+  .badge-yes    { background: #e8f5e9; color: #2e7d32; }
+  .badge-no     { background: #f5f5f5; color: #9e9e9e; }
+  .badge-active   { background: #e8f5e9; color: #2e7d32; }
+  .badge-inactive { background: #fce4e4; color: #c62828; }
+  .badge-future   { background: #fff8e1; color: #f57f17; }
   .icon-btn {
     background: none;
     border: none;
@@ -267,6 +270,15 @@ class DoormanUsersTab extends HTMLElement {
     return this._haUsers.find(u => u.id === id)?.name || id;
   }
 
+  _accessStatus(u) {
+    const hasCredentials = u.pin || (u.card || []).filter(Boolean).length || (u.code || []).filter(Boolean).length;
+    if (!hasCredentials) return { label: "No credentials", cls: "badge-inactive" };
+    const now = Date.now() / 1000;
+    if (u.validTo && u.validTo < now) return { label: "Expired", cls: "badge-inactive" };
+    if (u.validFrom && u.validFrom > now) return { label: "Not yet active", cls: "badge-future" };
+    return { label: "Active", cls: "badge-active" };
+  }
+
   _render() {
     const shadow = this.shadowRoot;
     shadow.innerHTML = `
@@ -306,6 +318,7 @@ class DoormanUsersTab extends HTMLElement {
       <thead>
         <tr>
           <th>Name</th>
+          <th>Access</th>
           <th>PIN</th>
           <th>Cards</th>
           <th>Codes</th>
@@ -322,9 +335,11 @@ class DoormanUsersTab extends HTMLElement {
       <tbody>
         ${this._users.map(u => {
           const hasTargets = (u.notification_targets || []).length > 0;
+          const access = this._accessStatus(u);
           return `
           <tr data-uuid="${u.uuid}">
             <td><strong>${u.name || "—"}</strong></td>
+            <td><span class="badge ${access.cls}">${access.label}</span></td>
             <td><span class="badge ${u.pin ? "badge-yes" : "badge-no"}">${u.pin ? "Set" : "None"}</span></td>
             <td>${(u.card || []).filter(Boolean).length}</td>
             <td>${(u.code || []).filter(Boolean).length}</td>
