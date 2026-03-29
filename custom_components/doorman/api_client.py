@@ -210,24 +210,58 @@ class TwoNApiClient:
         data = await self._request("GET", "dir/template")
         return data.get("result", {})
 
+    @staticmethod
+    def _flatten_user(raw: dict[str, Any]) -> dict[str, Any]:
+        """Flatten 2N user record: promote access.{pin,card,code,validFrom,validTo} to top level."""
+        user = dict(raw)
+        access = user.pop("access", {}) or {}
+        user.setdefault("pin", access.get("pin", ""))
+        user.setdefault("card", access.get("card", []))
+        user.setdefault("code", access.get("code", []))
+        # validFrom/validTo are strings like "0" or ISO timestamp in the 2N API
+        vf = access.get("validFrom")
+        vt = access.get("validTo")
+        user["validFrom"] = int(vf) if vf and vf != "0" else None
+        user["validTo"] = int(vt) if vt and vt != "0" else None
+        return user
+
+    @staticmethod
+    def _nest_user(flat: dict[str, Any]) -> dict[str, Any]:
+        """Inverse of _flatten_user: build the nested access sub-object for dir/create and dir/update."""
+        user = {k: v for k, v in flat.items() if k not in ("pin", "card", "code", "validFrom", "validTo")}
+        access: dict[str, Any] = {}
+        if "pin" in flat:
+            access["pin"] = flat["pin"]
+        if "card" in flat:
+            access["card"] = flat["card"]
+        if "code" in flat:
+            access["code"] = flat["code"]
+        if flat.get("validFrom"):
+            access["validFrom"] = str(flat["validFrom"])
+        if flat.get("validTo"):
+            access["validTo"] = str(flat["validTo"])
+        if access:
+            user["access"] = access
+        return user
+
     async def query_users(self) -> list[dict[str, Any]]:
-        """Return all directory entries (every configured user)."""
+        """Return all directory entries with credentials flattened to top-level fields."""
         data = await self._request("POST", "dir/query", json={})
-        return data.get("result", {}).get("users", [])
+        return [self._flatten_user(u) for u in data.get("result", {}).get("users", [])]
 
     async def get_user(self, uuid: str) -> dict[str, Any]:
         """Fetch a single user by UUID."""
         data = await self._request("POST", "dir/get", json={"uuid": uuid})
-        return data.get("result", {})
+        return self._flatten_user(data.get("result", {}))
 
     async def create_user(self, user: dict[str, Any]) -> dict[str, Any]:
         """Create a new directory entry. Returns the record with server-assigned UUID."""
-        data = await self._request("PUT", "dir/create", json={"user": user})
-        return data.get("result", {})
+        data = await self._request("PUT", "dir/create", json={"user": self._nest_user(user)})
+        return self._flatten_user(data.get("result", {}))
 
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""
-        await self._request("PUT", "dir/update", json={"user": user})
+        await self._request("PUT", "dir/update", json={"user": self._nest_user(user)})
 
     async def delete_user(self, uuid: str) -> None:
         """Delete a directory entry by UUID."""
@@ -237,15 +271,23 @@ class TwoNApiClient:
     # Switches / relays (/api/switch/*)                                    #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _normalize_switch(sw: dict[str, Any]) -> dict[str, Any]:
+        """Normalize the 2N switch dict: rename 'switch' key → 'id'."""
+        result = dict(sw)
+        if "switch" in result and "id" not in result:
+            result["id"] = result.pop("switch")
+        return result
+
     async def get_switch_caps(self) -> list[dict[str, Any]]:
         """List available switches and their capabilities."""
         data = await self._request("GET", "switch/caps")
-        return data.get("result", {}).get("switches", [])
+        return [self._normalize_switch(s) for s in data.get("result", {}).get("switches", [])]
 
     async def get_switch_status(self) -> list[dict[str, Any]]:
         """Return current active/inactive state of all switches."""
         data = await self._request("GET", "switch/status")
-        return data.get("result", {}).get("switches", [])
+        return [self._normalize_switch(s) for s in data.get("result", {}).get("switches", [])]
 
     async def set_switch(self, switch_id: int, action: str) -> None:
         """Control a switch. ``action``: ``'on'``, ``'off'``, or ``'trigger'``."""
