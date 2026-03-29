@@ -1,0 +1,69 @@
+create_user:
+  fields:
+    name:
+      required: true
+      selector:
+        text:
+    pin:
+      required: false
+      selector:
+        text:
+          type: password
+    card:
+      required: false
+      selector:
+        text:
+    code:
+      required: false
+      selector:
+        text:
+    valid_from:
+      required: false
+      selector:
+        datetime:
+    valid_to:
+      required: false
+      selector:
+        datetime:
+
+update_user:
+  fields:
+    uuid:
+      required: true
+      selector:
+        text:
+    name:
+      required: false
+      selector:
+        text:
+    pin:
+      required: false
+      selector:
+        text:
+          type: password
+    card:
+      required: false
+      selector:
+        text:
+    code:
+      required: false
+      selector:
+        text:
+
+delete_user:
+  fields:
+    uuid:
+      required: true
+      selector:
+        text:
+
+grant_access:
+  fields:
+    access_point_id:
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 32
+          mode: box
