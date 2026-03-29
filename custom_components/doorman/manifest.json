@@ -1,7 +1,7 @@
 {
   "domain": "doorman",
   "name": "Doorman",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "codeowners": [],
   "config_flow": true,
   "documentation": "https://github.com/dougrathbone/2n-doorman",
