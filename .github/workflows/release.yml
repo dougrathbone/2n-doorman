@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Update manifest version
+        run: |
+          python - <<'EOF'
+          import json, pathlib
+          manifest = pathlib.Path("custom_components/doorman/manifest.json")
+          data = json.loads(manifest.read_text())
+          data["version"] = "${{ steps.version.outputs.VERSION }}"
+          manifest.write_text(json.dumps(data, indent=2) + "\n")
+          EOF
+
+      - name: Build release zip
+        run: |
+          cd custom_components
+          zip -r ../doorman.zip doorman/ -x "**/__pycache__/*" -x "**/*.pyc"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: doorman.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
