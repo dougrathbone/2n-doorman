@@ -1,0 +1,6 @@
+# Minimal HA configuration for Doorman integration tests.
+# Custom components are loaded automatically from /config/custom_components/.
+logger:
+  default: warning
+  logs:
+    custom_components.doorman: debug
