@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E3A8A"/>
+      <stop offset="100%" style="stop-color:#1E40AF"/>
+    </linearGradient>
+    <linearGradient id="door-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#DBEAFE"/>
+      <stop offset="100%" style="stop-color:#BFDBFE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App icon background -->
+  <rect width="256" height="256" rx="48" fill="url(#bg-grad)"/>
+
+  <!-- Door frame (shadow/depth) -->
+  <rect x="68" y="54" width="122" height="162" rx="8" fill="#1E3A8A" opacity="0.6"/>
+
+  <!-- Door body -->
+  <rect x="66" y="52" width="122" height="162" rx="8" fill="url(#door-grad)"/>
+
+  <!-- Door arch top highlight -->
+  <path d="M66 90 Q66 52 127 52 Q188 52 188 90" fill="white" opacity="0.25"/>
+
+  <!-- Door panel insets -->
+  <rect x="79" y="68" width="44" height="52" rx="4" fill="#93C5FD" opacity="0.45"/>
+  <rect x="131" y="68" width="44" height="52" rx="4" fill="#93C5FD" opacity="0.45"/>
+  <rect x="79" y="130" width="96" height="68" rx="4" fill="#93C5FD" opacity="0.45"/>
+
+  <!-- Door handle -->
+  <circle cx="156" cy="168" r="5" fill="#1D4ED8" opacity="0.6"/>
+
+  <!-- Padlock — sits centred on the lower door panel -->
+  <!-- Shackle -->
+  <path d="M108 154 L108 138 Q108 118 127 118 Q146 118 146 138 L146 154"
+        stroke="#1D4ED8" stroke-width="10" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Lock body -->
+  <rect x="98" y="150" width="60" height="46" rx="10" fill="#1D4ED8"/>
+  <!-- Keyhole circle -->
+  <circle cx="128" cy="169" r="8" fill="#DBEAFE"/>
+  <!-- Keyhole stem -->
+  <rect x="124" y="172" width="8" height="10" rx="3" fill="#DBEAFE"/>
+</svg>
