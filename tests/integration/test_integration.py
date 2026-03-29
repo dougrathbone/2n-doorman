@@ -147,7 +147,7 @@ async def test_grant_access_service_calls_device(
     calls = await mock_2n.get_calls()
     access_calls = [c for c in calls if c["path"] == "/api/accesspoint/grantaccess"]
     assert access_calls, "Expected a GET /api/accesspoint/grantaccess call"
-    assert access_calls[0]["body"]["accessPointId"] == "1"
+    assert access_calls[0]["body"]["id"] == "1"
 
 
 @pytest.mark.asyncio

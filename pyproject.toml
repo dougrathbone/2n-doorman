@@ -17,4 +17,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["SLF001"]  # allow private member access in tests
+"tests/**" = ["SLF001", "E402"]  # allow private member access and late imports in tests

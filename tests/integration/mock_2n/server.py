@@ -105,14 +105,18 @@ async def delete_dir(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+async def subscribe_log(request: web.Request) -> web.Response:
+    return web.json_response({"success": True, "result": {"id": 1}})
+
+
 async def pull_log(request: web.Request) -> web.Response:
     _log("GET", "/api/log/pull")
     return web.json_response({"success": True, "result": {"events": []}})
 
 
 async def grant_access(request: web.Request) -> web.Response:
-    access_point_id = request.rel_url.query.get("accessPointId", "1")
-    _log("GET", "/api/accesspoint/grantaccess", {"accessPointId": access_point_id})
+    access_point_id = request.rel_url.query.get("id", "1")
+    _log("GET", "/api/accesspoint/grantaccess", {"id": access_point_id})
     return web.json_response({"success": True})
 
 
@@ -163,6 +167,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/dir/create", create_dir)
     app.router.add_put("/api/dir/update", update_dir)
     app.router.add_put("/api/dir/delete", delete_dir)
+    app.router.add_get("/api/log/subscribe", subscribe_log)
     app.router.add_get("/api/log/pull", pull_log)
     app.router.add_get("/api/accesspoint/grantaccess", grant_access)
     # Admin

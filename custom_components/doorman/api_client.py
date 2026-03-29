@@ -45,9 +45,10 @@ class TwoNApiClient:
         use_ssl: bool = True,
         verify_ssl: bool = False,
     ) -> None:
-        # Always serve requests over HTTPS (required for directory endpoints)
-        self._base_url = f"https://{host}"
+        scheme = "https" if use_ssl else "http"
+        self._base_url = f"{scheme}://{host}"
         self._verify_ssl = verify_ssl
+        self._use_ssl = use_ssl
         self._username = username
         self._password = password
         self._log_subscription_id: int | None = None
@@ -60,8 +61,10 @@ class TwoNApiClient:
         if not self._session.closed:
             await self._session.close()
 
-    def _ssl_context(self) -> ssl.SSLContext | bool:
-        """Return an SSL context or False to skip verification."""
+    def _ssl_context(self) -> ssl.SSLContext | bool | None:
+        """Return an SSL context, True for verified HTTPS, or None for plain HTTP."""
+        if not self._use_ssl:
+            return None  # plain HTTP — ssl parameter ignored by aiohttp
         if self._verify_ssl:
             return True  # use default context with verification
         ctx = ssl.create_default_context()

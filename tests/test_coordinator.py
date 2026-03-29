@@ -13,7 +13,7 @@ from custom_components.doorman.api_client import DoormanApiError, DoormanAuthErr
 from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from custom_components.doorman.coordinator import DoormanCoordinator
 
-from .conftest import MOCK_DEVICE_INFO, MOCK_LOG_EVENTS, MOCK_SWITCHES, MOCK_USERS
+from .conftest import MOCK_DEVICE_INFO, MOCK_SWITCHES, MOCK_USERS
 
 
 def _make_coordinator(hass: HomeAssistant, client) -> DoormanCoordinator:
