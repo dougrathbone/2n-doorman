@@ -113,6 +113,7 @@ def mock_2n_client():
     mock.update_user = AsyncMock(return_value=None)
     mock.delete_user = AsyncMock(return_value=None)
     mock.grant_access = AsyncMock(return_value=None)
+    mock.async_close = AsyncMock(return_value=None)
 
     with patch(
         "custom_components.doorman.TwoNApiClient", return_value=mock

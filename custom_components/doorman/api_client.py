@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import ssl
 from typing import Any
 
 import aiohttp
@@ -22,26 +23,49 @@ class DoormanConnectionError(DoormanApiError):
 
 
 class TwoNApiClient:
-    """Thin async wrapper around the 2N IP intercom HTTP API.
+    """Async wrapper around the 2N IP intercom HTTP API.
 
-    Supports Basic Auth over HTTP or HTTPS. Configure the 2N device to use
-    Basic Auth under Services → HTTP API.
+    Uses Digest auth, which is required by 2N devices for directory (user)
+    endpoints.  Directory operations also require HTTPS; this client always
+    uses HTTPS with ``verify_ssl=False`` by default so that self-signed
+    device certificates work out of the box on local networks.
+
+    Non-directory endpoints (system/info, switch/*, log/*) work over plain
+    HTTP with Digest auth as well, so we use HTTPS everywhere for simplicity.
     """
 
     def __init__(
         self,
-        session: aiohttp.ClientSession,
+        session: aiohttp.ClientSession,  # kept for interface compatibility; not used internally
         host: str,
         username: str,
         password: str,
-        use_ssl: bool = False,
-        verify_ssl: bool = True,
+        use_ssl: bool = True,
+        verify_ssl: bool = False,
     ) -> None:
-        scheme = "https" if use_ssl else "http"
-        self._base_url = f"{scheme}://{host}"
-        self._session = session
-        self._auth = aiohttp.BasicAuth(username, password)
-        self._ssl: bool | None = verify_ssl if use_ssl else None
+        # Always serve requests over HTTPS (required for directory endpoints)
+        self._base_url = f"https://{host}"
+        self._verify_ssl = verify_ssl
+
+        # Create a dedicated session with Digest auth middleware.
+        # DigestAuthMiddleware handles the 401 challenge automatically for
+        # both MD5 and SHA variants used by 2N devices.
+        self._digest_middleware = aiohttp.DigestAuthMiddleware(username, password)
+        self._session = aiohttp.ClientSession(middlewares=[self._digest_middleware])
+
+    async def async_close(self) -> None:
+        """Close the underlying session. Call from async_unload_entry."""
+        if not self._session.closed:
+            await self._session.close()
+
+    def _ssl_context(self) -> ssl.SSLContext | bool:
+        """Return an SSL context or False to skip verification."""
+        if self._verify_ssl:
+            return True  # use default context with verification
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
 
     async def _request(
         self,
@@ -55,10 +79,9 @@ class TwoNApiClient:
             async with self._session.request(
                 method,
                 url,
-                auth=self._auth,
                 params=params,
                 json=json,
-                ssl=self._ssl,
+                ssl=self._ssl_context(),
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 401:
@@ -70,12 +93,17 @@ class TwoNApiClient:
                 resp.raise_for_status()
                 data: dict = await resp.json()
                 if not data.get("success", True):
-                    raise DoormanApiError(f"API returned failure: {data}")
+                    err = data.get("error", {})
+                    raise DoormanApiError(
+                        f"API error {err.get('code')}: {err.get('description', data)}"
+                    )
                 return data
         except aiohttp.ClientConnectorError as err:
             raise DoormanConnectionError(
                 f"Cannot connect to {self._base_url}"
             ) from err
+        except (DoormanApiError, DoormanAuthError, DoormanConnectionError):
+            raise
         except aiohttp.ClientError as err:
             raise DoormanApiError(f"Request failed: {err}") from err
 

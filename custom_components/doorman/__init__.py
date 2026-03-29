@@ -92,7 +92,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        await coordinator.client.async_close()
         if not hass.data[DOMAIN]:
             async_remove_panel(hass, DOMAIN)
     return unloaded
