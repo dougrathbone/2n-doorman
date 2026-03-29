@@ -1,8 +1,8 @@
 # Doorman
 
-[![CI](https://github.com/yourgithub/2n-doorman/actions/workflows/ci.yml/badge.svg)](https://github.com/yourgithub/2n-doorman/actions/workflows/ci.yml)
+[![CI](https://github.com/dougrathbone/2n-doorman/actions/workflows/ci.yml/badge.svg)](https://github.com/dougrathbone/2n-doorman/actions/workflows/ci.yml)
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![GitHub release](https://img.shields.io/github/v/release/yourgithub/2n-doorman?display_name=tag)](https://github.com/yourgithub/2n-doorman/releases)
+[![GitHub release](https://img.shields.io/github/v/release/dougrathbone/2n-doorman?display_name=tag)](https://github.com/dougrathbone/2n-doorman/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Home Assistant integration for managing users and access credentials on **2N IP intercoms** — directly from your Home Assistant sidebar.
@@ -38,7 +38,7 @@ A Home Assistant integration for managing users and access credentials on **2N I
 ### Via HACS (recommended)
 
 1. Open HACS → Integrations → ⋮ → Custom repositories
-2. Add `https://github.com/yourgithub/2n-doorman` with category **Integration**
+2. Add `https://github.com/dougrathbone/2n-doorman` with category **Integration**
 3. Install **Doorman** and restart Home Assistant
 
 ### Manual
