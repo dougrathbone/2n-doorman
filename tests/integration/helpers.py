@@ -176,10 +176,13 @@ async def wait_for_url(
 
 
 async def onboard_ha(ha_url: str) -> str:
-    """Complete HA first-run onboarding and return a long-lived access token.
+    """Complete HA first-run onboarding and return a Bearer access token.
 
     This only works against a freshly started HA instance that has not yet
     been onboarded. In CI we start a clean container for each run.
+
+    The access token obtained from the auth-code exchange is valid for 30 minutes
+    which is sufficient for a CI test session.
     """
     async with aiohttp.ClientSession() as session:
         # Complete the 'user' onboarding step
@@ -198,7 +201,7 @@ async def onboard_ha(ha_url: str) -> str:
 
         auth_code = data["auth_code"]
 
-        # Exchange the one-time auth code for an access token
+        # Exchange the one-time auth code for a Bearer token
         async with session.post(
             f"{ha_url}/auth/token",
             data={
@@ -210,18 +213,27 @@ async def onboard_ha(ha_url: str) -> str:
             resp.raise_for_status()
             tokens = await resp.json()
 
-        short_token = tokens["access_token"]
+        access_token = tokens["access_token"]
+        auth_headers = {"Authorization": f"Bearer {access_token}"}
 
-        # Create a long-lived access token so subsequent requests don't expire
-        async with session.post(
-            f"{ha_url}/api/auth/long_lived_access_token",
-            json={"client_name": "Doorman Integration Tests", "lifespan": 365},
-            headers={"Authorization": f"Bearer {short_token}"},
-        ) as resp:
-            resp.raise_for_status()
-            token_data = await resp.json()
+        # Complete remaining onboarding steps so HA is fully ready for API calls.
+        # These endpoints may return 404 on older HA versions — ignore failures.
+        for step_path, step_body in [
+            ("/api/onboarding/integration", {"client_id": f"{ha_url}/"}),
+            ("/api/onboarding/analytics", {}),
+            ("/api/onboarding/user_data", {}),
+        ]:
+            try:
+                async with session.post(
+                    f"{ha_url}{step_path}",
+                    json=step_body,
+                    headers=auth_headers,
+                ) as resp:
+                    pass  # ignore result — step may already be complete or not required
+            except Exception:
+                pass
 
-        return token_data["token"]
+        return access_token
 
 
 async def install_doorman(ha_url: str, token: str, mock_2n_host: str, mock_2n_port: int = 8888) -> dict:
