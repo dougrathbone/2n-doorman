@@ -143,7 +143,8 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
 
     async def handle_grant_access(call: ServiceCall) -> None:
         await coordinator.client.grant_access(
-            access_point_id=call.data.get("access_point_id", 1)
+            access_point_id=call.data.get("access_point_id", 1),
+            user_uuid=call.data.get("user_uuid"),
         )
 
     hass.services.async_register(
@@ -186,6 +187,9 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         "grant_access",
         handle_grant_access,
         schema=vol.Schema(
-            {vol.Optional("access_point_id", default=1): vol.All(int, vol.Range(min=1))}
+            {
+                vol.Optional("access_point_id", default=1): vol.All(int, vol.Range(min=1)),
+                vol.Optional("user_uuid"): cv.string,
+            }
         ),
     )

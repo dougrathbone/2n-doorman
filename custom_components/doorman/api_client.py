@@ -299,13 +299,17 @@ class TwoNApiClient:
     # Access points                                                        #
     # ------------------------------------------------------------------ #
 
-    async def grant_access(self, access_point_id: int = 1) -> None:
-        """Grant immediate access through an access point (bypasses credentials)."""
-        await self._request(
-            "GET",
-            "accesspoint/grantaccess",
-            params={"accessPointId": access_point_id},
-        )
+    async def grant_access(self, access_point_id: int = 1, user_uuid: str | None = None) -> None:
+        """Grant immediate access through an access point (bypasses credentials).
+
+        ``user_uuid`` is required by most 2N firmware versions to attribute the
+        access event in the device log.  Pass the 2N directory UUID of the user
+        being let in.
+        """
+        params: dict[str, Any] = {"id": access_point_id}
+        if user_uuid:
+            params["user"] = user_uuid
+        await self._request("GET", "accesspoint/grantaccess", params=params)
 
     # ------------------------------------------------------------------ #
     # Event log (/api/log/*)                                               #

@@ -187,4 +187,4 @@ async def test_grant_access_service(
         blocking=True,
     )
 
-    mock_2n_client.grant_access.assert_called_once_with(access_point_id=2)
+    mock_2n_client.grant_access.assert_called_once_with(access_point_id=2, user_uuid=None)

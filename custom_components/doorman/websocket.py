@@ -98,7 +98,7 @@ async def ws_get_access_log(
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
-    events = await coordinator.client.pull_log(count=200)
+    events = await coordinator.client.pull_log()
     connection.send_result(msg["id"], {"events": events})
 
 
