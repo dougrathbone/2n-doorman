@@ -22,11 +22,11 @@ jobs:
           cache: pip
 
       - name: Install test runner dependencies
-        run: pip install aiohttp pytest pytest-asyncio websockets
+        run: pip install aiohttp pytest pytest-asyncio websockets podman-compose
 
       - name: Build and start services
         run: |
-          docker compose -f tests/integration/docker-compose.yml up -d --build
+          podman-compose -f tests/integration/docker-compose.yml up -d --build
           echo "Services started — waiting for health checks..."
 
       - name: Wait for Home Assistant to be ready
@@ -46,19 +46,19 @@ jobs:
         env:
           HA_URL: http://localhost:8123
           MOCK_2N_URL: http://localhost:8888
-          # HA inside Docker reaches the mock server via the Docker network
+          # HA inside the container reaches the mock server via the pod network
           MOCK_2N_HOST: mock-2n
           MOCK_2N_PORT: "8888"
         run: pytest tests/integration/ -v --tb=short --asyncio-mode=auto
 
       - name: Dump HA logs on failure
         if: failure()
-        run: docker compose -f tests/integration/docker-compose.yml logs homeassistant
+        run: podman-compose -f tests/integration/docker-compose.yml logs homeassistant
 
       - name: Dump mock 2N logs on failure
         if: failure()
-        run: docker compose -f tests/integration/docker-compose.yml logs mock-2n
+        run: podman-compose -f tests/integration/docker-compose.yml logs mock-2n
 
       - name: Tear down services
         if: always()
-        run: docker compose -f tests/integration/docker-compose.yml down -v
+        run: podman-compose -f tests/integration/docker-compose.yml down -v
