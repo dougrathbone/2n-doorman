@@ -20,7 +20,7 @@ VALID_INPUT = {
 
 
 @pytest.mark.asyncio
-async def test_config_flow_success(hass: HomeAssistant) -> None:
+async def test_config_flow_success(hass: HomeAssistant, mock_2n_client) -> None:
     """Happy path: valid credentials produce a config entry with the device name as title."""
     with patch(
         "custom_components.doorman.config_flow.TwoNApiClient"
@@ -86,7 +86,7 @@ async def test_config_flow_cannot_connect(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.asyncio
-async def test_config_flow_duplicate_device_aborts(hass: HomeAssistant) -> None:
+async def test_config_flow_duplicate_device_aborts(hass: HomeAssistant, mock_2n_client) -> None:
     """Attempting to add the same device twice aborts with 'already_configured'."""
     with patch(
         "custom_components.doorman.config_flow.TwoNApiClient"
