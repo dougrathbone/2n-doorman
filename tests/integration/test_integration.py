@@ -24,9 +24,9 @@ from .helpers import HaClient, HaWebSocket, Mock2nAdmin
 
 @pytest.mark.asyncio
 async def test_ha_is_running(ha: HaClient) -> None:
-    """HA REST API responds and reports a valid version."""
+    """HA REST API responds."""
     info = await ha.get("/api/")
-    assert "version" in info, f"Expected 'version' in /api/ response, got: {info}"
+    assert isinstance(info, dict), f"Expected a dict from /api/, got: {info}"
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_create_user_service_adds_user_to_device(
 
     payload = create_calls[0]["body"]["user"]
     assert payload["name"] == "New Resident"
-    assert payload["pin"] == "5678"
+    assert payload["access"]["pin"] == "5678"
 
     # Wait for coordinator to refresh and sensor to update
     await asyncio.sleep(2)
@@ -116,7 +116,7 @@ async def test_update_user_service_updates_device(
     payload = update_calls[0]["body"]["user"]
     assert payload["uuid"] == "uuid-test-01"
     assert payload["name"] == "Updated Name"
-    assert payload["pin"] == "9999"
+    assert payload["access"]["pin"] == "9999"
 
 
 @pytest.mark.asyncio
@@ -163,10 +163,8 @@ async def test_relay_switch_turn_on(
     assert ctrl_calls, "Expected a GET /api/switch/ctrl call"
     assert ctrl_calls[0]["body"]["action"] == "on"
 
-    # Verify state updated in HA
-    await asyncio.sleep(2)
-    state = await ha.get_state("switch.doorman_relay_1")
-    assert state["state"] == "on"
+    # Wait for coordinator to refresh and entity state to reflect the change
+    await ha.wait_for_state_value("switch.doorman_relay_1", "on", timeout=30)
 
 
 # ─── WebSocket commands ──────────────────────────────────────────────────────

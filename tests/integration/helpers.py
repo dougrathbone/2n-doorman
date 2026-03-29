@@ -69,6 +69,31 @@ class HaClient:
             await asyncio.sleep(interval)
         raise TimeoutError(f"Entity {entity_id!r} did not appear within {timeout}s")
 
+    async def wait_for_state_value(
+        self,
+        entity_id: str,
+        expected_state: str,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+    ) -> dict:
+        """Poll until the entity reaches a specific state value."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_state: str | None = None
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                state = await self.get_state(entity_id)
+                last_state = state.get("state")
+                if last_state == expected_state:
+                    return state
+            except aiohttp.ClientResponseError as exc:
+                if exc.status != 404:
+                    raise
+            await asyncio.sleep(interval)
+        raise TimeoutError(
+            f"Entity {entity_id!r} did not reach state {expected_state!r} within {timeout}s "
+            f"(last seen: {last_state!r})"
+        )
+
 
 # ─── HA WebSocket client ─────────────────────────────────────────────────────
 
