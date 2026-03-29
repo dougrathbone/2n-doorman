@@ -7,7 +7,7 @@
 
 A Home Assistant integration for managing users and access credentials on **2N IP intercoms** — directly from your Home Assistant sidebar.
 
-![Doorman panel screenshot](brand/logo.svg)
+<img src="brand/icon.png" alt="Doorman logo" width="120" />
 
 ---
 
