@@ -49,7 +49,6 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.device_info: dict[str, Any] = {}
-        self._last_log_event_id: str | None = None
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information once at startup."""
@@ -60,7 +59,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             users, switches, log_events = await asyncio.gather(
                 self.client.query_users(),
                 self.client.get_switch_status(),
-                self.client.pull_log(count=50),
+                self.client.pull_log(),
             )
         except DoormanAuthError as err:
             raise ConfigEntryAuthFailed from err
@@ -76,29 +75,12 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
-        """Fire HA bus events for any log entries not seen on the previous poll."""
-        if not events:
-            return
+        """Fire HA bus events for log entries returned since the last poll.
 
-        latest = events[-1]
-        latest_id = latest.get("id") or latest.get("utcTime")
-
-        if self._last_log_event_id is None:
-            # First poll — record the watermark but don't fire historical events
-            self._last_log_event_id = latest_id
-            return
-
-        # Collect events that arrived after the last known event
-        new_events: list[dict] = []
-        for event in reversed(events):
-            event_id = event.get("id") or event.get("utcTime")
-            if event_id == self._last_log_event_id:
-                break
-            new_events.append(event)
-
-        self._last_log_event_id = latest_id
-
-        for event in reversed(new_events):
+        The log subscription on the device tracks the watermark, so every
+        event returned here is new — no client-side deduplication needed.
+        """
+        for event in events:
             event_type = event.get("event", "")
             if event_type in ACCESS_EVENTS:
                 self.hass.bus.async_fire(

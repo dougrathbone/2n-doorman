@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://api.github.com/search/repositories?q=home+assistant+2N+intercom&sort=stars&order=desc&per_page=20\")",
+      "Bash(python3 -c \":*)",
+      "WebSearch",
+      "Bash(curl -s https://api.github.com/repos/genka13/ha-2n-intercom/contents/)",
+      "WebFetch(domain:wiki.2n.com)",
+      "Bash(curl -s https://api.github.com/repos/cbergmann/2n_intercom/contents/)"
+    ]
+  }
+}

@@ -1,7 +1,9 @@
 """Async HTTP client for the 2N device REST API."""
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import ssl
 from typing import Any
 
@@ -46,12 +48,12 @@ class TwoNApiClient:
         # Always serve requests over HTTPS (required for directory endpoints)
         self._base_url = f"https://{host}"
         self._verify_ssl = verify_ssl
+        self._username = username
+        self._password = password
+        self._log_subscription_id: int | None = None
 
-        # Create a dedicated session with Digest auth middleware.
-        # DigestAuthMiddleware handles the 401 challenge automatically for
-        # both MD5 and SHA variants used by 2N devices.
-        self._digest_middleware = aiohttp.DigestAuthMiddleware(username, password)
-        self._session = aiohttp.ClientSession(middlewares=[self._digest_middleware])
+        # Plain session — we handle Digest auth manually in _request
+        self._session = aiohttp.ClientSession()
 
     async def async_close(self) -> None:
         """Close the underlying session. Call from async_unload_entry."""
@@ -67,6 +69,58 @@ class TwoNApiClient:
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
+    def _build_digest_header(
+        self,
+        method: str,
+        url: str,
+        www_auth: str,
+    ) -> str:
+        """Compute an RFC 2617 Digest Authorization header value."""
+        # Parse the WWW-Authenticate: Digest ... header
+        params: dict[str, str] = {}
+        # Strip the "Digest " prefix
+        challenge = www_auth[len("Digest "):].strip()
+        for part in challenge.split(","):
+            part = part.strip()
+            if "=" in part:
+                key, _, val = part.partition("=")
+                params[key.strip()] = val.strip().strip('"')
+
+        realm = params.get("realm", "")
+        nonce = params.get("nonce", "")
+        qop = params.get("qop", "")
+        algorithm = params.get("algorithm", "MD5").upper()
+
+        # Extract the path from the URL for the digest uri
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        uri = parsed.path
+        if parsed.query:
+            uri += "?" + parsed.query
+
+        def md5(s: str) -> str:
+            return hashlib.md5(s.encode()).hexdigest()
+
+        ha1 = md5(f"{self._username}:{realm}:{self._password}")
+        ha2 = md5(f"{method.upper()}:{uri}")
+
+        if qop in ("auth", "auth-int"):
+            nc = "00000001"
+            cnonce = os.urandom(8).hex()
+            response = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+            return (
+                f'Digest username="{self._username}", realm="{realm}", '
+                f'nonce="{nonce}", uri="{uri}", algorithm={algorithm}, '
+                f'qop={qop}, nc={nc}, cnonce="{cnonce}", response="{response}"'
+            )
+        else:
+            response = md5(f"{ha1}:{nonce}:{ha2}")
+            return (
+                f'Digest username="{self._username}", realm="{realm}", '
+                f'nonce="{nonce}", uri="{uri}", algorithm={algorithm}, '
+                f'response="{response}"'
+            )
+
     async def _request(
         self,
         method: str,
@@ -75,23 +129,54 @@ class TwoNApiClient:
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}/api/{endpoint}"
+        ssl_ctx = self._ssl_context()
+        timeout = aiohttp.ClientTimeout(total=10)
         try:
+            # First attempt — no auth header (some endpoints need no auth)
             async with self._session.request(
-                method,
-                url,
-                params=params,
-                json=json,
-                ssl=self._ssl_context(),
-                timeout=aiohttp.ClientTimeout(total=10),
+                method, url, params=params, json=json, ssl=ssl_ctx, timeout=timeout
             ) as resp:
                 if resp.status == 401:
-                    raise DoormanAuthError("Invalid credentials")
+                    # Device may send multiple WWW-Authenticate headers (Basic + Digest).
+                    # Find the Digest challenge; fall back to raising auth error if absent.
+                    www_auth_values = resp.headers.getall("WWW-Authenticate", [])
+                    digest_challenge = next(
+                        (v for v in www_auth_values if v.startswith("Digest")), None
+                    )
+                    if digest_challenge is None:
+                        raise DoormanAuthError("Invalid credentials")
+                    # Second attempt with Digest auth
+                    auth_header = self._build_digest_header(method, url, digest_challenge)
+                    async with self._session.request(
+                        method,
+                        url,
+                        params=params,
+                        json=json,
+                        ssl=ssl_ctx,
+                        timeout=timeout,
+                        headers={"Authorization": auth_header},
+                    ) as resp2:
+                        if resp2.status == 401:
+                            raise DoormanAuthError("Invalid credentials")
+                        if resp2.status == 403:
+                            raise DoormanAuthError(
+                                "Permission denied — ensure the API user has Directory access"
+                            )
+                        resp2.raise_for_status()
+                        data: dict = await resp2.json()
+                        if not data.get("success", True):
+                            err = data.get("error", {})
+                            raise DoormanApiError(
+                                f"API error {err.get('code')}: {err.get('description', data)}"
+                            )
+                        return data
+
                 if resp.status == 403:
                     raise DoormanAuthError(
                         "Permission denied — ensure the API user has Directory access"
                     )
                 resp.raise_for_status()
-                data: dict = await resp.json()
+                data = await resp.json()
                 if not data.get("success", True):
                     err = data.get("error", {})
                     raise DoormanApiError(
@@ -184,7 +269,37 @@ class TwoNApiClient:
     # Event log (/api/log/*)                                               #
     # ------------------------------------------------------------------ #
 
-    async def pull_log(self, count: int = 100) -> list[dict[str, Any]]:
-        """Pull the most recent log events (newest last)."""
-        data = await self._request("GET", "log/pull", params={"count": count})
+    async def _subscribe_log(self) -> int:
+        """Create a log subscription and return the subscription ID."""
+        data = await self._request("GET", "log/subscribe")
+        sub_id: int = data["result"]["id"]
+        self._log_subscription_id = sub_id
+        return sub_id
+
+    async def pull_log(self) -> list[dict[str, Any]]:
+        """Pull log events since the last call (subscription-based, non-blocking).
+
+        On the first call a subscription is created automatically.  If the
+        device reports an invalid subscription ID (e.g. after a device
+        reboot) the subscription is transparently renewed.
+        """
+        if self._log_subscription_id is None:
+            await self._subscribe_log()
+
+        try:
+            data = await self._request(
+                "GET", "log/pull",
+                params={"id": self._log_subscription_id, "timeout": 0},
+            )
+        except DoormanApiError as err:
+            # Error code 12 = invalid subscription id (subscription expired or device rebooted)
+            if "12" in str(err):
+                await self._subscribe_log()
+                data = await self._request(
+                    "GET", "log/pull",
+                    params={"id": self._log_subscription_id, "timeout": 0},
+                )
+            else:
+                raise
+
         return data.get("result", {}).get("events", [])

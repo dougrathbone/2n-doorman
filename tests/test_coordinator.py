@@ -81,13 +81,17 @@ async def test_coordinator_api_error_raises_update_failed(
 async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
     hass: HomeAssistant,
 ) -> None:
-    """New access log entries are fired as doorman_access events on the HA bus."""
+    """Log entries returned by pull_log are fired as doorman_access bus events.
+
+    The subscription model means every event returned by pull_log is new
+    (deduplication is server-side), so the coordinator fires them all.
+    """
     client = MagicMock()
     client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-    # First poll: one event (establishes baseline, no fire)
-    client.pull_log = AsyncMock(return_value=MOCK_LOG_EVENTS)
+    # First poll: no new events (subscription just established)
+    client.pull_log = AsyncMock(return_value=[])
 
     coordinator = _make_coordinator(hass, client)
     await coordinator.async_refresh()
@@ -95,14 +99,14 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
     fired_events = []
     hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired_events.append(e))
 
-    # Second poll: new event arrives
+    # Second poll: a new event arrives since last pull
     new_event = {
         "id": "evt-002",
         "event": "CardEntered",
         "utcTime": "2026-03-29T10:05:00Z",
         "params": {"card": "AABBCCDD", "valid": True},
     }
-    client.pull_log = AsyncMock(return_value=[*MOCK_LOG_EVENTS, new_event])
+    client.pull_log = AsyncMock(return_value=[new_event])
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
@@ -111,22 +115,21 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
 
 
 @pytest.mark.asyncio
-async def test_coordinator_no_duplicate_events_on_repeat_poll(
+async def test_coordinator_no_events_when_pull_log_empty(
     hass: HomeAssistant,
 ) -> None:
-    """Polling the same log events twice does not fire duplicate bus events."""
+    """No bus events are fired when pull_log returns an empty list."""
     client = MagicMock()
     client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-    client.pull_log = AsyncMock(return_value=MOCK_LOG_EVENTS)
+    client.pull_log = AsyncMock(return_value=[])
 
     coordinator = _make_coordinator(hass, client)
 
     fired_events = []
     hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired_events.append(e))
 
-    # Poll three times with the same log data
     for _ in range(3):
         await coordinator.async_refresh()
     await hass.async_block_till_done()
