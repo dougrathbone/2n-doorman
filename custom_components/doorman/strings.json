@@ -1,0 +1,43 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your 2N intercom",
+        "description": "Enter the connection details for your 2N device. Ensure the HTTP API is enabled and a user with Directory access is configured under Services → HTTP API on the device.",
+        "data": {
+          "host": "Host / IP address",
+          "username": "API username",
+          "password": "API password",
+          "use_ssl": "Use HTTPS",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the device. Check the host and that the HTTP API is enabled.",
+      "invalid_auth": "Invalid username or password.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "services": {
+    "create_user": {
+      "name": "Create user",
+      "description": "Add a new user to the 2N directory."
+    },
+    "update_user": {
+      "name": "Update user",
+      "description": "Update an existing user's credentials."
+    },
+    "delete_user": {
+      "name": "Delete user",
+      "description": "Remove a user from the 2N directory."
+    },
+    "grant_access": {
+      "name": "Grant access",
+      "description": "Open an access point immediately, bypassing credential checks."
+    }
+  }
+}
