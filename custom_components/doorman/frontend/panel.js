@@ -229,6 +229,7 @@ class DoormanUsersTab extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._users = null;
     this._haUsers = [];
+    this._notifyServices = [];
     this._loading = true;
     this._error = null;
     this._drawer = null;
@@ -246,12 +247,14 @@ class DoormanUsersTab extends HTMLElement {
     this._error = null;
     this._render();
     try {
-      const [usersRes, haUsersRes] = await Promise.all([
+      const [usersRes, haUsersRes, notifyRes] = await Promise.all([
         ws(this._hass, "doorman/list_users"),
         ws(this._hass, "doorman/list_ha_users").catch(() => ({ users: [] })),
+        ws(this._hass, "doorman/list_notify_services").catch(() => ({ services: [] })),
       ]);
       this._users = usersRes.users || [];
       this._haUsers = haUsersRes.users || [];
+      this._notifyServices = notifyRes.services || [];
     } catch (e) {
       this._error = e.message || "Failed to load users";
     } finally {
@@ -308,11 +311,18 @@ class DoormanUsersTab extends HTMLElement {
           <th>Codes</th>
           <th>Valid Until</th>
           <th>HA User</th>
+          <th title="Notifications">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle">
+              <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
+            </svg>
+          </th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        ${this._users.map(u => `
+        ${this._users.map(u => {
+          const hasTargets = (u.notification_targets || []).length > 0;
+          return `
           <tr data-uuid="${u.uuid}">
             <td><strong>${u.name || "—"}</strong></td>
             <td><span class="badge ${u.pin ? "badge-yes" : "badge-no"}">${u.pin ? "Set" : "None"}</span></td>
@@ -324,6 +334,13 @@ class DoormanUsersTab extends HTMLElement {
                 ? `<span class="ha-link">🏠 ${this._haUserName(u.ha_user_id)}</span>`
                 : `<span style="color:var(--disabled-color,#bbb)">—</span>`}
             </td>
+            <td style="text-align:center">
+              <svg viewBox="0 0 24 24" width="16" height="16"
+                fill="${hasTargets ? "var(--primary-color)" : "var(--disabled-color,#ccc)"}"
+                title="${hasTargets ? (u.notification_targets || []).join(", ") : "No notifications"}">
+                <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
+              </svg>
+            </td>
             <td class="actions">
               <button class="icon-btn edit-btn" data-uuid="${u.uuid}" title="Edit">
                 <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
@@ -333,7 +350,8 @@ class DoormanUsersTab extends HTMLElement {
               </button>
             </td>
           </tr>
-        `).join("")}
+          `;
+        }).join("")}
       </tbody>
     `;
     content.appendChild(table);
@@ -387,6 +405,22 @@ class DoormanUsersTab extends HTMLElement {
               <option value="">— Not linked —</option>
               ${this._haUsers.map(u => `<option value="${u.id}" ${user.ha_user_id === u.id ? "selected" : ""}>${u.name}</option>`).join("")}
             </select>
+          </div>
+        ` : ""}
+        ${this._notifyServices.length ? `
+          <div class="section-title">Notifications</div>
+          <div class="field">
+            <label>Notify when this user opens the intercom</label>
+            <div id="f-notify-targets" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+              ${this._notifyServices.map(svcName => {
+                const checked = (user.notification_targets || []).includes(svcName) ? "checked" : "";
+                const label = svcName.replace(/^notify\./, "");
+                return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:normal;color:var(--primary-text-color);cursor:pointer">
+                  <input type="checkbox" value="${svcName}" ${checked} style="width:16px;height:16px;cursor:pointer" />
+                  ${label}
+                </label>`;
+              }).join("")}
+            </div>
           </div>
         ` : ""}
         <div id="form-error"></div>
@@ -453,6 +487,17 @@ class DoormanUsersTab extends HTMLElement {
             } else {
               await ws(this._hass, "doorman/unlink_user", { two_n_uuid: user.uuid });
             }
+          }
+        }
+        // Handle notification targets change
+        const notifyContainer = form.querySelector("#f-notify-targets");
+        if (notifyContainer) {
+          const selected = Array.from(notifyContainer.querySelectorAll("input[type=checkbox]:checked"))
+            .map(cb => cb.value);
+          const current = user.notification_targets || [];
+          const changed = selected.length !== current.length || selected.some(s => !current.includes(s));
+          if (changed) {
+            await ws(this._hass, "doorman/set_notification_targets", { two_n_uuid: user.uuid, targets: selected });
           }
         }
         this._drawer.close();

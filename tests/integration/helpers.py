@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -24,7 +23,7 @@ class HaClient:
         }
         self._session: aiohttp.ClientSession | None = None
 
-    async def __aenter__(self) -> "HaClient":
+    async def __aenter__(self) -> HaClient:
         self._session = aiohttp.ClientSession(headers=self._headers)
         return self
 
@@ -84,7 +83,7 @@ class HaWebSocket:
         self._session: aiohttp.ClientSession | None = None
         self._msg_id = 0
 
-    async def connect(self) -> "HaWebSocket":
+    async def connect(self) -> HaWebSocket:
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self._url)
         # HA sends auth_required on connect
@@ -115,7 +114,7 @@ class HaWebSocket:
                     raise AssertionError(f"WS command {msg_type!r} failed: {raw['error']}")
                 return raw.get("result")
 
-    async def __aenter__(self) -> "HaWebSocket":
+    async def __aenter__(self) -> HaWebSocket:
         return await self.connect()
 
     async def __aexit__(self, *args: Any) -> None:

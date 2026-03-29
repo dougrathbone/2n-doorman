@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import uuid as _uuid
+
 from aiohttp import web
 
 # ─── Mutable device state ────────────────────────────────────────────────────

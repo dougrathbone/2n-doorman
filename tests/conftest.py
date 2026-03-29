@@ -1,12 +1,26 @@
 """Shared test fixtures for Doorman integration tests."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.doorman.const import (
+# Ensure the project root is first in sys.path so our custom_components is found
+_PROJECT_ROOT = str(Path(__file__).parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# Ensure our custom_components directory is in the custom_components package path
+import custom_components as _cc_pkg  # noqa: E402
+
+_OUR_CC = str(Path(__file__).parent.parent / "custom_components")
+if _OUR_CC not in _cc_pkg.__path__:
+    _cc_pkg.__path__.append(_OUR_CC)
+
+from custom_components.doorman.const import (  # noqa: E402
     CONF_HOST,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -14,6 +28,11 @@ from custom_components.doorman.const import (
 )
 
 pytest_plugins = "pytest_homeassistant_custom_component"
+
+
+@pytest.fixture(autouse=True)
+def enable_custom_integrations_fixture(enable_custom_integrations):  # noqa: F811
+    """Enable discovery of custom integrations in tests."""
 
 # ─── Representative fixture data ─────────────────────────────────────────────
 
@@ -113,6 +132,14 @@ async def mock_frontend_setup(hass):
     These require a live HTTP server which is not available in unit tests.
     The actual serving behaviour is tested in e2e / manual testing.
     """
+    from pytest_homeassistant_custom_component.common import mock_component
+
+    # Mark frontend, panel_custom, and http as already set up so HA won't try
+    # to load them (they require heavy optional deps not available in unit tests)
+    for comp in ("frontend", "panel_custom", "http"):
+        if comp not in hass.config.components:
+            mock_component(hass, comp)
+
     mock_http = MagicMock()
     mock_http.async_register_static_paths = AsyncMock()
 

@@ -37,9 +37,9 @@ class DoormanRelay(CoordinatorEntity[DoormanCoordinator], SwitchEntity):
         super().__init__(coordinator)
         self._switch_id: int = switch_data["id"]
         self._attr_unique_id = f"{entry.entry_id}_relay_{self._switch_id}"
-        self._attr_name = (
-            switch_data.get("name") or f"Doorman Relay {self._switch_id}"
-        )
+        # Always use a predictable name so entity_id is stable across renames on the device
+        self._attr_name = f"Doorman Relay {self._switch_id}"
+        self._attr_extra_state_attributes = {"device_name": switch_data.get("name", "")}
 
     @property
     def is_on(self) -> bool:

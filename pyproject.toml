@@ -3,6 +3,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "DEBUG"
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"

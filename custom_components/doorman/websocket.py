@@ -18,6 +18,9 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list_ha_users)
     websocket_api.async_register_command(hass, ws_link_user)
     websocket_api.async_register_command(hass, ws_unlink_user)
+    websocket_api.async_register_command(hass, ws_list_notify_services)
+    websocket_api.async_register_command(hass, ws_get_notification_targets)
+    websocket_api.async_register_command(hass, ws_set_notification_targets)
 
 
 def _coordinator(hass: HomeAssistant) -> DoormanCoordinator | None:
@@ -50,7 +53,11 @@ def ws_list_users(
     links = store.user_links if store else {}
 
     users = [
-        {**user, "ha_user_id": links.get(user.get("uuid"))}
+        {
+            **user,
+            "ha_user_id": links.get(user.get("uuid")),
+            "notification_targets": store.get_notification_targets(user.get("uuid", "")) if store else [],
+        }
         for user in coordinator.data.get("users", [])
     ]
     connection.send_result(msg["id"], {"users": users})
@@ -170,4 +177,66 @@ async def ws_unlink_user(
         return
 
     await store.unlink_user(msg["two_n_uuid"])
+    connection.send_result(msg["id"], {"success": True})
+
+
+# ------------------------------------------------------------------ #
+# Notification targets                                                 #
+# ------------------------------------------------------------------ #
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_notify_services"})
+@callback
+def ws_list_notify_services(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return all registered notify.* service targets."""
+    notify_services = list(hass.services.async_services().get("notify", {}).keys())
+    targets = [f"notify.{s}" for s in notify_services if s not in ("notify", "send_message")]
+    connection.send_result(msg["id"], {"services": targets})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_notification_targets",
+        vol.Required("two_n_uuid"): str,
+    }
+)
+@callback
+def ws_get_notification_targets(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return the notification targets configured for a 2N user."""
+    store = _store(hass)
+    targets = store.get_notification_targets(msg["two_n_uuid"]) if store else []
+    connection.send_result(msg["id"], {"targets": targets})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_notification_targets",
+        vol.Required("two_n_uuid"): str,
+        vol.Required("targets"): [str],
+    }
+)
+@websocket_api.async_response
+async def ws_set_notification_targets(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Persist notification targets for a 2N user."""
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Admin access required")
+        return
+
+    store = _store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    await store.set_notification_targets(msg["two_n_uuid"], msg["targets"])
     connection.send_result(msg["id"], {"success": True})

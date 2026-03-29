@@ -10,7 +10,6 @@ from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -30,6 +29,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import DoormanCoordinator
+from .notifications import async_setup_notifications
 from .storage import DoormanStore
 from .websocket import async_setup_websocket
 
@@ -66,6 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async_setup_websocket(hass)
+    async_setup_notifications(hass)
     _register_services(hass, coordinator)
 
     # Serve frontend assets and register the sidebar panel

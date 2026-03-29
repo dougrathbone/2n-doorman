@@ -8,7 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.doorman.const import DOMAIN
 
-from .conftest import MOCK_USERS, MOCK_SWITCHES
+from .conftest import MOCK_SWITCHES, MOCK_USERS
 
 
 @pytest.mark.asyncio

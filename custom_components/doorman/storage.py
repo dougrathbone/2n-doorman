@@ -1,7 +1,8 @@
 """Persistent HA-side storage for Doorman.
 
-Stores mappings between 2N user UUIDs and HA User IDs so that
-2N directory entries can be linked to Home Assistant user accounts.
+Stores two kinds of per-user metadata:
+  user_links          — 2N UUID → HA User ID (for identity linking)
+  notification_targets — 2N UUID → list of notify.* service targets
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 
-_EMPTY: dict = {"user_links": {}}
+_EMPTY: dict = {"user_links": {}, "notification_targets": {}}
 
 
 class DoormanStore:
@@ -57,4 +58,22 @@ class DoormanStore:
     async def unlink_user(self, two_n_uuid: str) -> None:
         """Remove the HA user link for a 2N UUID. Persists immediately."""
         self._data.get("user_links", {}).pop(two_n_uuid, None)
+        await self._store.async_save(self._data)
+
+    # ------------------------------------------------------------------ #
+    # Notification targets                                                 #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def notification_targets(self) -> dict[str, list[str]]:
+        """Return the full map of ``{two_n_uuid: [notify.* targets]}``."""
+        return self._data.get("notification_targets", {})
+
+    def get_notification_targets(self, two_n_uuid: str) -> list[str]:
+        """Return the list of notify.* targets for a 2N UUID, or []."""
+        return self.notification_targets.get(two_n_uuid, [])
+
+    async def set_notification_targets(self, two_n_uuid: str, targets: list[str]) -> None:
+        """Persist the notification targets for a 2N user."""
+        self._data.setdefault("notification_targets", {})[two_n_uuid] = targets
         await self._store.async_save(self._data)

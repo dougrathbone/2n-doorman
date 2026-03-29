@@ -5,16 +5,16 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api_client import TwoNApiClient, DoormanAuthError, DoormanConnectionError
+from .api_client import DoormanAuthError, DoormanConnectionError, TwoNApiClient
 from .const import (
-    DOMAIN,
     CONF_HOST,
-    CONF_USERNAME,
     CONF_PASSWORD,
     CONF_USE_SSL,
+    CONF_USERNAME,
     CONF_VERIFY_SSL,
     DEFAULT_USE_SSL,
     DEFAULT_VERIFY_SSL,
+    DOMAIN,
 )
 
 STEP_SCHEMA = vol.Schema(

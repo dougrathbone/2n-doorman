@@ -11,8 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api_client import TwoNApiClient, DoormanAuthError, DoormanApiError
-from .const import DOMAIN, DEFAULT_POLL_INTERVAL
+from .api_client import DoormanApiError, DoormanAuthError, TwoNApiClient
+from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,7 +80,15 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not events:
             return
 
-        # Events come back oldest-first; find the index of the last known event
+        latest = events[-1]
+        latest_id = latest.get("id") or latest.get("utcTime")
+
+        if self._last_log_event_id is None:
+            # First poll — record the watermark but don't fire historical events
+            self._last_log_event_id = latest_id
+            return
+
+        # Collect events that arrived after the last known event
         new_events: list[dict] = []
         for event in reversed(events):
             event_id = event.get("id") or event.get("utcTime")
@@ -88,11 +96,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 break
             new_events.append(event)
 
-        if not new_events:
-            # First poll — just record the latest ID without firing anything
-            latest = events[-1]
-            self._last_log_event_id = latest.get("id") or latest.get("utcTime")
-            return
+        self._last_log_event_id = latest_id
 
         for event in reversed(new_events):
             event_type = event.get("event", "")
@@ -105,6 +109,3 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "utc_time": event.get("utcTime"),
                     },
                 )
-
-        latest = events[-1]
-        self._last_log_event_id = latest.get("id") or latest.get("utcTime")

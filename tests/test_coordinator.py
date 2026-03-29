@@ -1,7 +1,7 @@
 """Tests for the Doorman coordinator — polling, error handling, and event firing."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -9,7 +9,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.doorman.api_client import DoormanAuthError, DoormanApiError
+from custom_components.doorman.api_client import DoormanApiError, DoormanAuthError
 from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from custom_components.doorman.coordinator import DoormanCoordinator
 
