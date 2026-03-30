@@ -11,15 +11,59 @@
           "use_ssl": "Use HTTPS",
           "verify_ssl": "Verify SSL certificate"
         }
+      },
+      "sync_role": {
+        "title": "Sync role",
+        "description": "Configure how this device participates in user directory sync.",
+        "data": {
+          "sync_role": "Sync role"
+        },
+        "data_description": {
+          "sync_role": "Leader: source of truth for users. Follower: receives users from a leader. None: no sync."
+        }
+      },
+      "pick_leader": {
+        "title": "Select leader device",
+        "description": "Choose which device this follower should sync users from.",
+        "data": {
+          "sync_target": "Leader device"
+        }
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to the device. Check the host and that the HTTP API is enabled.",
       "invalid_auth": "Invalid username or password.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "no_other_devices": "No other Doorman devices configured. Add another device first.",
+      "invalid_target": "The selected leader device is not configured."
     },
     "abort": {
       "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sync role",
+        "description": "Configure how this device participates in user directory sync.",
+        "data": {
+          "sync_role": "Sync role"
+        },
+        "data_description": {
+          "sync_role": "Leader: source of truth for users. Follower: receives users from a leader. None: no sync."
+        }
+      },
+      "pick_leader": {
+        "title": "Select leader device",
+        "description": "Choose which device this follower should sync users from.",
+        "data": {
+          "sync_target": "Leader device"
+        }
+      }
+    },
+    "error": {
+      "no_other_devices": "No other Doorman devices configured. Add another device first.",
+      "invalid_target": "The selected leader device is not configured."
     }
   },
   "services": {

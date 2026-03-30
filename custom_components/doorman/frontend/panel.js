@@ -245,6 +245,8 @@ class DoormanUsersTab extends HTMLElement {
     this._error = null;
     this._drawer = null;
     this._entryId = null;
+    this._syncRole = "none";
+    this._leaderName = null;
   }
 
   set hass(h) {
@@ -253,6 +255,10 @@ class DoormanUsersTab extends HTMLElement {
   }
 
   set entryId(id) { this._entryId = id; }
+  set syncRole(r) { this._syncRole = r || "none"; }
+  set leaderName(n) { this._leaderName = n; }
+
+  get _isFollower() { return this._syncRole === "follower"; }
 
   connectedCallback() { this._load(); }
 
@@ -298,18 +304,33 @@ class DoormanUsersTab extends HTMLElement {
         ${BASE_CSS}
         .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
         .toolbar h2 { margin: 0; font-size: 16px; font-weight: 500; }
+        .follower-banner {
+          display: flex; align-items: center; gap: 10px;
+          padding: 12px 16px; margin-bottom: 16px;
+          background: var(--info-color, #2196f3)10; border: 1px solid var(--info-color, #2196f3)40;
+          border-radius: 8px; font-size: 13px; color: var(--primary-text-color);
+        }
+        .follower-banner svg { flex-shrink: 0; fill: var(--info-color, #2196f3); }
       </style>
+      ${this._isFollower ? `
+        <div class="follower-banner">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M11,9H13V7H11M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,17H13V11H11V17Z"/></svg>
+          <span>This device is a <strong>follower</strong>. The user directory is synced from <strong>${this._leaderName || "the leader device"}</strong> and is read-only. To add, edit, or remove users, switch to the leader.</span>
+        </div>
+      ` : ""}
       <div class="toolbar">
         <h2>Directory Users</h2>
-        <button class="btn btn-primary" id="add-btn">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13H13V19H11V13H5V11H11V5H13V11H19V13Z"/></svg>
-          Add User
-        </button>
+        ${this._isFollower ? "" : `
+          <button class="btn btn-primary" id="add-btn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13H13V19H11V13H5V11H11V5H13V11H19V13Z"/></svg>
+            Add User
+          </button>
+        `}
       </div>
       <div id="content"></div>
     `;
 
-    shadow.getElementById("add-btn").addEventListener("click", () => this._openAddDrawer());
+    shadow.getElementById("add-btn")?.addEventListener("click", () => this._openAddDrawer());
 
     const content = shadow.getElementById("content");
     if (this._loading) {
@@ -341,7 +362,7 @@ class DoormanUsersTab extends HTMLElement {
               <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
             </svg>
           </th>
-          <th></th>
+          ${this._isFollower ? "" : "<th></th>"}
         </tr>
       </thead>
       <tbody>
@@ -368,14 +389,14 @@ class DoormanUsersTab extends HTMLElement {
                 <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
               </svg>
             </td>
-            <td class="actions">
-              <button class="icon-btn edit-btn" data-uuid="${u.uuid}" title="Edit">
-                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
-              </button>
-              <button class="icon-btn del-btn" data-uuid="${u.uuid}" title="Delete">
-                <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
-              </button>
-            </td>
+            ${this._isFollower ? "" : `<td class="actions">
+                <button class="icon-btn edit-btn" data-uuid="${u.uuid}" title="Edit">
+                  <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+                </button>
+                <button class="icon-btn del-btn" data-uuid="${u.uuid}" title="Delete">
+                  <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
+                </button>
+              </td>`}
           </tr>
           `;
         }).join("")}
@@ -391,6 +412,12 @@ class DoormanUsersTab extends HTMLElement {
     });
     table.querySelectorAll(".del-btn").forEach(btn => {
       btn.addEventListener("click", () => this._deleteUser(btn.dataset.uuid));
+    });
+    table.querySelectorAll(".link-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const user = this._users.find(u => u.uuid === btn.dataset.uuid);
+        if (user) this._openLinkDrawer(user);
+      });
     });
   }
 
@@ -517,6 +544,73 @@ class DoormanUsersTab extends HTMLElement {
           }
         }
         // Handle notification targets change
+        const notifyContainer = form.querySelector("#f-notify-targets");
+        if (notifyContainer) {
+          const selected = Array.from(notifyContainer.querySelectorAll("input[type=checkbox]:checked"))
+            .map(cb => cb.value);
+          const current = user.notification_targets || [];
+          const changed = selected.length !== current.length || selected.some(s => !current.includes(s));
+          if (changed) {
+            await ws(this._hass, "doorman/set_notification_targets", { two_n_uuid: user.uuid, targets: selected });
+          }
+        }
+        this._drawer.close();
+        this._load();
+      } catch (e) {
+        form.querySelector("#form-error").innerHTML = `<div class="error">${e.message}</div>`;
+      }
+    });
+  }
+
+  _openLinkDrawer(user) {
+    if (!this._drawer) {
+      this._drawer = document.createElement("doorman-drawer");
+      this.shadowRoot.appendChild(this._drawer);
+    }
+    const form = document.createElement("div");
+    form.innerHTML = `
+      <div class="field-group">
+        ${this._haUsers.length ? `
+          <div class="field">
+            <label>Link to HA user</label>
+            <select id="f-ha-user">
+              <option value="">— Not linked —</option>
+              ${this._haUsers.map(u => `<option value="${u.id}" ${user.ha_user_id === u.id ? "selected" : ""}>${u.name}</option>`).join("")}
+            </select>
+          </div>
+        ` : ""}
+        ${this._notifyServices.length ? `
+          <div class="section-title">Notifications</div>
+          <div class="field">
+            <label>Notify when this user opens the intercom</label>
+            <div id="f-notify-targets" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+              ${this._notifyServices.map(svcName => {
+                const checked = (user.notification_targets || []).includes(svcName) ? "checked" : "";
+                const label = svcName.replace(/^notify\./, "");
+                return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:normal;color:var(--primary-text-color);cursor:pointer">
+                  <input type="checkbox" value="${svcName}" ${checked} style="width:16px;height:16px;cursor:pointer" />
+                  ${label}
+                </label>`;
+              }).join("")}
+            </div>
+          </div>
+        ` : ""}
+        <div id="form-error"></div>
+      </div>
+    `;
+    this._drawer.open(`Settings: ${user.name || user.uuid}`, form, async () => {
+      try {
+        const haSelect = form.querySelector("#f-ha-user");
+        if (haSelect) {
+          const newHaId = haSelect.value;
+          if (newHaId !== (user.ha_user_id || "")) {
+            if (newHaId) {
+              await ws(this._hass, "doorman/link_user", { two_n_uuid: user.uuid, ha_user_id: newHaId });
+            } else {
+              await ws(this._hass, "doorman/unlink_user", { two_n_uuid: user.uuid });
+            }
+          }
+        }
         const notifyContainer = form.querySelector("#f-notify-targets");
         if (notifyContainer) {
           const selected = Array.from(notifyContainer.querySelectorAll("input[type=checkbox]:checked"))
@@ -872,6 +966,17 @@ class DoormanPanel extends HTMLElement {
     const el = document.createElement(tagMap[this._tab]);
     if (this._hass) el.hass = this._hass;
     if (this._selectedEntryId) el.entryId = this._selectedEntryId;
+    // Pass sync info to users tab
+    if (this._tab === "users") {
+      const dev = this._devices.find(d => d.entry_id === this._selectedEntryId);
+      if (dev) {
+        el.syncRole = dev.sync_role;
+        if (dev.sync_role === "follower" && dev.sync_target) {
+          const leader = this._devices.find(d => d.entry_id === dev.sync_target);
+          el.leaderName = leader ? (leader.device_name || leader.serial_number) : null;
+        }
+      }
+    }
     container.appendChild(el);
   }
 }

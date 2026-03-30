@@ -19,6 +19,8 @@ from .api_client import TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
+    CONF_SYNC_ROLE,
+    CONF_SYNC_TARGET,
     CONF_USE_SSL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
@@ -29,10 +31,12 @@ from .const import (
     PANEL_TITLE,
     PANEL_URL,
     PLATFORMS,
+    SYNC_ROLE_FOLLOWER,
 )
 from .coordinator import DoormanCoordinator
 from .notifications import async_setup_notifications
 from .storage import DoormanStore
+from .sync import UserSyncManager
 from .websocket import async_setup_websocket
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,11 +94,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         hass.data[f"{DOMAIN}_panel_registered"] = True
 
+    # Set up user sync if both sides of a sync pair are now loaded
+    _maybe_setup_sync(hass, store)
+
+    # Rebuild sync when options change (e.g. sync role toggled)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Rebuild the sync manager when entry options change."""
+    _teardown_sync(hass)
+    store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
+    if store:
+        _maybe_setup_sync(hass, store)
+
+
+def _maybe_setup_sync(hass: HomeAssistant, store: DoormanStore) -> None:
+    """Set up sync manager if all entries in a sync pair are loaded."""
+    # Tear down any existing sync manager first
+    _teardown_sync(hass)
+
+    entries = hass.data.get(DOMAIN, {})
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.options.get(CONF_SYNC_ROLE) == SYNC_ROLE_FOLLOWER:
+            leader_entry_id = entry.options.get(CONF_SYNC_TARGET)
+            if leader_entry_id and leader_entry_id in entries and entry.entry_id in entries:
+                sync_manager = UserSyncManager(hass, store)
+                sync_manager.async_setup()
+                hass.data[f"{DOMAIN}_sync"] = sync_manager
+                return
+
+
+def _teardown_sync(hass: HomeAssistant) -> None:
+    """Tear down the sync manager if one exists."""
+    sync_manager: UserSyncManager | None = hass.data.pop(f"{DOMAIN}_sync", None)
+    if sync_manager:
+        sync_manager.async_teardown()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    _teardown_sync(hass)
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
