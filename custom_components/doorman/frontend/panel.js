@@ -5,8 +5,16 @@
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const ws = (hass, type, params = {}) => hass.callWS({ type, ...params });
-const svc = (hass, service, data = {}) => hass.callService("doorman", service, data);
+const ws = (hass, type, params = {}, entryId = null) => {
+  const msg = { type, ...params };
+  if (entryId) msg.entry_id = entryId;
+  return hass.callWS(msg);
+};
+const svc = (hass, service, data = {}, entryId = null) => {
+  const d = { ...data };
+  if (entryId) d.device = entryId;
+  return hass.callService("doorman", service, d);
+};
 
 function formatDate(ts) {
   if (!ts) return "Always";
@@ -236,12 +244,15 @@ class DoormanUsersTab extends HTMLElement {
     this._loading = true;
     this._error = null;
     this._drawer = null;
+    this._entryId = null;
   }
 
   set hass(h) {
     this._hass = h;
     if (!this._users && !this._loading) this._load();
   }
+
+  set entryId(id) { this._entryId = id; }
 
   connectedCallback() { this._load(); }
 
@@ -250,8 +261,9 @@ class DoormanUsersTab extends HTMLElement {
     this._error = null;
     this._render();
     try {
+      const eid = this._entryId;
       const [usersRes, haUsersRes, notifyRes] = await Promise.all([
-        ws(this._hass, "doorman/list_users"),
+        ws(this._hass, "doorman/list_users", {}, eid),
         ws(this._hass, "doorman/list_ha_users").catch(() => ({ users: [] })),
         ws(this._hass, "doorman/list_notify_services").catch(() => ({ services: [] })),
       ]);
@@ -465,7 +477,7 @@ class DoormanUsersTab extends HTMLElement {
       const vt = form.querySelector("#f-valid-to")?.value;
       if (vt) data.valid_to = vt;
       try {
-        await svc(this._hass, "create_user", data);
+        await svc(this._hass, "create_user", data, this._entryId);
         this._drawer.close();
         this._load();
       } catch (e) {
@@ -491,7 +503,7 @@ class DoormanUsersTab extends HTMLElement {
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
       try {
-        await svc(this._hass, "update_user", data);
+        await svc(this._hass, "update_user", data, this._entryId);
         // Handle HA user link change
         const haSelect = form.querySelector("#f-ha-user");
         if (haSelect) {
@@ -527,7 +539,7 @@ class DoormanUsersTab extends HTMLElement {
     const user = this._users.find(u => u.uuid === uuid);
     if (!confirm(`Delete user "${user?.name || uuid}"? This cannot be undone.`)) return;
     try {
-      await svc(this._hass, "delete_user", { uuid });
+      await svc(this._hass, "delete_user", { uuid }, this._entryId);
       this._load();
     } catch (e) {
       alert(`Delete failed: ${e.message}`);
@@ -546,9 +558,11 @@ class DoormanLogTab extends HTMLElement {
     this._events = null;
     this._loading = true;
     this._error = null;
+    this._entryId = null;
   }
 
   set hass(h) { this._hass = h; }
+  set entryId(id) { this._entryId = id; }
   connectedCallback() { this._load(); }
 
   async _load() {
@@ -556,7 +570,7 @@ class DoormanLogTab extends HTMLElement {
     this._error = null;
     this._render();
     try {
-      const res = await ws(this._hass, "doorman/get_access_log");
+      const res = await ws(this._hass, "doorman/get_access_log", {}, this._entryId);
       this._events = (res.events || []).slice().reverse();
     } catch (e) {
       this._error = e.message;
@@ -629,16 +643,18 @@ class DoormanDeviceTab extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._info = null;
     this._loading = true;
+    this._entryId = null;
   }
 
   set hass(h) { this._hass = h; }
+  set entryId(id) { this._entryId = id; }
   connectedCallback() { this._load(); }
 
   async _load() {
     this._loading = true;
     this._render();
     try {
-      const res = await ws(this._hass, "doorman/get_device_info");
+      const res = await ws(this._hass, "doorman/get_device_info", {}, this._entryId);
       this._info = res.device_info || {};
     } finally {
       this._loading = false;
@@ -693,7 +709,7 @@ class DoormanDeviceTab extends HTMLElement {
     `;
     this.shadowRoot.getElementById("grant-btn")?.addEventListener("click", async () => {
       try {
-        await svc(this._hass, "grant_access", { access_point_id: 1 });
+        await svc(this._hass, "grant_access", { access_point_id: 1 }, this._entryId);
       } catch (e) {
         alert(`Failed: ${e.message}`);
       }
@@ -710,10 +726,14 @@ class DoormanPanel extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._tab = "users";
+    this._devices = [];
+    this._selectedEntryId = null;
   }
 
   set hass(h) {
+    const firstSet = !this._hass;
     this._hass = h;
+    if (firstSet) this._loadDevices();
     // Pass hass down to whichever tab is mounted
     const tab = this.shadowRoot.querySelector("#tab-content > *");
     if (tab) tab.hass = h;
@@ -721,6 +741,20 @@ class DoormanPanel extends HTMLElement {
 
   set panel(p) { this._panel = p; }
   set narrow(n) { this._narrow = n; this._renderShell(); }
+
+  async _loadDevices() {
+    try {
+      const res = await ws(this._hass, "doorman/list_devices");
+      this._devices = res.devices || [];
+      if (this._devices.length > 0 && !this._selectedEntryId) {
+        this._selectedEntryId = this._devices[0].entry_id;
+      }
+      this._renderShell();
+    } catch (e) {
+      // Fallback: single device, no selector
+      this._devices = [];
+    }
+  }
 
   connectedCallback() { this._renderShell(); }
 
@@ -748,6 +782,17 @@ class DoormanPanel extends HTMLElement {
           z-index: 10;
         }
         .header h1 { margin: 0; font-size: 20px; font-weight: 400; flex: 1; }
+        .device-select {
+          padding: 4px 8px;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px;
+          background: transparent;
+          color: inherit;
+          font-size: 13px;
+          font-family: inherit;
+          cursor: pointer;
+        }
+        .device-select option { color: var(--primary-text-color); background: var(--card-background-color); }
         .menu-btn { background: none; border: none; cursor: pointer; color: inherit; line-height: 0; padding: 4px; border-radius: 50%; }
         .menu-btn svg { width: 24px; height: 24px; fill: currentColor; display: block; }
         .tabs {
@@ -785,6 +830,11 @@ class DoormanPanel extends HTMLElement {
           <path d="M18,8H17V6A5,5 0 0,0 12,1A5,5 0 0,0 7,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17M15.1,8H8.9V6A3.1,3.1 0 0,1 12,2.9A3.1,3.1 0 0,1 15.1,6V8Z"/>
         </svg>
         <h1>Doorman</h1>
+        ${this._devices.length > 1 ? `
+          <select class="device-select" id="device-select">
+            ${this._devices.map(d => `<option value="${d.entry_id}"${d.entry_id === this._selectedEntryId ? " selected" : ""}>${d.device_name || d.serial_number}</option>`).join("")}
+          </select>
+        ` : ""}
       </div>
       <div class="tabs">
         ${tabs.map(t => `<div class="tab${this._tab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("")}
@@ -803,6 +853,10 @@ class DoormanPanel extends HTMLElement {
         this._renderShell();
       });
     });
+    this.shadowRoot.getElementById("device-select")?.addEventListener("change", (e) => {
+      this._selectedEntryId = e.target.value;
+      this._mountTab();
+    });
 
     this._mountTab();
   }
@@ -817,6 +871,7 @@ class DoormanPanel extends HTMLElement {
     };
     const el = document.createElement(tagMap[this._tab]);
     if (this._hass) el.hass = this._hass;
+    if (this._selectedEntryId) el.entryId = this._selectedEntryId;
     container.appendChild(el);
   }
 }
