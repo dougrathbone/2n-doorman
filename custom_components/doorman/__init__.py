@@ -1,6 +1,7 @@
 """Doorman — 2N intercom access control for Home Assistant."""
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -17,6 +19,8 @@ from .api_client import TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
+    CONF_SYNC_ROLE,
+    CONF_SYNC_TARGET,
     CONF_USE_SSL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
@@ -27,10 +31,12 @@ from .const import (
     PANEL_TITLE,
     PANEL_URL,
     PLATFORMS,
+    SYNC_ROLE_FOLLOWER,
 )
 from .coordinator import DoormanCoordinator
 from .notifications import async_setup_notifications
 from .storage import DoormanStore
+from .sync import UserSyncManager
 from .websocket import async_setup_websocket
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,35 +73,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async_setup_websocket(hass)
     async_setup_notifications(hass)
-    _register_services(hass, coordinator)
+    _register_services(hass)
 
-    # Serve frontend assets and register the sidebar panel
-    frontend_dir = Path(__file__).parent / "frontend"
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
-    )
-    await panel_custom.async_register_panel(
-        hass,
-        webcomponent_name="doorman-panel",
-        frontend_url_path=DOMAIN,
-        sidebar_title=PANEL_TITLE,
-        sidebar_icon=PANEL_ICON,
-        module_url=f"{PANEL_URL}/panel.js",
-        embed_iframe=False,
-        require_admin=False,
-    )
+    # Serve frontend assets and register the sidebar panel (once across all entries)
+    if not hass.data.get(f"{DOMAIN}_panel_registered"):
+        frontend_dir = Path(__file__).parent / "frontend"
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
+        )
+        with contextlib.suppress(ValueError):
+            await panel_custom.async_register_panel(
+                hass,
+                webcomponent_name="doorman-panel",
+                frontend_url_path=DOMAIN,
+                sidebar_title=PANEL_TITLE,
+                sidebar_icon=PANEL_ICON,
+                module_url=f"{PANEL_URL}/panel.js",
+                embed_iframe=False,
+                require_admin=False,
+            )
+        hass.data[f"{DOMAIN}_panel_registered"] = True
+
+    # Set up user sync if both sides of a sync pair are now loaded
+    _maybe_setup_sync(hass, store)
+
+    # Rebuild sync when options change (e.g. sync role toggled)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
 
 
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Rebuild the sync manager when entry options change."""
+    _teardown_sync(hass)
+    store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
+    if store:
+        _maybe_setup_sync(hass, store)
+
+
+def _maybe_setup_sync(hass: HomeAssistant, store: DoormanStore) -> None:
+    """Set up sync manager if all entries in a sync pair are loaded."""
+    # Tear down any existing sync manager first
+    _teardown_sync(hass)
+
+    entries = hass.data.get(DOMAIN, {})
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.options.get(CONF_SYNC_ROLE) == SYNC_ROLE_FOLLOWER:
+            leader_entry_id = entry.options.get(CONF_SYNC_TARGET)
+            if leader_entry_id and leader_entry_id in entries and entry.entry_id in entries:
+                sync_manager = UserSyncManager(hass, store)
+                sync_manager.async_setup()
+                hass.data[f"{DOMAIN}_sync"] = sync_manager
+                return
+
+
+def _teardown_sync(hass: HomeAssistant) -> None:
+    """Tear down the sync manager if one exists."""
+    sync_manager: UserSyncManager | None = hass.data.pop(f"{DOMAIN}_sync", None)
+    if sync_manager:
+        sync_manager.async_teardown()
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    _teardown_sync(hass)
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.client.async_close()
         if not hass.data[DOMAIN]:
             async_remove_panel(hass, DOMAIN)
+            hass.data.pop(f"{DOMAIN}_panel_registered", None)
     return unloaded
 
 
@@ -103,10 +151,28 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # Services                                                            #
 # ------------------------------------------------------------------ #
 
-def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> None:
-    """Register Doorman service actions."""
+def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
+    """Return the coordinator for a service call, resolving the optional ``device`` field."""
+    entries: dict[str, DoormanCoordinator] = hass.data.get(DOMAIN, {})
+    device = call.data.get("device")
+    if device:
+        if device not in entries:
+            raise ServiceValidationError(f"Unknown Doorman device: {device}")
+        return entries[device]
+    if len(entries) == 1:
+        return next(iter(entries.values()))
+    raise ServiceValidationError(
+        "Multiple Doorman devices configured. Specify 'device' (config entry ID) to target one."
+    )
+
+
+def _register_services(hass: HomeAssistant) -> None:
+    """Register Doorman service actions (once per domain, not per entry)."""
+    if hass.services.has_service(DOMAIN, "create_user"):
+        return
 
     async def handle_create_user(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
         user: dict = {"name": call.data["name"]}
         if pin := call.data.get("pin"):
             user["pin"] = pin
@@ -122,6 +188,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         await coordinator.async_request_refresh()
 
     async def handle_update_user(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
         user: dict = {"uuid": call.data["uuid"]}
         for field in ("name", "pin"):
             if field in call.data:
@@ -134,14 +201,15 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         await coordinator.async_request_refresh()
 
     async def handle_delete_user(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
         await coordinator.client.delete_user(call.data["uuid"])
-        # Also remove any stored HA user link
         store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
         if store:
             await store.unlink_user(call.data["uuid"])
         await coordinator.async_request_refresh()
 
     async def handle_grant_access(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
         await coordinator.client.grant_access(
             access_point_id=call.data.get("access_point_id", 1),
             user_uuid=call.data.get("user_uuid"),
@@ -159,6 +227,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
                 vol.Optional("code"): cv.string,
                 vol.Optional("valid_from"): cv.datetime,
                 vol.Optional("valid_to"): cv.datetime,
+                vol.Optional("device"): cv.string,
             }
         ),
     )
@@ -173,6 +242,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,
+                vol.Optional("device"): cv.string,
             }
         ),
     )
@@ -180,7 +250,12 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         DOMAIN,
         "delete_user",
         handle_delete_user,
-        schema=vol.Schema({vol.Required("uuid"): cv.string}),
+        schema=vol.Schema(
+            {
+                vol.Required("uuid"): cv.string,
+                vol.Optional("device"): cv.string,
+            }
+        ),
     )
     hass.services.async_register(
         DOMAIN,
@@ -190,6 +265,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
             {
                 vol.Optional("access_point_id", default=1): vol.All(int, vol.Range(min=1)),
                 vol.Optional("user_uuid"): cv.string,
+                vol.Optional("device"): cv.string,
             }
         ),
     )

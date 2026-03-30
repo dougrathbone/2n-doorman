@@ -6,7 +6,13 @@
       "WebSearch",
       "Bash(curl -s https://api.github.com/repos/genka13/ha-2n-intercom/contents/)",
       "WebFetch(domain:wiki.2n.com)",
-      "Bash(curl -s https://api.github.com/repos/cbergmann/2n_intercom/contents/)"
+      "Bash(curl -s https://api.github.com/repos/cbergmann/2n_intercom/contents/)",
+      "Bash(ruff check:*)",
+      "Bash(python3:*)",
+      "Bash(pip list:*)",
+      "Bash(pip install:*)",
+      "Bash(ssh root@192.168.3.190 \"ha core logs 2>/dev/null | grep -i ''doorman\\\\|sync'' | tail -30\")",
+      "Bash(git add:*)"
     ]
   }
 }

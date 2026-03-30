@@ -1,8 +1,9 @@
 """Persistent HA-side storage for Doorman.
 
-Stores two kinds of per-user metadata:
+Stores per-user metadata:
   user_links          — 2N UUID → HA User ID (for identity linking)
   notification_targets — 2N UUID → list of notify.* service targets
+  sync_mappings       — leader UUID → follower UUID (for cross-device sync)
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 
-_EMPTY: dict = {"user_links": {}, "notification_targets": {}}
+_EMPTY: dict = {"user_links": {}, "notification_targets": {}, "sync_mappings": {}}
 
 
 class DoormanStore:
@@ -24,7 +25,14 @@ class DoormanStore:
     async def async_load(self) -> None:
         """Load data from disk. Call once during integration setup."""
         stored = await self._store.async_load()
-        self._data = stored or dict(_EMPTY)
+        if stored is None:
+            self._data = dict(_EMPTY)
+        else:
+            self._data = stored
+            # Migrate from v1: add sync_mappings if missing
+            if "sync_mappings" not in self._data:
+                self._data["sync_mappings"] = {}
+                await self._store.async_save(self._data)
 
     # ------------------------------------------------------------------ #
     # Read                                                                 #
@@ -76,4 +84,35 @@ class DoormanStore:
     async def set_notification_targets(self, two_n_uuid: str, targets: list[str]) -> None:
         """Persist the notification targets for a 2N user."""
         self._data.setdefault("notification_targets", {})[two_n_uuid] = targets
+        await self._store.async_save(self._data)
+
+    # ------------------------------------------------------------------ #
+    # Sync mappings (leader UUID → follower UUID)                          #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def sync_mappings(self) -> dict[str, str]:
+        """Return the full map of ``{leader_uuid: follower_uuid}``."""
+        return self._data.get("sync_mappings", {})
+
+    async def set_sync_mapping(self, leader_uuid: str, follower_uuid: str) -> None:
+        """Store a leader→follower UUID mapping. Persists immediately."""
+        self._data.setdefault("sync_mappings", {})[leader_uuid] = follower_uuid
+        await self._store.async_save(self._data)
+
+    async def remove_sync_mapping(self, leader_uuid: str) -> None:
+        """Remove a leader→follower UUID mapping. Persists immediately."""
+        self._data.get("sync_mappings", {}).pop(leader_uuid, None)
+        await self._store.async_save(self._data)
+
+    def get_leader_uuid_for_follower(self, follower_uuid: str) -> str | None:
+        """Reverse lookup: return the leader UUID for a given follower UUID, or None."""
+        return next(
+            (lid for lid, fid in self.sync_mappings.items() if fid == follower_uuid),
+            None,
+        )
+
+    async def clear_sync_mappings(self) -> None:
+        """Remove all sync mappings. Persists immediately."""
+        self._data["sync_mappings"] = {}
         await self._store.async_save(self._data)

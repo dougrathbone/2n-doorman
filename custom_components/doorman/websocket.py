@@ -5,13 +5,14 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DOMAIN
+from .const import CONF_SYNC_ROLE, CONF_SYNC_TARGET, DOMAIN, SYNC_ROLE_NONE
 from .coordinator import DoormanCoordinator
 from .storage import DoormanStore
 
 
 def async_setup_websocket(hass: HomeAssistant) -> None:
     """Register all Doorman WebSocket commands."""
+    websocket_api.async_register_command(hass, ws_list_devices)
     websocket_api.async_register_command(hass, ws_list_users)
     websocket_api.async_register_command(hass, ws_get_device_info)
     websocket_api.async_register_command(hass, ws_get_access_log)
@@ -23,8 +24,10 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_notification_targets)
 
 
-def _coordinator(hass: HomeAssistant) -> DoormanCoordinator | None:
+def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> DoormanCoordinator | None:
     entries = hass.data.get(DOMAIN, {})
+    if entry_id:
+        return entries.get(entry_id)
     return next(iter(entries.values()), None)
 
 
@@ -33,10 +36,44 @@ def _store(hass: HomeAssistant) -> DoormanStore | None:
 
 
 # ------------------------------------------------------------------ #
+# Devices                                                              #
+# ------------------------------------------------------------------ #
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_devices"})
+@callback
+def ws_list_devices(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return all configured Doorman device entries."""
+    entries: dict[str, DoormanCoordinator] = hass.data.get(DOMAIN, {})
+    devices = []
+    for entry_id, coord in entries.items():
+        entry = hass.config_entries.async_get_entry(entry_id)
+        opts = entry.options if entry else {}
+        device = {
+            "entry_id": entry_id,
+            "serial_number": coord.device_info.get("serialNumber", ""),
+            "device_name": coord.device_info.get("deviceName", ""),
+            "model": coord.device_info.get("hwVersion", ""),
+            "sync_role": opts.get(CONF_SYNC_ROLE, SYNC_ROLE_NONE),
+            "sync_target": opts.get(CONF_SYNC_TARGET),
+        }
+        devices.append(device)
+    connection.send_result(msg["id"], {"devices": devices})
+
+
+# ------------------------------------------------------------------ #
 # Users                                                               #
 # ------------------------------------------------------------------ #
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_users"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/list_users",
+        vol.Optional("entry_id"): str,
+    }
+)
 @callback
 def ws_list_users(
     hass: HomeAssistant,
@@ -44,7 +81,7 @@ def ws_list_users(
     msg: dict,
 ) -> None:
     """Return all 2N directory users, annotated with their linked HA user ID."""
-    coordinator = _coordinator(hass)
+    coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
@@ -52,14 +89,20 @@ def ws_list_users(
     store = _store(hass)
     links = store.user_links if store else {}
 
-    users = [
-        {
+    users = []
+    for user in coordinator.data.get("users", []):
+        uuid = user.get("uuid", "")
+        # Resolve follower UUID → leader UUID for HA user links and notification targets
+        lookup_uuid = uuid
+        if store:
+            leader_uuid = store.get_leader_uuid_for_follower(uuid)
+            if leader_uuid:
+                lookup_uuid = leader_uuid
+        users.append({
             **user,
-            "ha_user_id": links.get(user.get("uuid")),
-            "notification_targets": store.get_notification_targets(user.get("uuid", "")) if store else [],
-        }
-        for user in coordinator.data.get("users", [])
-    ]
+            "ha_user_id": links.get(lookup_uuid),
+            "notification_targets": store.get_notification_targets(lookup_uuid) if store else [],
+        })
     connection.send_result(msg["id"], {"users": users})
 
 
@@ -67,7 +110,12 @@ def ws_list_users(
 # Device info                                                          #
 # ------------------------------------------------------------------ #
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_device_info"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_device_info",
+        vol.Optional("entry_id"): str,
+    }
+)
 @callback
 def ws_get_device_info(
     hass: HomeAssistant,
@@ -75,7 +123,7 @@ def ws_get_device_info(
     msg: dict,
 ) -> None:
     """Return static device information (model, firmware, serial)."""
-    coordinator = _coordinator(hass)
+    coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
@@ -86,7 +134,12 @@ def ws_get_device_info(
 # Access log                                                           #
 # ------------------------------------------------------------------ #
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_access_log"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_access_log",
+        vol.Optional("entry_id"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_get_access_log(
     hass: HomeAssistant,
@@ -94,7 +147,7 @@ async def ws_get_access_log(
     msg: dict,
 ) -> None:
     """Fetch the most recent access log events directly from the device."""
-    coordinator = _coordinator(hass)
+    coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return

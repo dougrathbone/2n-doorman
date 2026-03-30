@@ -25,6 +25,10 @@ create_user:
       required: false
       selector:
         datetime:
+    device:
+      required: false
+      selector:
+        text:
 
 update_user:
   fields:
@@ -49,11 +53,19 @@ update_user:
       required: false
       selector:
         text:
+    device:
+      required: false
+      selector:
+        text:
 
 delete_user:
   fields:
     uuid:
       required: true
+      selector:
+        text:
+    device:
+      required: false
       selector:
         text:
 
@@ -67,3 +79,7 @@ grant_access:
           min: 1
           max: 32
           mode: box
+    device:
+      required: false
+      selector:
+        text:

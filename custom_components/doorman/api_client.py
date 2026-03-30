@@ -53,6 +53,16 @@ class TwoNApiClient:
         self._password = password
         self._log_subscription_id: int | None = None
 
+        # Build SSL context once (avoids blocking call on every request)
+        if use_ssl and not verify_ssl:
+            self._ssl_ctx: ssl.SSLContext | bool | None = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            self._ssl_ctx.check_hostname = False
+            self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        elif use_ssl:
+            self._ssl_ctx = True  # use default context with verification
+        else:
+            self._ssl_ctx = None  # plain HTTP
+
         # Plain session — we handle Digest auth manually in _request
         self._session = aiohttp.ClientSession()
 
@@ -60,17 +70,6 @@ class TwoNApiClient:
         """Close the underlying session. Call from async_unload_entry."""
         if not self._session.closed:
             await self._session.close()
-
-    def _ssl_context(self) -> ssl.SSLContext | bool | None:
-        """Return an SSL context, True for verified HTTPS, or None for plain HTTP."""
-        if not self._use_ssl:
-            return None  # plain HTTP — ssl parameter ignored by aiohttp
-        if self._verify_ssl:
-            return True  # use default context with verification
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
 
     def _build_digest_header(
         self,
@@ -132,7 +131,7 @@ class TwoNApiClient:
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}/api/{endpoint}"
-        ssl_ctx = self._ssl_context()
+        ssl_ctx = self._ssl_ctx
         timeout = aiohttp.ClientTimeout(total=10)
         try:
             # First attempt — no auth header (some endpoints need no auth)
@@ -169,9 +168,15 @@ class TwoNApiClient:
                         data: dict = await resp2.json()
                         if not data.get("success", True):
                             err = data.get("error", {})
-                            raise DoormanApiError(
-                                f"API error {err.get('code')}: {err.get('description', data)}"
+                            _LOGGER.debug("2N API error response: %s", data)
+                            param = err.get("param")
+                            msg = (
+                                f"API error {err.get('code')}: "
+                                f"{err.get('description', data)}"
                             )
+                            if param:
+                                msg += f" (param: {param})"
+                            raise DoormanApiError(msg)
                         return data
 
                 if resp.status == 403:
@@ -182,9 +187,15 @@ class TwoNApiClient:
                 data = await resp.json()
                 if not data.get("success", True):
                     err = data.get("error", {})
-                    raise DoormanApiError(
-                        f"API error {err.get('code')}: {err.get('description', data)}"
+                    _LOGGER.debug("2N API error response: %s", data)
+                    param = err.get("param")
+                    msg = (
+                        f"API error {err.get('code')}: "
+                        f"{err.get('description', data)}"
                     )
+                    if param:
+                        msg += f" (param: {param})"
+                    raise DoormanApiError(msg)
                 return data
         except aiohttp.ClientConnectorError as err:
             raise DoormanConnectionError(
@@ -259,16 +270,20 @@ class TwoNApiClient:
 
     async def create_user(self, user: dict[str, Any]) -> dict[str, Any]:
         """Create a new directory entry. Returns the record with server-assigned UUID."""
-        data = await self._request("PUT", "dir/create", json={"user": self._nest_user(user)})
-        return self._flatten_user(data.get("result", {}))
+        nested = self._nest_user(user)
+        _LOGGER.debug("create_user payload: %s", nested)
+        data = await self._request("PUT", "dir/create", json={"users": [nested]})
+        # Response: {"result": {"users": [{"uuid": "...", "timestamp": N}]}}
+        users = data.get("result", {}).get("users", [{}])
+        return users[0] if users else {}
 
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""
-        await self._request("PUT", "dir/update", json={"user": self._nest_user(user)})
+        await self._request("PUT", "dir/update", json={"users": [self._nest_user(user)]})
 
     async def delete_user(self, uuid: str) -> None:
         """Delete a directory entry by UUID."""
-        await self._request("PUT", "dir/delete", json={"uuid": uuid})
+        await self._request("PUT", "dir/delete", json={"users": [{"uuid": uuid}]})
 
     # ------------------------------------------------------------------ #
     # Switches / relays (/api/switch/*)                                    #

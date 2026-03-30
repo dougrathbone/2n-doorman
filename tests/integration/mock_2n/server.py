@@ -7,35 +7,47 @@ via the /admin/* endpoints.
 from __future__ import annotations
 
 import copy
+import os
 import uuid as _uuid
 
 from aiohttp import web
 
+# ─── Device identity (configurable via env for multi-device testing) ─────────
+
+_DEVICE_NAME = os.environ.get("DEVICE_NAME", "2N IP Verso (Test)")
+_SERIAL_NUMBER = os.environ.get("SERIAL_NUMBER", "10-99999999")
+_HW_VERSION = os.environ.get("HW_VERSION", "535v1")
+_INITIAL_USER = os.environ.get("INITIAL_USER_NAME", "Test User")
+_INITIAL_UUID = os.environ.get("INITIAL_USER_UUID", "uuid-test-01")
+
 # ─── Mutable device state ────────────────────────────────────────────────────
 
-_state: dict = {
-    "device_info": {
-        "deviceName": "2N IP Verso (Test)",
-        "swVersion": "2.49.0.38",
-        "serialNumber": "10-99999999",
-        "hwVersion": "535v1",
-    },
-    "users": [
-        {
-            "uuid": "uuid-test-01",
-            "name": "Test User",
-            "pin": "1234",
-            "card": ["AABBCCDD"],
-            "code": [],
-            "validFrom": None,
-            "validTo": None,
-        }
-    ],
-    "switches": [
-        {"id": 1, "name": "Main Door", "active": False},
-    ],
-    "call_log": [],  # {"method", "path", "body"}
-}
+def _default_state() -> dict:
+    return {
+        "device_info": {
+            "deviceName": _DEVICE_NAME,
+            "swVersion": "2.49.0.38",
+            "serialNumber": _SERIAL_NUMBER,
+            "hwVersion": _HW_VERSION,
+        },
+        "users": [
+            {
+                "uuid": _INITIAL_UUID,
+                "name": _INITIAL_USER,
+                "pin": "1234",
+                "card": ["AABBCCDD"],
+                "code": [],
+                "validFrom": None,
+                "validTo": None,
+            }
+        ],
+        "switches": [
+            {"id": 1, "name": "Main Door", "active": False},
+        ],
+        "call_log": [],
+    }
+
+_state: dict = _default_state()
 
 
 def _log(method: str, path: str, body=None) -> None:
@@ -79,28 +91,38 @@ async def get_dir_template(request: web.Request) -> web.Response:
 
 async def create_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    user = copy.deepcopy(body.get("user", {}))
-    user.setdefault("uuid", str(_uuid.uuid4()))
-    _state["users"].append(user)
+    # Accept both {"users": [...]} (v3) and {"user": {...}} (v2) formats
+    users_in = body.get("users", [body.get("user", {})])
+    created = []
+    for u in users_in:
+        user = copy.deepcopy(u)
+        user.setdefault("uuid", str(_uuid.uuid4()))
+        _state["users"].append(user)
+        created.append({"uuid": user["uuid"], "timestamp": 1})
     _log("PUT", "/api/dir/create", body)
-    return web.json_response({"success": True, "result": user})
+    return web.json_response({"success": True, "result": {"users": created}})
 
 
 async def update_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    user_data = body.get("user", {})
-    target_uuid = user_data.get("uuid")
-    for i, u in enumerate(_state["users"]):
-        if u["uuid"] == target_uuid:
-            _state["users"][i] = {**u, **{k: v for k, v in user_data.items() if k != "uuid"}}
+    # Accept both {"users": [...]} and {"user": {...}} formats
+    users_in = body.get("users", [body.get("user", {})])
+    for user_data in users_in:
+        target_uuid = user_data.get("uuid")
+        for i, u in enumerate(_state["users"]):
+            if u["uuid"] == target_uuid:
+                _state["users"][i] = {**u, **{k: v for k, v in user_data.items() if k != "uuid"}}
     _log("PUT", "/api/dir/update", body)
     return web.json_response({"success": True})
 
 
 async def delete_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    target_uuid = body.get("uuid")
-    _state["users"] = [u for u in _state["users"] if u["uuid"] != target_uuid]
+    # Accept both {"users": [{"uuid": ...}]} and {"uuid": ...} formats
+    users_in = body.get("users", [{"uuid": body.get("uuid")}])
+    for u in users_in:
+        target_uuid = u.get("uuid")
+        _state["users"] = [x for x in _state["users"] if x["uuid"] != target_uuid]
     _log("PUT", "/api/dir/delete", body)
     return web.json_response({"success": True})
 
@@ -129,19 +151,11 @@ async def admin_get_calls(request: web.Request) -> web.Response:
 
 async def admin_reset(request: web.Request) -> web.Response:
     """Reset call log and restore initial device state."""
-    _state["call_log"].clear()
-    _state["users"] = [
-        {
-            "uuid": "uuid-test-01",
-            "name": "Test User",
-            "pin": "1234",
-            "card": ["AABBCCDD"],
-            "code": [],
-            "validFrom": None,
-            "validTo": None,
-        }
-    ]
-    _state["switches"] = [{"id": 1, "name": "Main Door", "active": False}]
+    fresh = _default_state()
+    _state["call_log"] = fresh["call_log"]
+    _state["users"] = fresh["users"]
+    _state["switches"] = fresh["switches"]
+    # Keep device_info unchanged (set at startup from env vars)
     return web.json_response({"ok": True})
 
 

@@ -44,7 +44,14 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
             _LOGGER.debug("Access event has no user UUID — skipping notifications")
             return
 
-        targets = store.get_notification_targets(two_n_uuid)
+        # Resolve follower UUID → leader UUID so notification targets
+        # configured on the leader work for events from the follower
+        lookup_uuid = two_n_uuid
+        leader_uuid = store.get_leader_uuid_for_follower(two_n_uuid)
+        if leader_uuid:
+            lookup_uuid = leader_uuid
+
+        targets = store.get_notification_targets(lookup_uuid)
         if not targets:
             return
 

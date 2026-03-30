@@ -177,6 +177,31 @@ class Mock2nAdmin:
         """Filter calls synchronously (after fetching with get_calls)."""
         raise NotImplementedError("Use async get_calls() then filter")
 
+    async def wait_for_user(
+        self, user_name: str, timeout: float = 60.0, interval: float = 2.0
+    ) -> dict:
+        """Poll until a user with the given name exists, or timeout."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            users = await self.get_users()
+            for u in users:
+                if u.get("name") == user_name:
+                    return u
+            await asyncio.sleep(interval)
+        raise TimeoutError(f"User {user_name!r} not found on device after {timeout}s")
+
+    async def wait_for_user_count(
+        self, count: int, timeout: float = 60.0, interval: float = 2.0
+    ) -> list[dict]:
+        """Poll until the device has at least ``count`` users, or timeout."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            users = await self.get_users()
+            if len(users) >= count:
+                return users
+            await asyncio.sleep(interval)
+        raise TimeoutError(f"Expected >= {count} users, not reached after {timeout}s")
+
 
 # ─── HA bootstrap helpers ────────────────────────────────────────────────────
 
@@ -292,7 +317,77 @@ async def install_doorman(ha_url: str, token: str, mock_2n_host: str, mock_2n_po
             resp.raise_for_status()
             result = await resp.json()
 
+        # If other doorman entries exist, the flow shows a sync_role step.
+        # Skip it (sync is configured later via set_entry_options).
+        if result.get("type") == "form" and result.get("step_id") == "sync_role":
+            async with session.post(
+                f"{ha_url}/api/config/config_entries/flow/{result['flow_id']}",
+                json={"sync_role": "none"},
+            ) as resp:
+                resp.raise_for_status()
+                result = await resp.json()
+
         assert result["type"] == "create_entry", (
             f"Config flow did not complete successfully: {result}"
+        )
+        return result
+
+
+async def set_entry_options(
+    ha_url: str, token: str, entry_id: str, options: dict
+) -> dict:
+    """Set options on a config entry via the HA options flow REST API.
+
+    Handles the two-step flow: step 1 sets sync_role, step 2 (if follower)
+    sets sync_target.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    async with aiohttp.ClientSession(headers=headers) as session:
+        # Start the options flow (step 1: sync_role)
+        async with session.post(
+            f"{ha_url}/api/config/config_entries/options/flow",
+            json={"handler": entry_id},
+        ) as resp:
+            resp.raise_for_status()
+            flow = await resp.json()
+
+        assert flow["type"] == "form", f"Expected options form, got: {flow}"
+
+        # Submit step 1: sync_role
+        step1_data = {"sync_role": options.get("sync_role", "none")}
+        async with session.post(
+            f"{ha_url}/api/config/config_entries/options/flow/{flow['flow_id']}",
+            json=step1_data,
+        ) as resp:
+            result = await resp.json()
+            if resp.status >= 400:
+                raise AssertionError(
+                    f"Options step 1 failed ({resp.status}): "
+                    f"submitted={step1_data}, response={result}"
+                )
+
+        # For leader/none, step 1 completes the flow
+        if result["type"] == "create_entry":
+            return result
+
+        # For follower, step 2 asks for the target device
+        assert result["type"] == "form", f"Expected step 2 form, got: {result}"
+        step2_data = {"sync_target": options.get("sync_target")}
+        async with session.post(
+            f"{ha_url}/api/config/config_entries/options/flow/{result['flow_id']}",
+            json=step2_data,
+        ) as resp:
+            result = await resp.json()
+            if resp.status >= 400:
+                raise AssertionError(
+                    f"Options step 2 failed ({resp.status}): "
+                    f"submitted={step2_data}, response={result}"
+                )
+
+        assert result["type"] == "create_entry", (
+            f"Options flow did not complete: {result}"
         )
         return result

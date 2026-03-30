@@ -11,6 +11,24 @@ services:
       timeout: 5s
       retries: 12
 
+  mock-2n-follower:
+    build:
+      context: mock_2n
+    ports:
+      - "8889:8888"
+    environment:
+      - DEVICE_NAME=2N Access Unit M (Test)
+      - SERIAL_NUMBER=10-88888888
+      - HW_VERSION=AU-M-v1
+      - INITIAL_USER_NAME=Test User
+      - INITIAL_USER_UUID=uuid-follower-01
+    healthcheck:
+      test: >
+        python -c "import urllib.request; urllib.request.urlopen('http://localhost:8888/api/system/info')"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   homeassistant:
     image: homeassistant/home-assistant:stable
     volumes:
@@ -23,6 +41,8 @@ services:
     depends_on:
       mock-2n:
         condition: service_healthy
+      mock-2n-follower:
+        condition: service_healthy
     healthcheck:
       # HA is ready when the onboarding endpoint responds
       test: >
@@ -31,3 +51,26 @@ services:
       timeout: 10s
       retries: 36        # up to 6 minutes for HA to start
       start_period: 20s
+
+  test-runner:
+    build:
+      context: test-runner
+    volumes:
+      - ../:/tests:ro
+    environment:
+      - HA_URL=http://homeassistant:8123
+      - MOCK_2N_URL=http://mock-2n:8888
+      - MOCK_2N_HOST=mock-2n
+      - MOCK_2N_PORT=8888
+      - MOCK_2N_FOLLOWER_URL=http://mock-2n-follower:8888
+      - MOCK_2N_FOLLOWER_HOST=mock-2n-follower
+      - MOCK_2N_FOLLOWER_PORT=8888
+    depends_on:
+      homeassistant:
+        condition: service_healthy
+      mock-2n:
+        condition: service_healthy
+      mock-2n-follower:
+        condition: service_healthy
+    profiles:
+      - test
