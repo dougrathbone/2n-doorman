@@ -87,7 +87,7 @@ async def test_create_user_service_adds_user_to_device(
     create_calls = [c for c in calls if c["path"] == "/api/dir/create"]
     assert create_calls, "Expected a PUT /api/dir/create call on the mock server"
 
-    payload = create_calls[0]["body"]["user"]
+    payload = create_calls[0]["body"]["users"][0]
     assert payload["name"] == "New Resident"
     assert payload["access"]["pin"] == "5678"
 
@@ -113,7 +113,7 @@ async def test_update_user_service_updates_device(
     update_calls = [c for c in calls if c["path"] == "/api/dir/update"]
     assert update_calls, "Expected a PUT /api/dir/update call"
 
-    payload = update_calls[0]["body"]["user"]
+    payload = update_calls[0]["body"]["users"][0]
     assert payload["uuid"] == "uuid-test-01"
     assert payload["name"] == "Updated Name"
     assert payload["access"]["pin"] == "9999"
@@ -130,7 +130,7 @@ async def test_delete_user_service_removes_user_from_device(
     calls = await mock_2n.get_calls()
     delete_calls = [c for c in calls if c["path"] == "/api/dir/delete"]
     assert delete_calls, "Expected a PUT /api/dir/delete call"
-    assert delete_calls[0]["body"]["uuid"] == "uuid-test-01"
+    assert delete_calls[0]["body"]["users"][0]["uuid"] == "uuid-test-01"
 
     users = await mock_2n.get_users()
     assert not any(u["uuid"] == "uuid-test-01" for u in users)
