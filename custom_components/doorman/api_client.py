@@ -270,7 +270,9 @@ class TwoNApiClient:
 
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""
-        await self._request("PUT", "dir/update", json={"user": self._nest_user(user)})
+        payload = self._nest_user(user)
+        _LOGGER.debug("dir/update payload: %s", payload)
+        await self._request("PUT", "dir/update", json={"user": payload})
 
     async def delete_user(self, uuid: str) -> None:
         """Delete a directory entry by UUID."""

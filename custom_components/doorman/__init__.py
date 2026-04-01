@@ -124,7 +124,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
     async def handle_update_user(call: ServiceCall) -> None:
         user: dict = {"uuid": call.data["uuid"]}
         for field in ("name", "pin"):
-            if field in call.data:
+            if field in call.data and call.data[field]:
                 user[field] = call.data[field]
         if "card" in call.data:
             user["card"] = [call.data["card"]] if call.data["card"] else []

@@ -192,6 +192,8 @@ class DoormanDrawer extends HTMLElement {
         .field input:focus, .field select:focus { outline: none; border-color: var(--primary-color); }
         .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
           letter-spacing: 0.5px; color: var(--secondary-text-color); margin: 16px 0 8px; }
+        .required { color: var(--error-color, #f44336); margin-left: 2px; }
+        .optional-hint { font-weight: 400; text-transform: none; font-size: 10px; opacity: 0.7; }
         .error { padding: 10px 12px; color: var(--error-color, #f44336);
           background: #fff3f3; border-radius: 4px; font-size: 13px; }
       </style>
@@ -387,13 +389,13 @@ class DoormanUsersTab extends HTMLElement {
     form.innerHTML = `
       <div class="field-group">
         <div class="field">
-          <label>Name *</label>
-          <input id="f-name" type="text" value="${user.name || ""}" placeholder="Jane Doe" />
+          <label>Name <span class="required">*</span></label>
+          <input id="f-name" type="text" value="${user.name || ""}" placeholder="Jane Doe" required />
         </div>
-        <div class="section-title">Credentials</div>
+        <div class="section-title">Credentials <span class="optional-hint">(all optional)</span></div>
         <div class="field">
           <label>PIN code</label>
-          <input id="f-pin" type="password" value="${user.pin || ""}" placeholder="2–15 digits" autocomplete="new-password" />
+          <input id="f-pin" type="text" value="${user.pin || ""}" placeholder="2–15 digits" autocomplete="off" />
         </div>
         <div class="field">
           <label>RFID card UID (hex)</label>
@@ -483,19 +485,20 @@ class DoormanUsersTab extends HTMLElement {
     this._drawer.open(`Edit: ${user.name || user.uuid}`, form, async () => {
       const data = { uuid: user.uuid };
       const name = form.querySelector("#f-name").value.trim();
+      if (!name) { form.querySelector("#form-error").innerHTML = `<div class="error">Name is required.</div>`; return; }
       if (name !== (user.name || "")) data.name = name;
       const pin = form.querySelector("#f-pin").value.trim();
-      if (pin !== (user.pin || "")) data.pin = pin;
+      if (pin && pin !== (user.pin || "")) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
       const vf = form.querySelector("#f-valid-from")?.value;
       const vfCurrent = user.validFrom ? new Date(user.validFrom * 1000).toISOString().slice(0, 16) : "";
-      if (vf !== vfCurrent) data.valid_from = vf || null;
+      if (vf !== vfCurrent) data.valid_from = vf || undefined;
       const vt = form.querySelector("#f-valid-to")?.value;
       const vtCurrent = user.validTo ? new Date(user.validTo * 1000).toISOString().slice(0, 16) : "";
-      if (vt !== vtCurrent) data.valid_to = vt || null;
+      if (vt !== vtCurrent) data.valid_to = vt || undefined;
       try {
         await svc(this._hass, "update_user", data);
         // Handle HA user link change
