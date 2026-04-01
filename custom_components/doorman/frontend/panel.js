@@ -490,6 +490,12 @@ class DoormanUsersTab extends HTMLElement {
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
+      const vf = form.querySelector("#f-valid-from")?.value;
+      const vfCurrent = user.validFrom ? new Date(user.validFrom * 1000).toISOString().slice(0, 16) : "";
+      if (vf !== vfCurrent) data.valid_from = vf || null;
+      const vt = form.querySelector("#f-valid-to")?.value;
+      const vtCurrent = user.validTo ? new Date(user.validTo * 1000).toISOString().slice(0, 16) : "";
+      if (vt !== vtCurrent) data.valid_to = vt || null;
       try {
         await svc(this._hass, "update_user", data);
         // Handle HA user link change

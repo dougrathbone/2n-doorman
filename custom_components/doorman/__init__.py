@@ -130,6 +130,10 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
             user["card"] = [call.data["card"]] if call.data["card"] else []
         if "code" in call.data:
             user["code"] = [call.data["code"]] if call.data["code"] else []
+        if valid_from := call.data.get("valid_from"):
+            user["validFrom"] = int(valid_from.timestamp())
+        if valid_to := call.data.get("valid_to"):
+            user["validTo"] = int(valid_to.timestamp())
         await coordinator.client.update_user(user)
         await coordinator.async_request_refresh()
 
@@ -173,6 +177,8 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,
+                vol.Optional("valid_from"): cv.datetime,
+                vol.Optional("valid_to"): cv.datetime,
             }
         ),
     )

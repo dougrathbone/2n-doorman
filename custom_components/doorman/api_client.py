@@ -239,11 +239,11 @@ class TwoNApiClient:
         """Inverse of _flatten_user: build the nested access sub-object for dir/create and dir/update."""
         user = {k: v for k, v in flat.items() if k not in ("pin", "card", "code", "validFrom", "validTo")}
         access: dict[str, Any] = {}
-        if "pin" in flat:
+        if flat.get("pin"):
             access["pin"] = flat["pin"]
-        if "card" in flat:
+        if flat.get("card"):
             access["card"] = flat["card"]
-        if "code" in flat:
+        if flat.get("code"):
             access["code"] = flat["code"]
         if flat.get("validFrom"):
             access["validFrom"] = str(flat["validFrom"])
