@@ -47,11 +47,21 @@ class TwoNApiClient:
     ) -> None:
         scheme = "https" if use_ssl else "http"
         self._base_url = f"{scheme}://{host}"
-        self._verify_ssl = verify_ssl
-        self._use_ssl = use_ssl
         self._username = username
         self._password = password
         self._log_subscription_id: int | None = None
+
+        # Build the SSL context once here (synchronous) so it is never created
+        # inside the async event loop, which HA detects as a blocking call.
+        if not use_ssl:
+            self._ssl_ctx: ssl.SSLContext | bool | None = None
+        elif verify_ssl:
+            self._ssl_ctx = True  # use default context with full verification
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            self._ssl_ctx = ctx
 
         # Plain session — we handle Digest auth manually in _request
         self._session = aiohttp.ClientSession()
@@ -62,15 +72,8 @@ class TwoNApiClient:
             await self._session.close()
 
     def _ssl_context(self) -> ssl.SSLContext | bool | None:
-        """Return an SSL context, True for verified HTTPS, or None for plain HTTP."""
-        if not self._use_ssl:
-            return None  # plain HTTP — ssl parameter ignored by aiohttp
-        if self._verify_ssl:
-            return True  # use default context with verification
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        """Return the pre-built SSL context (or None for plain HTTP)."""
+        return self._ssl_ctx
 
     def _build_digest_header(
         self,
