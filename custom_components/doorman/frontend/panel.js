@@ -668,7 +668,7 @@ class DoormanDeviceTab extends HTMLElement {
             <span class="info-value">${info.deviceName || "—"}</span>
             <span class="info-label">Firmware</span>
             <span class="info-value">${info.swVersion || "—"}</span>
-            <span class="info-serial">Serial</span>
+            <span class="info-label">Serial</span>
             <span class="info-value">${info.serialNumber || "—"}</span>
             <span class="info-label">Hardware</span>
             <span class="info-value">${info.hwVersion || "—"}</span>

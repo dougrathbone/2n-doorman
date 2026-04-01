@@ -87,18 +87,23 @@ def ws_get_device_info(
 # ------------------------------------------------------------------ #
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_access_log"})
-@websocket_api.async_response
-async def ws_get_access_log(
+@callback
+def ws_get_access_log(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict,
 ) -> None:
-    """Fetch the most recent access log events directly from the device."""
+    """Return the access log events from the coordinator's last poll.
+
+    Events are accumulated by the coordinator across polls and returned here.
+    Calling pull_log() directly from the panel would race with the coordinator
+    and consume events from the shared subscription, causing missed bus events.
+    """
     coordinator = _coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
-    events = await coordinator.client.pull_log()
+    events = coordinator.data.get("log_events", [])
     connection.send_result(msg["id"], {"events": events})
 
 

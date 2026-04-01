@@ -49,6 +49,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.device_info: dict[str, Any] = {}
+        self._log_buffer: list[dict[str, Any]] = []
+        self._log_buffer_max = 200
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information once at startup."""
@@ -68,10 +70,14 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._fire_new_access_events(log_events)
 
+        # Accumulate events into the rolling buffer (newest first, capped at max)
+        if log_events:
+            self._log_buffer = (log_events + self._log_buffer)[: self._log_buffer_max]
+
         return {
             "users": users,
             "switches": switches,
-            "log_events": log_events,
+            "log_events": self._log_buffer,
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
