@@ -51,14 +51,17 @@ class TwoNApiClient:
         self._password = password
         self._log_subscription_id: int | None = None
 
-        # Build the SSL context once here (synchronous) so it is never created
-        # inside the async event loop, which HA detects as a blocking call.
+        # Build the SSL context once here so it is never re-created on each
+        # request.  Critically, we avoid ssl.create_default_context() which
+        # calls load_default_certs() / set_default_verify_paths() — blocking
+        # file I/O that HA detects as a blocking call in the event loop.
+        # ssl.SSLContext() does not load any certificates itself.
         if not use_ssl:
             self._ssl_ctx: ssl.SSLContext | bool | None = None
         elif verify_ssl:
-            self._ssl_ctx = True  # use default context with full verification
+            self._ssl_ctx = True  # let aiohttp use its default verified context
         else:
-            ctx = ssl.create_default_context()
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             self._ssl_ctx = ctx
