@@ -31,6 +31,8 @@ A Home Assistant integration for managing users and access credentials on **2N I
 - A 2N IP intercom with the HTTP API enabled (Services → HTTP API)
 - An API user on the device with **Directory** permission
 
+> **Firmware note:** Directory write access (create/edit/delete users) requires a 2N firmware version that exposes the `Directory` service to HTTP API users. Older firmware (e.g. 2.45.x) does not include this service, so write operations will fail even with all other permissions enabled. If Doorman reports that directory write is unavailable, check **Administration → Firmware** in the 2N web interface for an update. Read access (viewing users and the access log) works on all supported firmware versions.
+
 ---
 
 ## Installation
@@ -61,8 +63,10 @@ Enable the HTTP API on your 2N device:
 1. Log in to the 2N web interface
 2. Navigate to **Services → HTTP API**
 3. Enable **HTTP API**
-4. Create a user account with at minimum the **Directory** service permission
+4. Create a user account with at minimum the **Directory** service permission (read + write)
 5. Note the username and password for HA setup
+
+> If the **Directory** permission option is not visible, your device firmware is too old to support directory write via the HTTP API. See the firmware note in [Requirements](#requirements).
 
 ---
 
