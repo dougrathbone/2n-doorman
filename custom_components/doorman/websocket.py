@@ -52,11 +52,13 @@ def ws_list_users(
     store = _store(hass)
     links = store.user_links if store else {}
 
+    last_access = coordinator.data.get("last_access", {})
     users = [
         {
             **user,
             "ha_user_id": links.get(user.get("uuid")),
             "notification_targets": store.get_notification_targets(user.get("uuid", "")) if store else [],
+            "last_access": last_access.get(user.get("uuid")),
         }
         for user in coordinator.data.get("users", [])
     ]

@@ -52,6 +52,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
+        self._last_access: dict[str, str] = {}  # user UUID → utcTime of last successful access
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information and check write permissions at startup."""
@@ -90,6 +91,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "switches": switches,
             "log_events": self._log_buffer,
             "has_write_permission": self.has_write_permission,
+            "last_access": self._last_access,
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
@@ -109,3 +111,10 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "utc_time": event.get("utcTime"),
                     },
                 )
+            if event_type == "UserAuthenticated":
+                params = event.get("params", {})
+                user_info = params.get("user", {})
+                user_uuid = user_info.get("uuid") or user_info.get("id")
+                utc_time = event.get("utcTime")
+                if user_uuid and utc_time:
+                    self._last_access[str(user_uuid)] = utc_time

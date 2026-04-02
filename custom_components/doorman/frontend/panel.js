@@ -343,6 +343,7 @@ class DoormanUsersTab extends HTMLElement {
           <th>Cards</th>
           <th>Codes</th>
           <th>Valid Until</th>
+          <th>Last Used</th>
           <th>HA User</th>
           <th title="Notifications" style="text-align:center">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle">
@@ -364,6 +365,7 @@ class DoormanUsersTab extends HTMLElement {
             <td>${(u.card || []).filter(Boolean).length}</td>
             <td>${(u.code || []).filter(Boolean).length}</td>
             <td>${formatDate(u.validTo)}</td>
+            <td style="color:var(--secondary-text-color);font-size:13px">${u.last_access ? formatDateTime(u.last_access) : "—"}</td>
             <td>
               ${u.ha_user_id
                 ? `<span class="ha-link">🏠 ${this._haUserName(u.ha_user_id)}</span>`
