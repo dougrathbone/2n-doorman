@@ -11,7 +11,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 
-_EMPTY: dict = {"user_links": {}, "notification_targets": {}}
+_EMPTY: dict = {"user_links": {}, "notification_targets": {}, "last_access": {}}
 
 
 class DoormanStore:
@@ -58,6 +58,20 @@ class DoormanStore:
     async def unlink_user(self, two_n_uuid: str) -> None:
         """Remove the HA user link for a 2N UUID. Persists immediately."""
         self._data.get("user_links", {}).pop(two_n_uuid, None)
+        await self._store.async_save(self._data)
+
+    # ------------------------------------------------------------------ #
+    # Last access times                                                    #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def last_access(self) -> dict[str, str]:
+        """Return the full map of ``{two_n_uuid: utcTime}`` for last access."""
+        return self._data.get("last_access", {})
+
+    async def update_last_access(self, two_n_uuid: str, utc_time: str) -> None:
+        """Record the most recent successful access time for a user. Persists immediately."""
+        self._data.setdefault("last_access", {})[two_n_uuid] = utc_time
         await self._store.async_save(self._data)
 
     # ------------------------------------------------------------------ #

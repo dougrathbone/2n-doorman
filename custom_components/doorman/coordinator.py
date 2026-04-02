@@ -53,6 +53,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
         self._last_access: dict[str, str] = {}  # user UUID → utcTime of last successful access
+        self._pending_access_saves: list[tuple[str, str]] = []
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information and check write permissions at startup."""
@@ -81,6 +82,14 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"2N API error: {err}") from err
 
         self._fire_new_access_events(log_events)
+
+        # Persist any newly recorded last-access times to the store
+        if self._pending_access_saves:
+            store = self.hass.data.get(f"{DOMAIN}_store")
+            if store:
+                for uuid, utc_time in self._pending_access_saves:
+                    await store.update_last_access(uuid, utc_time)
+            self._pending_access_saves.clear()
 
         # Accumulate events into the rolling buffer (newest first, capped at max)
         if log_events:
@@ -118,3 +127,4 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 utc_time = event.get("utcTime")
                 if user_uuid and utc_time:
                     self._last_access[str(user_uuid)] = utc_time
+                    self._pending_access_saves.append((str(user_uuid), utc_time))

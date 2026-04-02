@@ -74,35 +74,37 @@ async def query_dir(request: web.Request) -> web.Response:
 
 
 async def get_dir_template(request: web.Request) -> web.Response:
-    return web.json_response({"success": True, "result": {}})
+    return web.json_response({"success": True, "result": {
+        "users": [{"access": {"accessPoints": [{"enabled": True}, {"enabled": True}]}}]
+    }})
 
 
 async def create_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    user = copy.deepcopy(body.get("user", {}))
+    user = copy.deepcopy((body.get("users") or [{}])[0])
     user.setdefault("uuid", str(_uuid.uuid4()))
     _state["users"].append(user)
     _log("PUT", "/api/dir/create", body)
-    return web.json_response({"success": True, "result": user})
+    return web.json_response({"success": True, "result": {"users": [{"uuid": user["uuid"]}]}})
 
 
 async def update_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    user_data = body.get("user", {})
+    user_data = (body.get("users") or [{}])[0]
     target_uuid = user_data.get("uuid")
     for i, u in enumerate(_state["users"]):
         if u["uuid"] == target_uuid:
             _state["users"][i] = {**u, **{k: v for k, v in user_data.items() if k != "uuid"}}
     _log("PUT", "/api/dir/update", body)
-    return web.json_response({"success": True})
+    return web.json_response({"success": True, "result": {"users": [{"uuid": target_uuid}]}})
 
 
 async def delete_dir(request: web.Request) -> web.Response:
     body = await request.json()
-    target_uuid = body.get("uuid")
+    target_uuid = (body.get("users") or [{}])[0].get("uuid")
     _state["users"] = [u for u in _state["users"] if u["uuid"] != target_uuid]
     _log("PUT", "/api/dir/delete", body)
-    return web.json_response({"success": True})
+    return web.json_response({"success": True, "result": {"users": [{"uuid": target_uuid}]}})
 
 
 async def subscribe_log(request: web.Request) -> web.Response:

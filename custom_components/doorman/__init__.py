@@ -79,6 +79,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     store = DoormanStore(hass)
     await store.async_load()
+    coordinator._last_access = dict(store.last_access)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     hass.data[f"{DOMAIN}_store"] = store

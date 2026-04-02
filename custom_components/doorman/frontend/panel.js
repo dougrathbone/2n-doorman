@@ -239,6 +239,9 @@ class DoormanUsersTab extends HTMLElement {
     this._loading = true;
     this._error = null;
     this._drawer = null;
+    this._filter = "";
+    this._sortKey = "name";
+    this._sortAsc = true;
   }
 
   set hass(h) {
@@ -284,6 +287,35 @@ class DoormanUsersTab extends HTMLElement {
     return { label: "Active", cls: "badge-active" };
   }
 
+  _sortedFilteredUsers() {
+    const q = this._filter.toLowerCase();
+    let users = q
+      ? (this._users || []).filter(u => (u.name || "").toLowerCase().includes(q))
+      : (this._users || []).slice();
+    users.sort((a, b) => {
+      let va, vb;
+      if (this._sortKey === "name") {
+        va = (a.name || "").toLowerCase(); vb = (b.name || "").toLowerCase();
+      } else if (this._sortKey === "last_access") {
+        va = a.last_access || ""; vb = b.last_access || "";
+      } else if (this._sortKey === "access") {
+        va = this._accessStatus(a).label; vb = this._accessStatus(b).label;
+      } else {
+        va = ""; vb = "";
+      }
+      if (va < vb) return this._sortAsc ? -1 : 1;
+      if (va > vb) return this._sortAsc ? 1 : -1;
+      return 0;
+    });
+    return users;
+  }
+
+  _sortHeader(key, label) {
+    const active = this._sortKey === key;
+    const arrow = active ? (this._sortAsc ? " ▲" : " ▼") : "";
+    return `<th class="sortable${active ? " sort-active" : ""}" data-sort="${key}" style="cursor:pointer;user-select:none">${label}${arrow}</th>`;
+  }
+
   _render() {
     // Wipe shadow DOM — any previously appended drawer is now detached, so clear the reference
     // to ensure it's recreated fresh on the next open call.
@@ -292,12 +324,18 @@ class DoormanUsersTab extends HTMLElement {
     shadow.innerHTML = `
       <style>
         ${BASE_CSS}
-        .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
         .toolbar h2 { margin: 0; font-size: 16px; font-weight: 500; }
+        .search-row { display: flex; gap: 8px; margin-bottom: 16px; }
+        .search-input { flex: 1; padding: 7px 10px; border: 1px solid var(--divider-color);
+          border-radius: 4px; background: var(--card-background-color, white);
+          color: var(--primary-text-color); font-size: 13px; }
         .perm-warning { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px;
           background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px;
           color: #5d4037; font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
         .perm-warning svg { flex-shrink: 0; margin-top: 1px; }
+        th.sortable:hover { color: var(--primary-color); }
+        th.sort-active { color: var(--primary-color); }
       </style>
       <div class="toolbar">
         <h2>Directory Users</h2>
@@ -333,17 +371,49 @@ class DoormanUsersTab extends HTMLElement {
       return;
     }
 
+    // Search box — preserved across re-renders via _filter state
+    const searchRow = document.createElement("div");
+    searchRow.className = "search-row";
+    searchRow.innerHTML = `<input class="search-input" id="search" type="search" placeholder="Filter by name…" value="${this._filter}" />`;
+    content.appendChild(searchRow);
+    const searchInput = searchRow.querySelector("#search");
+    searchInput.addEventListener("input", e => {
+      this._filter = e.target.value;
+      this._rebuildTable(content);
+    });
+    // Focus at end so cursor lands after existing text
+    searchInput.setSelectionRange(this._filter.length, this._filter.length);
+
+    this._rebuildTable(content);
+  }
+
+  _rebuildTable(content) {
+    content.querySelector("table")?.remove();
+    const users = this._sortedFilteredUsers();
+
+    if (!users.length) {
+      let empty = content.querySelector(".filter-empty");
+      if (!empty) {
+        empty = document.createElement("div");
+        empty.className = "filter-empty empty";
+        content.appendChild(empty);
+      }
+      empty.textContent = `No users match "${this._filter}".`;
+      return;
+    }
+    content.querySelector(".filter-empty")?.remove();
+
     const table = document.createElement("table");
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Access</th>
+          ${this._sortHeader("name", "Name")}
+          ${this._sortHeader("access", "Access")}
           <th>PIN</th>
           <th>Cards</th>
           <th>Codes</th>
           <th>Valid Until</th>
-          <th>Last Used</th>
+          ${this._sortHeader("last_access", "Last Used")}
           <th>HA User</th>
           <th title="Notifications" style="text-align:center">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle">
@@ -354,7 +424,7 @@ class DoormanUsersTab extends HTMLElement {
         </tr>
       </thead>
       <tbody>
-        ${this._users.map(u => {
+        ${users.map(u => {
           const hasTargets = (u.notification_targets || []).length > 0;
           const access = this._accessStatus(u);
           return `
@@ -394,6 +464,18 @@ class DoormanUsersTab extends HTMLElement {
     `;
     content.appendChild(table);
 
+    table.querySelectorAll(".sortable").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (this._sortKey === key) {
+          this._sortAsc = !this._sortAsc;
+        } else {
+          this._sortKey = key;
+          this._sortAsc = true;
+        }
+        this._rebuildTable(content);
+      });
+    });
     table.querySelectorAll(".edit-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         const user = this._users.find(u => u.uuid === btn.dataset.uuid);
