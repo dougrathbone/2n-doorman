@@ -52,8 +52,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
-        self._last_access: dict[str, str] = {}  # user UUID → utcTime of last successful access
+        self._last_access: dict[str, str] = {}
         self._pending_access_saves: list[tuple[str, str]] = []
+        self._log_task: asyncio.Task | None = None
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information and check write permissions at startup."""
@@ -69,31 +70,74 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "or enable Directory write access in: Settings → Services → HTTP API → Users."
             )
 
+    def start_log_listener(self) -> None:
+        """Start the background long-poll log listener task."""
+        if self._log_task and not self._log_task.done():
+            return
+        self._log_task = self.hass.async_create_background_task(
+            self._log_listener_loop(),
+            name=f"doorman_log_listener_{self.config_entry.entry_id}",
+        )
+
+    async def async_shutdown(self) -> None:
+        """Cancel the log listener task on unload."""
+        if self._log_task and not self._log_task.done():
+            self._log_task.cancel()
+            try:
+                await self._log_task
+            except asyncio.CancelledError:
+                pass
+        await super().async_shutdown()
+
+    async def _log_listener_loop(self) -> None:
+        """Long-poll the device log and fire HA events as they arrive.
+
+        Uses a 20 s server-side timeout so events are surfaced within 20 s
+        rather than waiting for the next scheduled coordinator poll.  The loop
+        runs indefinitely; transient errors trigger a 5 s back-off.
+        """
+        while True:
+            try:
+                events = await self.client.pull_log(server_timeout=20)
+            except asyncio.CancelledError:
+                return
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Doorman log listener error (%s). Retrying in 5 s.", err
+                )
+                await asyncio.sleep(5)
+                continue
+
+            if not events:
+                continue
+
+            self._fire_new_access_events(events)
+            self._log_buffer = (events + self._log_buffer)[: self._log_buffer_max]
+
+            # Persist last_access entries collected by _fire_new_access_events
+            if self._pending_access_saves:
+                store = self.hass.data.get(f"{DOMAIN}_store")
+                if store:
+                    for uuid, utc_time in self._pending_access_saves:
+                        await store.update_last_access(uuid, utc_time)
+                self._pending_access_saves.clear()
+
+            # Push an update to all listeners so the log tab refreshes immediately
+            if self.data is not None:
+                self.async_set_updated_data(
+                    {**self.data, "log_events": self._log_buffer, "last_access": self._last_access}
+                )
+
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            users, switches, log_events = await asyncio.gather(
+            users, switches = await asyncio.gather(
                 self.client.query_users(),
                 self.client.get_switch_status(),
-                self.client.pull_log(),
             )
         except DoormanAuthError as err:
             raise ConfigEntryAuthFailed from err
         except DoormanApiError as err:
             raise UpdateFailed(f"2N API error: {err}") from err
-
-        self._fire_new_access_events(log_events)
-
-        # Persist any newly recorded last-access times to the store
-        if self._pending_access_saves:
-            store = self.hass.data.get(f"{DOMAIN}_store")
-            if store:
-                for uuid, utc_time in self._pending_access_saves:
-                    await store.update_last_access(uuid, utc_time)
-            self._pending_access_saves.clear()
-
-        # Accumulate events into the rolling buffer (newest first, capped at max)
-        if log_events:
-            self._log_buffer = (log_events + self._log_buffer)[: self._log_buffer_max]
 
         return {
             "users": users,
@@ -104,11 +148,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
-        """Fire HA bus events for log entries returned since the last poll.
-
-        The log subscription on the device tracks the watermark, so every
-        event returned here is new — no client-side deduplication needed.
-        """
+        """Fire HA bus events for log entries returned since the last poll."""
         for event in events:
             event_type = event.get("event", "")
             if event_type in ACCESS_EVENTS:

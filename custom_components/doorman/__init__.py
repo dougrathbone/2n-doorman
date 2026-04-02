@@ -59,14 +59,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DoormanCoordinator(hass, entry, client)
     await coordinator.async_init_device_info()
     await coordinator.async_config_entry_first_refresh()
+    coordinator.start_log_listener()
 
     if not coordinator.has_write_permission:
+        device_name = coordinator.device_info.get("deviceName") or entry.data[CONF_HOST]
         pn_create(
             hass,
             (
-                "The Doorman API user (`"
-                f"{entry.data[CONF_USERNAME]}`"
-                ") cannot write to the 2N device directory. "
+                f"The Doorman API user (`{entry.data[CONF_USERNAME]}`) on "
+                f"**{device_name}** cannot write to the 2N device directory. "
                 "Create, edit and delete operations will be unavailable.\n\n"
                 "**How to fix:** In the 2N web interface go to "
                 "**Services → HTTP API**, find the API user, and enable "
@@ -75,8 +76,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "require the System – Control privilege. Access log, switch control, "
                 "and user viewing will continue to work in the meantime."
             ),
-            title="Doorman: directory write unavailable",
-            notification_id=f"{DOMAIN}_no_write_permission",
+            title=f"Doorman: directory write unavailable ({device_name})",
+            notification_id=f"{DOMAIN}_no_write_permission_{entry.entry_id}",
         )
 
     store = DoormanStore(hass)
@@ -119,6 +120,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        await coordinator.async_shutdown()
         await coordinator.client.async_close()
         if not hass.data[DOMAIN]:
             async_remove_panel(hass, DOMAIN)
@@ -138,6 +140,8 @@ def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoord
         if device not in entries:
             raise ServiceValidationError(f"Unknown Doorman device: {device}")
         return entries[device]
+    if len(entries) == 0:
+        raise ServiceValidationError("No Doorman devices are configured.")
     if len(entries) == 1:
         return next(iter(entries.values()))
     raise ServiceValidationError(

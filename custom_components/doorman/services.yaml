@@ -4,6 +4,10 @@ create_user:
       required: true
       selector:
         text:
+    enabled:
+      required: false
+      selector:
+        boolean:
     pin:
       required: false
       selector:
@@ -28,7 +32,8 @@ create_user:
     device:
       required: false
       selector:
-        text:
+        config_entry:
+          integration: doorman
 
 update_user:
   fields:
@@ -40,6 +45,10 @@ update_user:
       required: false
       selector:
         text:
+    enabled:
+      required: false
+      selector:
+        boolean:
     pin:
       required: false
       selector:
@@ -53,10 +62,19 @@ update_user:
       required: false
       selector:
         text:
+    valid_from:
+      required: false
+      selector:
+        datetime:
+    valid_to:
+      required: false
+      selector:
+        datetime:
     device:
       required: false
       selector:
-        text:
+        config_entry:
+          integration: doorman
 
 delete_user:
   fields:
@@ -67,7 +85,8 @@ delete_user:
     device:
       required: false
       selector:
-        text:
+        config_entry:
+          integration: doorman
 
 grant_access:
   fields:
@@ -79,7 +98,12 @@ grant_access:
           min: 1
           max: 32
           mode: box
-    device:
+    user_uuid:
       required: false
       selector:
         text:
+    device:
+      required: false
+      selector:
+        config_entry:
+          integration: doorman

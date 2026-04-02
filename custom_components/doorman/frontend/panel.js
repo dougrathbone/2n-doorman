@@ -897,8 +897,14 @@ class DoormanPanel extends HTMLElement {
     try {
       const res = await ws(this._hass, "doorman/list_devices");
       this._devices = res.devices || [];
-      if (this._devices.length > 0 && !this._selectedEntryId) {
-        this._selectedEntryId = this._devices[0].entry_id;
+      if (this._devices.length > 0) {
+        // Restore last selection from localStorage, falling back to the first device
+        const saved = localStorage.getItem("doorman_selected_entry_id");
+        if (saved && this._devices.some(d => d.entry_id === saved)) {
+          this._selectedEntryId = saved;
+        } else {
+          this._selectedEntryId = this._devices[0].entry_id;
+        }
       }
       this._renderShell();
     } catch (e) {
@@ -981,11 +987,7 @@ class DoormanPanel extends HTMLElement {
           <path d="M18,8H17V6A5,5 0 0,0 12,1A5,5 0 0,0 7,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17M15.1,8H8.9V6A3.1,3.1 0 0,1 12,2.9A3.1,3.1 0 0,1 15.1,6V8Z"/>
         </svg>
         <h1>Doorman</h1>
-        ${this._devices.length > 1 ? `
-          <select class="device-select" id="device-select">
-            ${this._devices.map(d => `<option value="${d.entry_id}"${d.entry_id === this._selectedEntryId ? " selected" : ""}>${d.device_name || d.serial_number}</option>`).join("")}
-          </select>
-        ` : ""}
+        ${this._devices.length > 1 ? `<select class="device-select" id="device-select"></select>` : ""}
       </div>
       <div class="tabs">
         ${tabs.map(t => `<div class="tab${this._tab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("")}
@@ -1004,10 +1006,23 @@ class DoormanPanel extends HTMLElement {
         this._renderShell();
       });
     });
-    this.shadowRoot.getElementById("device-select")?.addEventListener("change", (e) => {
-      this._selectedEntryId = e.target.value;
-      this._mountTab();
-    });
+
+    // Populate device selector safely (device names/serials are untrusted)
+    const deviceSelect = this.shadowRoot.getElementById("device-select");
+    if (deviceSelect) {
+      for (const d of this._devices) {
+        const opt = document.createElement("option");
+        opt.value = d.entry_id;
+        opt.textContent = d.device_name || d.serial_number;
+        if (d.entry_id === this._selectedEntryId) opt.selected = true;
+        deviceSelect.appendChild(opt);
+      }
+      deviceSelect.addEventListener("change", (e) => {
+        this._selectedEntryId = e.target.value;
+        localStorage.setItem("doorman_selected_entry_id", this._selectedEntryId);
+        this._mountTab();
+      });
+    }
 
     this._mountTab();
   }

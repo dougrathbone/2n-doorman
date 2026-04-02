@@ -117,7 +117,22 @@ if _PAHCC_AVAILABLE:
         mock.check_directory_write_permission = AsyncMock(return_value=True)
         mock.query_users = AsyncMock(return_value=MOCK_USERS)
         mock.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-        mock.pull_log = AsyncMock(return_value=MOCK_LOG_EVENTS)
+        # pull_log simulates long-poll: returns events on the first call, then
+        # blocks indefinitely (mimicking the device holding the connection open).
+        # Using asyncio.sleep inside the side_effect keeps the background task
+        # alive but idle so it doesn't spin and interfere with test assertions.
+        import asyncio as _asyncio
+        _pull_log_calls = 0
+
+        async def _pull_log_side_effect(server_timeout=0):
+            nonlocal _pull_log_calls
+            _pull_log_calls += 1
+            if _pull_log_calls == 1:
+                return MOCK_LOG_EVENTS
+            await _asyncio.sleep(9999)
+            return []
+
+        mock.pull_log = _pull_log_side_effect
         mock.get_switch_caps = AsyncMock(return_value=MOCK_SWITCHES)
         mock.create_user = AsyncMock(return_value={"uuid": "uuid-new", "name": "New User"})
         mock.update_user = AsyncMock(return_value=None)

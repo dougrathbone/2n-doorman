@@ -8,7 +8,9 @@
       "WebFetch(domain:wiki.2n.com)",
       "Bash(curl -s https://api.github.com/repos/cbergmann/2n_intercom/contents/)",
       "Bash(gh pr:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(python3 -m pytest tests/test_coordinator.py -x --tb=short)",
+      "Bash(sort -t. -k1)"
     ]
   }
 }

@@ -157,10 +157,11 @@ class TwoNApiClient:
         endpoint: str,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        request_timeout: int = 10,
     ) -> dict[str, Any]:
         url = f"{self._base_url}/api/{endpoint}"
         ssl_ctx = self._ssl_context()
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(total=request_timeout)
         try:
             # First attempt — no auth header (some endpoints need no auth)
             async with self._session.request(
@@ -421,20 +422,26 @@ class TwoNApiClient:
         self._log_subscription_id = sub_id
         return sub_id
 
-    async def pull_log(self) -> list[dict[str, Any]]:
-        """Pull log events since the last call (subscription-based, non-blocking).
+    async def pull_log(self, server_timeout: int = 0) -> list[dict[str, Any]]:
+        """Pull log events since the last call (subscription-based).
 
-        On the first call a subscription is created automatically.  If the
-        device reports an invalid subscription ID (e.g. after a device
-        reboot) the subscription is transparently renewed.
+        ``server_timeout`` controls how long the 2N device holds the HTTP
+        connection open waiting for events before returning an empty list.
+        Use ``server_timeout=0`` for a non-blocking instant check (the
+        original behaviour).  Use a value such as ``20`` for long-polling:
+        the device returns as soon as any event arrives, or after 20 s with
+        an empty list.  The client-side aiohttp timeout is set to
+        ``server_timeout + 10`` so it always exceeds the server-side wait.
         """
         if self._log_subscription_id is None:
             await self._subscribe_log()
 
+        client_timeout = max(10, server_timeout + 10)
         try:
             data = await self._request(
                 "GET", "log/pull",
-                params={"id": self._log_subscription_id, "timeout": 0},
+                params={"id": self._log_subscription_id, "timeout": server_timeout},
+                request_timeout=client_timeout,
             )
         except DoormanApiError as err:
             # Error code 12 = invalid subscription id (subscription expired or device rebooted)
@@ -442,7 +449,8 @@ class TwoNApiClient:
                 await self._subscribe_log()
                 data = await self._request(
                     "GET", "log/pull",
-                    params={"id": self._log_subscription_id, "timeout": 0},
+                    params={"id": self._log_subscription_id, "timeout": server_timeout},
+                    request_timeout=client_timeout,
                 )
             else:
                 raise
