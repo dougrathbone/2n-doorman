@@ -32,7 +32,8 @@
         "card": { "name": "Card ID", "description": "RFID card UID (hex string)." },
         "code": { "name": "Switch code", "description": "Switch activation code (2–15 digits)." },
         "valid_from": { "name": "Valid from", "description": "Start of access validity window." },
-        "valid_to": { "name": "Valid until", "description": "End of access validity window." }
+        "valid_to": { "name": "Valid until", "description": "End of access validity window." },
+        "device": { "name": "Device", "description": "Config entry ID of the target device (required when multiple devices are configured)." }
       }
     },
     "update_user": {
@@ -43,21 +44,24 @@
         "name": { "name": "Name", "description": "Updated display name." },
         "pin": { "name": "PIN", "description": "New PIN code." },
         "card": { "name": "Card ID", "description": "New RFID card UID." },
-        "code": { "name": "Switch code", "description": "New switch activation code." }
+        "code": { "name": "Switch code", "description": "New switch activation code." },
+        "device": { "name": "Device", "description": "Config entry ID of the target device." }
       }
     },
     "delete_user": {
       "name": "Delete user",
       "description": "Remove a user from the 2N directory.",
       "fields": {
-        "uuid": { "name": "UUID", "description": "The user's unique ID." }
+        "uuid": { "name": "UUID", "description": "The user's unique ID." },
+        "device": { "name": "Device", "description": "Config entry ID of the target device." }
       }
     },
     "grant_access": {
       "name": "Grant access",
       "description": "Open an access point immediately.",
       "fields": {
-        "access_point_id": { "name": "Access point", "description": "Access point ID (default: 1)." }
+        "access_point_id": { "name": "Access point", "description": "Access point ID (default: 1)." },
+        "device": { "name": "Device", "description": "Config entry ID of the target device." }
       }
     }
   }
