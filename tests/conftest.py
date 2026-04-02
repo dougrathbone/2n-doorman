@@ -28,6 +28,8 @@ if _PAHCC_AVAILABLE:
     if _OUR_CC not in _cc_pkg.__path__:
         _cc_pkg.__path__.append(_OUR_CC)
 
+    from homeassistant.config_entries import ConfigEntryState
+
     from custom_components.doorman.const import (
         CONF_HOST,
         CONF_PASSWORD,
@@ -157,3 +159,30 @@ if _PAHCC_AVAILABLE:
             patch.object(hass, "http", mock_http, create=True),
         ):
             yield
+
+    # ─── Multi-device helpers ────────────────────────────────────────────────────
+
+    def second_doorman_entry() -> MockConfigEntry:
+        """Return a second MockConfigEntry with distinct connection details."""
+        return MockConfigEntry(
+            domain=DOMAIN,
+            title="Second Device",
+            data={
+                CONF_HOST: "192.168.1.200",
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "secret2",
+            },
+            unique_id="10-99999999",
+        )
+
+    async def setup_two_entries(hass, entry1):
+        """Add two config entries to hass and ensure both are loaded."""
+        entry2 = second_doorman_entry()
+        entry1.add_to_hass(hass)
+        entry2.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry1.entry_id)
+        await hass.async_block_till_done()
+        if entry2.state is not ConfigEntryState.LOADED:
+            await hass.config_entries.async_setup(entry2.entry_id)
+            await hass.async_block_till_done()
+        return entry1, entry2
