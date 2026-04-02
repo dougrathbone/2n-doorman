@@ -111,6 +111,8 @@ if _PAHCC_AVAILABLE:
         """
         mock = MagicMock()
         mock.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+        mock.load_dir_template = AsyncMock(return_value=None)
+        mock.check_directory_write_permission = AsyncMock(return_value=True)
         mock.query_users = AsyncMock(return_value=MOCK_USERS)
         mock.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
         mock.pull_log = AsyncMock(return_value=MOCK_LOG_EVENTS)

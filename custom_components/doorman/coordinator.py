@@ -49,12 +49,23 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.device_info: dict[str, Any] = {}
+        self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
 
     async def async_init_device_info(self) -> None:
-        """Fetch static device information once at startup."""
+        """Fetch static device information and check write permissions at startup."""
         self.device_info = await self.client.get_system_info()
+        await self.client.load_dir_template()
+        self.has_write_permission = await self.client.check_directory_write_permission()
+        if not self.has_write_permission:
+            _LOGGER.warning(
+                "Doorman: directory write is unavailable for the API user. "
+                "Create/update/delete operations will fail. "
+                "This may be a firmware limitation (the Directory service was added to the "
+                "2N HTTP API in a later firmware version). Check for a firmware update, "
+                "or enable Directory write access in: Settings → Services → HTTP API → Users."
+            )
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -78,6 +89,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "users": users,
             "switches": switches,
             "log_events": self._log_buffer,
+            "has_write_permission": self.has_write_permission,
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:

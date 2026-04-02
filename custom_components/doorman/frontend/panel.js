@@ -235,6 +235,7 @@ class DoormanUsersTab extends HTMLElement {
     this._users = null;
     this._haUsers = [];
     this._notifyServices = [];
+    this._writePermission = true;
     this._loading = true;
     this._error = null;
     this._drawer = null;
@@ -258,6 +259,7 @@ class DoormanUsersTab extends HTMLElement {
         ws(this._hass, "doorman/list_notify_services").catch(() => ({ services: [] })),
       ]);
       this._users = usersRes.users || [];
+      this._writePermission = usersRes.write_permission !== false;
       this._haUsers = haUsersRes.users || [];
       this._notifyServices = notifyRes.services || [];
     } catch (e) {
@@ -273,6 +275,7 @@ class DoormanUsersTab extends HTMLElement {
   }
 
   _accessStatus(u) {
+    if (u.enabled === false) return { label: "Disabled", cls: "badge-inactive" };
     const hasCredentials = u.pin || (u.card || []).filter(Boolean).length || (u.code || []).filter(Boolean).length;
     if (!hasCredentials) return { label: "No credentials", cls: "badge-inactive" };
     const now = Date.now() / 1000;
@@ -288,18 +291,30 @@ class DoormanUsersTab extends HTMLElement {
         ${BASE_CSS}
         .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
         .toolbar h2 { margin: 0; font-size: 16px; font-weight: 500; }
+        .perm-warning { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px;
+          background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px;
+          color: #5d4037; font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
+        .perm-warning svg { flex-shrink: 0; margin-top: 1px; }
       </style>
       <div class="toolbar">
         <h2>Directory Users</h2>
-        <button class="btn btn-primary" id="add-btn">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13H13V19H11V13H5V11H11V5H13V11H19V13Z"/></svg>
-          Add User
-        </button>
+        ${this._writePermission ? `
+          <button class="btn btn-primary" id="add-btn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 13H13V19H11V13H5V11H11V5H13V11H19V13Z"/></svg>
+            Add User
+          </button>` : ``}
       </div>
+      ${!this._writePermission ? `
+        <div class="perm-warning">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="#f57f17"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          <span><strong>Read-only mode</strong> — the API user lacks Directory write permissions on the 2N device.
+          Create, edit and delete are disabled. To fix this, enable Directory write access for the API user in the 2N web interface:
+          <em>Settings → Services → HTTP API → Users</em>.</span>
+        </div>` : ``}
       <div id="content"></div>
     `;
 
-    shadow.getElementById("add-btn").addEventListener("click", () => this._openAddDrawer());
+    shadow.getElementById("add-btn")?.addEventListener("click", () => this._openAddDrawer());
 
     const content = shadow.getElementById("content");
     if (this._loading) {
@@ -359,12 +374,13 @@ class DoormanUsersTab extends HTMLElement {
               </svg>
             </td>
             <td class="actions">
+              ${this._writePermission ? `
               <button class="icon-btn edit-btn" data-uuid="${u.uuid}" title="Edit">
                 <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
               </button>
               <button class="icon-btn del-btn" data-uuid="${u.uuid}" title="Delete">
                 <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
-              </button>
+              </button>` : ``}
             </td>
           </tr>
           `;
@@ -385,12 +401,17 @@ class DoormanUsersTab extends HTMLElement {
   }
 
   _buildUserForm(user = {}) {
+    const enabled = user.enabled !== false;
     const form = document.createElement("div");
     form.innerHTML = `
       <div class="field-group">
         <div class="field">
           <label>Name <span class="required">*</span></label>
           <input id="f-name" type="text" value="${user.name || ""}" placeholder="Jane Doe" required />
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+          <input id="f-enabled" type="checkbox" ${enabled ? "checked" : ""} style="width:16px;height:16px;cursor:pointer" />
+          <label for="f-enabled" style="font-size:13px;font-weight:normal;color:var(--primary-text-color);cursor:pointer;margin:0">Account enabled</label>
         </div>
         <div class="section-title">Credentials <span class="optional-hint">(all optional)</span></div>
         <div class="field">
@@ -408,11 +429,11 @@ class DoormanUsersTab extends HTMLElement {
         <div class="section-title">Validity</div>
         <div class="field">
           <label>Valid from</label>
-          <input id="f-valid-from" type="datetime-local" value="${user.validFrom ? new Date(user.validFrom * 1000).toISOString().slice(0,16) : ""}" />
+          <input id="f-valid-from" type="datetime-local" value="${user.validFrom ? (() => { const d = new Date(user.validFrom * 1000); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })() : ""}" />
         </div>
         <div class="field">
           <label>Valid until</label>
-          <input id="f-valid-to" type="datetime-local" value="${user.validTo ? new Date(user.validTo * 1000).toISOString().slice(0,16) : ""}" />
+          <input id="f-valid-to" type="datetime-local" value="${user.validTo ? (() => { const d = new Date(user.validTo * 1000); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })() : ""}" />
         </div>
         ${this._haUsers.length ? `
           <div class="section-title">Home Assistant</div>
@@ -455,7 +476,7 @@ class DoormanUsersTab extends HTMLElement {
     this._drawer.open("Add User", form, async () => {
       const name = form.querySelector("#f-name").value.trim();
       if (!name) { form.querySelector("#form-error").innerHTML = `<div class="error">Name is required.</div>`; return; }
-      const data = { name };
+      const data = { name, enabled: form.querySelector("#f-enabled").checked };
       const pin = form.querySelector("#f-pin").value.trim();
       if (pin) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
@@ -486,18 +507,21 @@ class DoormanUsersTab extends HTMLElement {
       const data = { uuid: user.uuid };
       const name = form.querySelector("#f-name").value.trim();
       if (!name) { form.querySelector("#form-error").innerHTML = `<div class="error">Name is required.</div>`; return; }
-      if (name !== (user.name || "")) data.name = name;
+      data.name = name; // always required by 2N API
+      data.enabled = form.querySelector("#f-enabled").checked;
       const pin = form.querySelector("#f-pin").value.trim();
       if (pin && pin !== (user.pin || "")) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
+      // Use local-time ISO for comparison — datetime-local inputs operate in local time
+      const toLocalISO = ts => { const d = new Date(ts * 1000); const p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
       const vf = form.querySelector("#f-valid-from")?.value;
-      const vfCurrent = user.validFrom ? new Date(user.validFrom * 1000).toISOString().slice(0, 16) : "";
+      const vfCurrent = user.validFrom ? toLocalISO(user.validFrom) : "";
       if (vf !== vfCurrent) data.valid_from = vf || undefined;
       const vt = form.querySelector("#f-valid-to")?.value;
-      const vtCurrent = user.validTo ? new Date(user.validTo * 1000).toISOString().slice(0, 16) : "";
+      const vtCurrent = user.validTo ? toLocalISO(user.validTo) : "";
       if (vt !== vtCurrent) data.valid_to = vt || undefined;
       try {
         await svc(this._hass, "update_user", data);

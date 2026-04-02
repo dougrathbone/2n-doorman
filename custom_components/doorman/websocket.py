@@ -60,7 +60,10 @@ def ws_list_users(
         }
         for user in coordinator.data.get("users", [])
     ]
-    connection.send_result(msg["id"], {"users": users})
+    connection.send_result(msg["id"], {
+        "users": users,
+        "write_permission": coordinator.has_write_permission,
+    })
 
 
 # ------------------------------------------------------------------ #
@@ -79,7 +82,10 @@ def ws_get_device_info(
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
-    connection.send_result(msg["id"], {"device_info": coordinator.device_info})
+    connection.send_result(msg["id"], {
+        "device_info": coordinator.device_info,
+        "write_permission": coordinator.has_write_permission,
+    })
 
 
 # ------------------------------------------------------------------ #

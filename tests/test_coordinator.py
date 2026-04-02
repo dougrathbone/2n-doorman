@@ -32,6 +32,8 @@ async def test_coordinator_fetch_returns_users_and_switches(
     """Coordinator returns users and switches from the device on a successful poll."""
     client = MagicMock()
     client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+    client.load_dir_template = AsyncMock(return_value=None)
+    client.check_directory_write_permission = AsyncMock(return_value=True)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
     client.pull_log = AsyncMock(return_value=[])
@@ -43,6 +45,7 @@ async def test_coordinator_fetch_returns_users_and_switches(
     assert coordinator.data["users"] == MOCK_USERS
     assert coordinator.data["switches"] == MOCK_SWITCHES
     assert coordinator.device_info == MOCK_DEVICE_INFO
+    assert coordinator.data["has_write_permission"] is True
 
 
 @pytest.mark.asyncio
@@ -88,6 +91,7 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
     """
     client = MagicMock()
     client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+    client.check_directory_write_permission = AsyncMock(return_value=True)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
     # First poll: no new events (subscription just established)
@@ -121,6 +125,7 @@ async def test_coordinator_no_events_when_pull_log_empty(
     """No bus events are fired when pull_log returns an empty list."""
     client = MagicMock()
     client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+    client.check_directory_write_permission = AsyncMock(return_value=True)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
     client.pull_log = AsyncMock(return_value=[])

@@ -1,6 +1,8 @@
 """Integration test — validates the full setup and teardown lifecycle."""
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -311,14 +313,14 @@ async def test_update_user_service_valid_from_to(
     mock_2n_client,
 ) -> None:
     """update_user with valid_from/valid_to converts datetimes to Unix timestamps."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     doorman_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    valid_from = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    valid_to = datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    valid_from = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    valid_to = datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
 
     await hass.services.async_call(
         DOMAIN,
@@ -362,14 +364,14 @@ async def test_update_user_service_all_fields(
     mock_2n_client,
 ) -> None:
     """update_user with all fields sends the complete payload correctly."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     doorman_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    valid_from = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
-    valid_to = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+    valid_from = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
+    valid_to = datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC)
 
     await hass.services.async_call(
         DOMAIN,

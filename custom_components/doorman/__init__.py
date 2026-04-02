@@ -8,6 +8,7 @@ import voluptuous as vol
 from homeassistant.components import panel_custom
 from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
@@ -56,6 +57,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DoormanCoordinator(hass, entry, client)
     await coordinator.async_init_device_info()
     await coordinator.async_config_entry_first_refresh()
+
+    if not coordinator.has_write_permission:
+        pn_create(
+            hass,
+            (
+                "The Doorman API user (`"
+                f"{entry.data[CONF_USERNAME]}`"
+                ") cannot write to the 2N device directory. "
+                "Create, edit and delete operations will be unavailable.\n\n"
+                "**How to fix:** In the 2N web interface go to "
+                "**Services → HTTP API**, find the API user, and enable "
+                "**System API** with **Control** access (not just Monitoring). "
+                "All directory write operations (`dir/create`, `dir/update`, `dir/delete`) "
+                "require the System – Control privilege. Access log, switch control, "
+                "and user viewing will continue to work in the meantime."
+            ),
+            title="Doorman: directory write unavailable",
+            notification_id=f"{DOMAIN}_no_write_permission",
+        )
 
     store = DoormanStore(hass)
     await store.async_load()
@@ -108,6 +128,8 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
 
     async def handle_create_user(call: ServiceCall) -> None:
         user: dict = {"name": call.data["name"]}
+        if "enabled" in call.data:
+            user["enabled"] = call.data["enabled"]
         if pin := call.data.get("pin"):
             user["pin"] = pin
         if card := call.data.get("card"):
@@ -126,6 +148,8 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         for field in ("name", "pin"):
             if field in call.data and call.data[field]:
                 user[field] = call.data[field]
+        if "enabled" in call.data:
+            user["enabled"] = call.data["enabled"]
         if "card" in call.data:
             user["card"] = [call.data["card"]] if call.data["card"] else []
         if "code" in call.data:
@@ -158,6 +182,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
         schema=vol.Schema(
             {
                 vol.Required("name"): cv.string,
+                vol.Optional("enabled"): cv.boolean,
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,
@@ -174,6 +199,7 @@ def _register_services(hass: HomeAssistant, coordinator: DoormanCoordinator) -> 
             {
                 vol.Required("uuid"): cv.string,
                 vol.Optional("name"): cv.string,
+                vol.Optional("enabled"): cv.boolean,
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,

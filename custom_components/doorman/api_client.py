@@ -24,6 +24,24 @@ class DoormanConnectionError(DoormanApiError):
     """Cannot reach the device."""
 
 
+def _raise_api_error(err: dict, raw: dict) -> None:
+    """Raise the appropriate exception for a 2N API error response.
+
+    Error code 10 is the standard "insufficient user privileges" error — the
+    HTTP API user lacks System – Control privilege for directory write operations.
+    """
+    code = err.get("code")
+    param = err.get("param", "")
+    if code == 10:
+        raise DoormanAuthError(
+            "Directory write unavailable — the HTTP API user lacks System – Control "
+            "privilege. In the 2N web UI go to Services → HTTP API → [username] and "
+            "enable System API with Control (not just Monitoring) access."
+        )
+    param_info = f" (param={param!r})" if param else ""
+    raise DoormanApiError(f"API error {code}{param_info}: {err.get('description', raw)}")
+
+
 class TwoNApiClient:
     """Async wrapper around the 2N IP intercom HTTP API.
 
@@ -68,6 +86,9 @@ class TwoNApiClient:
 
         # Plain session — we handle Digest auth manually in _request
         self._session = aiohttp.ClientSession()
+        # Number of access points on this device — loaded from dir/template at startup.
+        # 2N devices control per-user enabled/disabled via access.accessPoints[N].enabled.
+        self._access_point_count: int = 2
 
     async def async_close(self) -> None:
         """Close the underlying session. Call from async_unload_entry."""
@@ -175,9 +196,11 @@ class TwoNApiClient:
                         data: dict = await resp2.json()
                         if not data.get("success", True):
                             err = data.get("error", {})
-                            raise DoormanApiError(
-                                f"API error {err.get('code')}: {err.get('description', data)}"
+                            _LOGGER.debug(
+                                "%s %s failed — request body: %s — raw response: %s",
+                                method, endpoint, json, data,
                             )
+                            _raise_api_error(err, data)
                         return data
 
                 if resp.status == 403:
@@ -188,9 +211,11 @@ class TwoNApiClient:
                 data = await resp.json()
                 if not data.get("success", True):
                     err = data.get("error", {})
-                    raise DoormanApiError(
-                        f"API error {err.get('code')}: {err.get('description', data)}"
+                    _LOGGER.debug(
+                        "%s %s failed — request body: %s — raw response: %s",
+                        method, endpoint, json, data,
                     )
+                    _raise_api_error(err, data)
                 return data
         except aiohttp.ClientConnectorError as err:
             raise DoormanConnectionError(
@@ -210,6 +235,43 @@ class TwoNApiClient:
         data = await self._request("GET", "system/info")
         return data.get("result", {})
 
+    async def check_directory_write_permission(self) -> bool:
+        """Return True if the API user has directory write (create/update/delete) access.
+
+        Sends a dir/update with a deliberately invalid UUID. The 2N device
+        returns code 10 when the user lacks System – Control privilege; any
+        other response (e.g. user-not-found) confirms that write access is granted.
+        """
+        try:
+            await self._request(
+                "PUT", "dir/update", json={"users": [{"uuid": "__permission_check__"}]}
+            )
+            return True  # unexpected success — write access confirmed
+        except DoormanAuthError:
+            return False  # code 10 → no System – Control privilege
+        except DoormanApiError:
+            return True  # any other API error → write access present, UUID just invalid
+
+    async def load_dir_template(self) -> None:
+        """Fetch the directory template and cache the number of access points for this device.
+
+        Called once at startup so that _nest_user knows how many accessPoints entries
+        to generate when enabling/disabling a user.  Failure is non-fatal — the default
+        of 2 is used if the template cannot be read.
+        """
+        try:
+            template = await self.get_dir_template()
+            template_user = (template.get("users") or [{}])[0]
+            ap_list = template_user.get("access", {}).get("accessPoints", [])
+            if ap_list:
+                self._access_point_count = len(ap_list)
+                _LOGGER.debug("Doorman: device has %d access point(s)", self._access_point_count)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Doorman: could not read dir/template; defaulting to %d access point(s)",
+                self._access_point_count,
+            )
+
     # ------------------------------------------------------------------ #
     # Directory — users & credentials (/api/dir/*)                        #
     # ------------------------------------------------------------------ #
@@ -221,9 +283,22 @@ class TwoNApiClient:
 
     @staticmethod
     def _flatten_user(raw: dict[str, Any]) -> dict[str, Any]:
-        """Flatten 2N user record: promote access.{pin,card,code,validFrom,validTo} to top level."""
+        """Flatten 2N user record: promote access.{pin,card,code,validFrom,validTo} to top level.
+
+        The 2N device controls enabled/disabled per access point via
+        access.accessPoints[N].enabled — there is no top-level access.enabled field.
+        A user is considered disabled only when ALL explicitly-configured access points
+        are disabled; otherwise they are enabled.
+        """
         user = dict(raw)
         access = user.pop("access", {}) or {}
+        # Derive the logical enabled state from accessPoints
+        access_points = access.get("accessPoints", [])
+        configured = [ap for ap in access_points if isinstance(ap, dict)]
+        if configured and all(ap.get("enabled", True) is False for ap in configured):
+            user["enabled"] = False
+        else:
+            user["enabled"] = True
         user.setdefault("pin", access.get("pin", ""))
         user.setdefault("card", access.get("card", []))
         user.setdefault("code", access.get("code", []))
@@ -235,10 +310,19 @@ class TwoNApiClient:
         return user
 
     @staticmethod
-    def _nest_user(flat: dict[str, Any]) -> dict[str, Any]:
-        """Inverse of _flatten_user: build the nested access sub-object for dir/create and dir/update."""
-        user = {k: v for k, v in flat.items() if k not in ("pin", "card", "code", "validFrom", "validTo")}
+    def _nest_user(flat: dict[str, Any], access_point_count: int = 2) -> dict[str, Any]:
+        """Inverse of _flatten_user: build the nested access sub-object for dir/create and dir/update.
+
+        The 2N device does not have an access.enabled field.  Enable/disable is
+        controlled per access point via access.accessPoints[N].enabled.  When the
+        caller supplies an 'enabled' value we map it to all access points; omitting
+        it leaves the device's existing accessPoints configuration untouched.
+        """
+        user = {k: v for k, v in flat.items() if k not in ("pin", "card", "code", "validFrom", "validTo", "enabled")}
         access: dict[str, Any] = {}
+        if "enabled" in flat:
+            # Set all access points to the same enabled state
+            access["accessPoints"] = [{"enabled": flat["enabled"]} for _ in range(access_point_count)]
         if flat.get("pin"):
             access["pin"] = flat["pin"]
         if flat.get("card"):
@@ -265,18 +349,22 @@ class TwoNApiClient:
 
     async def create_user(self, user: dict[str, Any]) -> dict[str, Any]:
         """Create a new directory entry. Returns the record with server-assigned UUID."""
-        data = await self._request("PUT", "dir/create", json={"user": self._nest_user(user)})
-        return self._flatten_user(data.get("result", {}))
+        data = await self._request(
+            "PUT", "dir/create",
+            json={"users": [self._nest_user(user, self._access_point_count)]},
+        )
+        created = (data.get("result", {}).get("users") or [{}])[0]
+        return {**user, "uuid": created.get("uuid", "")}
 
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""
-        payload = self._nest_user(user)
+        payload = self._nest_user(user, self._access_point_count)
         _LOGGER.debug("dir/update payload: %s", payload)
-        await self._request("PUT", "dir/update", json={"user": payload})
+        await self._request("PUT", "dir/update", json={"users": [payload]})
 
     async def delete_user(self, uuid: str) -> None:
         """Delete a directory entry by UUID."""
-        await self._request("PUT", "dir/delete", json={"uuid": uuid})
+        await self._request("PUT", "dir/delete", json={"users": [{"uuid": uuid}]})
 
     # ------------------------------------------------------------------ #
     # Switches / relays (/api/switch/*)                                    #
