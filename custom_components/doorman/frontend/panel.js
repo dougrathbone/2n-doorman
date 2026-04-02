@@ -285,6 +285,9 @@ class DoormanUsersTab extends HTMLElement {
   }
 
   _render() {
+    // Wipe shadow DOM — any previously appended drawer is now detached, so clear the reference
+    // to ensure it's recreated fresh on the next open call.
+    this._drawer = null;
     const shadow = this.shadowRoot;
     shadow.innerHTML = `
       <style>
@@ -341,7 +344,7 @@ class DoormanUsersTab extends HTMLElement {
           <th>Codes</th>
           <th>Valid Until</th>
           <th>HA User</th>
-          <th title="Notifications">
+          <th title="Notifications" style="text-align:center">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle">
               <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
             </svg>
@@ -661,6 +664,7 @@ class DoormanDeviceTab extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._info = null;
+    this._users = [];
     this._loading = true;
   }
 
@@ -671,8 +675,12 @@ class DoormanDeviceTab extends HTMLElement {
     this._loading = true;
     this._render();
     try {
-      const res = await ws(this._hass, "doorman/get_device_info");
-      this._info = res.device_info || {};
+      const [infoRes, usersRes] = await Promise.all([
+        ws(this._hass, "doorman/get_device_info"),
+        ws(this._hass, "doorman/list_users"),
+      ]);
+      this._info = infoRes.device_info || {};
+      this._users = usersRes.users || [];
     } finally {
       this._loading = false;
       this._render();
@@ -681,6 +689,9 @@ class DoormanDeviceTab extends HTMLElement {
 
   _render() {
     const info = this._info || {};
+    const userOptions = this._users
+      .map(u => `<option value="${u.uuid}">${u.name || u.uuid}</option>`)
+      .join("");
     this.shadowRoot.innerHTML = `
       <style>
         ${BASE_CSS}
@@ -692,6 +703,9 @@ class DoormanDeviceTab extends HTMLElement {
         .info-label { font-size: 13px; color: var(--secondary-text-color); }
         .info-value { font-size: 13px; font-weight: 500; }
         .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        select { width: 100%; padding: 8px 10px; border: 1px solid var(--divider-color);
+          border-radius: 4px; background: var(--card-background-color, white);
+          color: var(--primary-text-color); font-size: 13px; margin-bottom: 12px; }
       </style>
       ${this._loading ? `<div class="loading">Loading device info…</div>` : `
         <div class="card">
@@ -713,6 +727,12 @@ class DoormanDeviceTab extends HTMLElement {
             Grant immediate access through access point 1, bypassing credential checks.
             Use with care.
           </p>
+          ${this._users.length > 0 ? `
+          <select id="grant-user">
+            <option value="">Select user…</option>
+            ${userOptions}
+          </select>
+          ` : ``}
           <div class="btn-row">
             <button class="btn btn-primary" id="grant-btn">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
@@ -725,8 +745,16 @@ class DoormanDeviceTab extends HTMLElement {
       `}
     `;
     this.shadowRoot.getElementById("grant-btn")?.addEventListener("click", async () => {
+      const userSelect = this.shadowRoot.getElementById("grant-user");
+      const userUuid = userSelect?.value || "";
+      if (userSelect && !userUuid) {
+        alert("Please select a user to grant access to.");
+        return;
+      }
       try {
-        await svc(this._hass, "grant_access", { access_point_id: 1 });
+        const params = { access_point_id: 1 };
+        if (userUuid) params.user_uuid = userUuid;
+        await svc(this._hass, "grant_access", params);
       } catch (e) {
         alert(`Failed: ${e.message}`);
       }
