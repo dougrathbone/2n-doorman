@@ -49,6 +49,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.device_info: dict[str, Any] = {}
+        self.access_points: list[dict[str, Any]] = []
         self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
@@ -61,6 +62,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_info = await self.client.get_system_info()
         await self.client.load_dir_template()
         self.has_write_permission = await self.client.check_directory_write_permission()
+        self.access_points: list[dict[str, Any]] = await self.client.get_access_point_caps()
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "

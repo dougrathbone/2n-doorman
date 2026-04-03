@@ -22,6 +22,17 @@
       "already_configured": "This device is already configured."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Doorman options",
+        "data": {
+          "poll_interval": "Poll interval (seconds)"
+        },
+        "description": "Adjust how often Doorman polls the device for user and switch updates. Access events are delivered via long-polling regardless of this setting."
+      }
+    }
+  },
   "services": {
     "create_user": {
       "name": "Create user",

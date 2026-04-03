@@ -125,6 +125,7 @@ def ws_get_device_info(
     connection.send_result(msg["id"], {
         "device_info": coordinator.device_info,
         "write_permission": coordinator.has_write_permission,
+        "access_points": coordinator.access_points,
     })
 
 

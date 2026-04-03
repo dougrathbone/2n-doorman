@@ -115,6 +115,7 @@ if _PAHCC_AVAILABLE:
         mock.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
         mock.load_dir_template = AsyncMock(return_value=None)
         mock.check_directory_write_permission = AsyncMock(return_value=True)
+        mock.get_access_point_caps = AsyncMock(return_value=[{"id": 1, "name": "Access point 1"}])
         mock.query_users = AsyncMock(return_value=MOCK_USERS)
         mock.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
         # pull_log simulates long-poll: returns events on the first call, then

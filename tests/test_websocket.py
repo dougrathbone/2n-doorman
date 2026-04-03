@@ -198,6 +198,29 @@ async def test_ws_get_access_log_invalid_entry_id(
 
 
 @pytest.mark.asyncio
+async def test_ws_get_device_info_includes_access_points(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """ws_get_device_info response includes the access_points list."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    conn = _mock_connection()
+    ws_get_device_info(hass, conn, {"id": 1, "entry_id": doorman_config_entry.entry_id})
+
+    conn.send_result.assert_called_once()
+    result = conn.send_result.call_args[0][1]
+    assert "access_points" in result
+    assert isinstance(result["access_points"], list)
+    assert len(result["access_points"]) >= 1
+    assert result["access_points"][0]["id"] == 1
+    assert result["access_points"][0]["name"] == "Access point 1"
+
+
+@pytest.mark.asyncio
 async def test_ws_get_device_info_without_entry_id(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,

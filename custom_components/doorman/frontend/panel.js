@@ -289,6 +289,12 @@ class DoormanUsersTab extends HTMLElement {
     return this._haUsers.find(u => u.id === id)?.name || id;
   }
 
+  _esc(str) {
+    return String(str ?? "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
   _accessStatus(u) {
     if (u.enabled === false) return { label: "Disabled", cls: "badge-inactive" };
     const hasCredentials = u.pin || (u.card || []).filter(Boolean).length || (u.code || []).filter(Boolean).length;
@@ -450,7 +456,7 @@ class DoormanUsersTab extends HTMLElement {
             <td style="color:var(--secondary-text-color);font-size:13px">${u.last_access ? formatDateTime(u.last_access) : "—"}</td>
             <td>
               ${u.ha_user_id
-                ? `<span class="ha-link">🏠 ${this._haUserName(u.ha_user_id)}</span>`
+                ? `<span class="ha-link"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>${this._esc(this._haUserName(u.ha_user_id))}</span>`
                 : `<span style="color:var(--disabled-color,#bbb)">—</span>`}
             </td>
             <td style="text-align:center">
@@ -538,10 +544,7 @@ class DoormanUsersTab extends HTMLElement {
           <div class="section-title">Home Assistant</div>
           <div class="field">
             <label>Link to HA user</label>
-            <select id="f-ha-user">
-              <option value="">— Not linked —</option>
-              ${this._haUsers.map(u => `<option value="${u.id}" ${user.ha_user_id === u.id ? "selected" : ""}>${u.name}</option>`).join("")}
-            </select>
+            <select id="f-ha-user"></select>
           </div>
         ` : ""}
         ${this._notifyServices.length ? `
@@ -549,20 +552,45 @@ class DoormanUsersTab extends HTMLElement {
           <div class="field">
             <label>Notify when this user opens the intercom</label>
             <div id="f-notify-targets" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-              ${this._notifyServices.map(svcName => {
-                const checked = (user.notification_targets || []).includes(svcName) ? "checked" : "";
-                const label = svcName.replace(/^notify\./, "");
-                return `<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:normal;color:var(--primary-text-color);cursor:pointer">
-                  <input type="checkbox" value="${svcName}" ${checked} style="width:16px;height:16px;cursor:pointer" />
-                  ${label}
-                </label>`;
-              }).join("")}
             </div>
           </div>
         ` : ""}
         <div id="form-error"></div>
       </div>
     `;
+    // Populate HA user select safely (HA usernames are untrusted text)
+    const haUserSel = form.querySelector("#f-ha-user");
+    if (haUserSel) {
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "\u2014 Not linked \u2014";
+      haUserSel.appendChild(none);
+      for (const u of this._haUsers) {
+        const opt = document.createElement("option");
+        opt.value = u.id;
+        opt.textContent = u.name;
+        if (user.ha_user_id === u.id) opt.selected = true;
+        haUserSel.appendChild(opt);
+      }
+    }
+    // Populate notification checkboxes safely
+    const notifyContainer = form.querySelector("#f-notify-targets");
+    if (notifyContainer) {
+      for (const svcName of this._notifyServices) {
+        const lbl = document.createElement("label");
+        lbl.style.cssText = "display:flex;align-items:center;gap:8px;font-size:13px;font-weight:normal;color:var(--primary-text-color);cursor:pointer";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = svcName;
+        cb.style.cssText = "width:16px;height:16px;cursor:pointer";
+        if ((user.notification_targets || []).includes(svcName)) cb.checked = true;
+        const span = document.createElement("span");
+        span.textContent = svcName.replace(/^notify\./, "");
+        lbl.appendChild(cb);
+        lbl.appendChild(span);
+        notifyContainer.appendChild(lbl);
+      }
+    }
     return form;
   }
 
@@ -763,6 +791,7 @@ class DoormanDeviceTab extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._info = null;
     this._users = [];
+    this._accessPoints = [];
     this._loading = true;
     this._entryId = null;
   }
@@ -780,6 +809,7 @@ class DoormanDeviceTab extends HTMLElement {
         ws(this._hass, "doorman/list_users", {}, this._entryId),
       ]);
       this._info = infoRes.device_info || {};
+      this._accessPoints = infoRes.access_points || [];
       this._users = usersRes.users || [];
     } finally {
       this._loading = false;
@@ -789,6 +819,7 @@ class DoormanDeviceTab extends HTMLElement {
 
   _render() {
     const info = this._info || {};
+    const multiAp = this._accessPoints.length > 1;
     this.shadowRoot.innerHTML = `
       <style>
         ${BASE_CSS}
@@ -821,9 +852,9 @@ class DoormanDeviceTab extends HTMLElement {
         <div class="card">
           <h3>Quick Access</h3>
           <p style="font-size:13px;color:var(--secondary-text-color);margin:0 0 12px">
-            Grant immediate access through access point 1, bypassing credential checks.
-            Use with care.
+            Grant immediate access, bypassing credential checks. Use with care.
           </p>
+          ${multiAp ? `<select id="grant-ap"></select>` : ``}
           ${this._users.length > 0 ? `<select id="grant-user"></select>` : ``}
           <div class="btn-row">
             <button class="btn btn-primary" id="grant-btn">
@@ -836,7 +867,17 @@ class DoormanDeviceTab extends HTMLElement {
         </div>
       `}
     `;
-    // Populate user select safely to avoid XSS from device-supplied user names/UUIDs
+    // Populate access point selector safely (names come from device)
+    const apSelect = this.shadowRoot.getElementById("grant-ap");
+    if (apSelect) {
+      for (const ap of this._accessPoints) {
+        const opt = document.createElement("option");
+        opt.value = String(ap.id);
+        opt.textContent = ap.name || `Access point ${ap.id}`;
+        apSelect.appendChild(opt);
+      }
+    }
+    // Populate user select safely (names/UUIDs come from device)
     const grantUserSelect = this.shadowRoot.getElementById("grant-user");
     if (grantUserSelect) {
       const placeholder = document.createElement("option");
@@ -851,6 +892,7 @@ class DoormanDeviceTab extends HTMLElement {
       }
     }
     this.shadowRoot.getElementById("grant-btn")?.addEventListener("click", async () => {
+      const apId = apSelect ? parseInt(apSelect.value, 10) : 1;
       const userSelect = this.shadowRoot.getElementById("grant-user");
       const userUuid = userSelect?.value || "";
       if (userSelect && !userUuid) {
@@ -858,7 +900,7 @@ class DoormanDeviceTab extends HTMLElement {
         return;
       }
       try {
-        const params = { access_point_id: 1 };
+        const params = { access_point_id: apId || 1 };
         if (userUuid) params.user_uuid = userUuid;
         await svc(this._hass, "grant_access", params, this._entryId);
       } catch (e) {

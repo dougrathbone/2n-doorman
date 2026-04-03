@@ -86,6 +86,39 @@ async def test_config_flow_cannot_connect(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.asyncio
+async def test_options_flow_shows_current_interval(
+    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+) -> None:
+    """Options flow form shows the current poll interval as default."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(doorman_config_entry.entry_id)
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_saves_poll_interval(
+    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+) -> None:
+    """Options flow saves a new poll interval to entry.options."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(doorman_config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"poll_interval": 60}
+    )
+
+    assert result["type"] == "create_entry"
+    assert doorman_config_entry.options["poll_interval"] == 60
+
+
+@pytest.mark.asyncio
 async def test_config_flow_duplicate_device_aborts(hass: HomeAssistant, mock_2n_client) -> None:
     """Attempting to add the same device twice aborts with 'already_configured'."""
     with patch(

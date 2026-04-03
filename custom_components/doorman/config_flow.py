@@ -9,9 +9,11 @@ from .api_client import DoormanAuthError, DoormanConnectionError, TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
+    CONF_POLL_INTERVAL,
     CONF_USE_SSL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    DEFAULT_POLL_INTERVAL,
     DEFAULT_USE_SSL,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
@@ -32,6 +34,13 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the Doorman setup flow."""
 
     VERSION = 1
+
+    @staticmethod
+    @config_entries.callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> DoormanOptionsFlow:
+        return DoormanOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict | None = None
@@ -69,4 +78,39 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=STEP_SCHEMA,
             errors=errors,
+        )
+
+
+OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(
+            CONF_POLL_INTERVAL,
+            default=DEFAULT_POLL_INTERVAL,
+        ): vol.All(int, vol.Range(min=10, max=3600)),
+    }
+)
+
+
+class DoormanOptionsFlow(config_entries.OptionsFlow):
+    """Allow changing integration options (e.g. poll interval) post-setup."""
+
+    async def async_step_init(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        current_interval = self.config_entry.options.get(
+            CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_POLL_INTERVAL,
+                        default=current_interval,
+                    ): vol.All(int, vol.Range(min=10, max=3600)),
+                }
+            ),
         )

@@ -411,6 +411,27 @@ class TwoNApiClient:
             params["user"] = user_uuid
         await self._request("GET", "accesspoint/grantaccess", params=params)
 
+    async def get_access_point_caps(self) -> list[dict[str, Any]]:
+        """Return the list of access points configured on this device.
+
+        Each entry has at minimum an ``id`` (int) field.  The ``name`` field
+        is populated if the device firmware supports it; fall back to a
+        generated label if absent.
+        """
+        try:
+            data = await self._request("GET", "accesspoint/caps")
+            points = data.get("result", {}).get("accessPoints", [])
+            return [
+                {
+                    "id": int(p.get("id", i + 1)),
+                    "name": p.get("name") or f"Access point {p.get('id', i + 1)}",
+                }
+                for i, p in enumerate(points)
+            ]
+        except DoormanApiError:
+            # Older firmware may not expose accesspoint/caps — return a single default point
+            return [{"id": 1, "name": "Access point 1"}]
+
     # ------------------------------------------------------------------ #
     # Event log (/api/log/*)                                               #
     # ------------------------------------------------------------------ #

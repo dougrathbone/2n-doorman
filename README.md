@@ -16,11 +16,17 @@ A Home Assistant integration for managing users and access credentials on **2N I
 - **Sidebar panel** — dedicated Doorman view pinned to the HA left navigation
 - **User management** — create, edit, and delete directory users on your 2N device
 - **Credential control** — set and update PINs, RFID cards, and switch codes per user
+- **Enable / disable users** — toggle access without deleting the user
 - **Validity windows** — configure time-limited access (valid from / valid to)
 - **Access log** — browse the most recent access events (authentications, denials, card taps)
-- **HA user linking** — associate 2N directory users with Home Assistant accounts
-- **Access events** — fires HA events on every authentication, usable in automations
+- **Push-like event delivery** — access events surface within ~1 s via long-polling (no extra config required)
+- **Multi-device support** — manage multiple 2N intercoms from a single HA instance
+- **Multiple access points** — grant access to any access point, not just the first one
+- **HA user linking** — associate 2N directory users with Home Assistant accounts for presence automations
+- **Access notifications** — send a notification to any HA notify service when a linked user authenticates
+- **Access events** — fires `doorman_access` HA events on every access attempt, usable in automations
 - **Relay switches** — control door relays directly as HA switch entities
+- **Configurable poll interval** — adjust how often users and switches are refreshed (Settings → Integrations → Configure)
 - **Local only** — communicates directly with the device; no cloud dependency
 
 ---
@@ -63,10 +69,25 @@ Enable the HTTP API on your 2N device:
 1. Log in to the 2N web interface
 2. Navigate to **Services → HTTP API**
 3. Enable **HTTP API**
-4. Create a user account with at minimum the **Directory** service permission (read + write)
+4. Create a user account with the following permissions:
+   - **Directory** — read + write (required for user management)
+   - **System** with **Control** access — required for create/edit/delete operations
+   - **Access Log** — required for the Access Log tab and event delivery
 5. Note the username and password for HA setup
 
 > If the **Directory** permission option is not visible, your device firmware is too old to support directory write via the HTTP API. See the firmware note in [Requirements](#requirements).
+
+### Changing integration options
+
+After setup, go to **Settings → Integrations → Doorman → Configure** to adjust:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Poll interval | 30 s | How often users and relay switch states are refreshed. Access events are delivered via long-polling regardless of this setting. |
+
+### Multiple devices
+
+Add a separate integration entry for each 2N device (**Settings → Integrations → Add integration → Doorman**). The sidebar panel shows a device selector in the header when more than one device is configured. Services accept an optional `device` field (the config entry ID) to target a specific device; without it, calls are routed automatically when only one device is configured.
 
 ---
 
@@ -89,30 +110,45 @@ In the Users tab, open any user and use the **Link to HA User** dropdown to asso
 - The HA user's name appears alongside their 2N entry
 - Access events include the linked HA user ID, enabling presence automations
 
+
+### Services
+
+All services accept an optional `device` field (config entry ID) to target a specific device when multiple are configured.
+
+| Service | Key fields | Description |
+|---------|-----------|-------------|
+| `doorman.create_user` | `name`, `pin`, `card`, `code`, `enabled`, `valid_from`, `valid_to` | Add a new user to the 2N directory |
+| `doorman.update_user` | `uuid` (required) + any field above | Update an existing user's credentials |
+| `doorman.delete_user` | `uuid` | Remove a user from the 2N directory |
+| `doorman.grant_access` | `access_point_id` (default 1), `user_uuid` | Open an access point immediately |
+
+### Push-like event delivery
+
+Access events (card swipes, PIN entries, authentications) are delivered within ~1 second — no polling delay. Doorman holds a long-poll HTTP connection open to the 2N device (`GET /api/log/pull?timeout=20`); the device responds as soon as an event occurs.
+
+No configuration is required. To verify it's working:
+
+1. Go to **Developer Tools → Events** and subscribe to `doorman_access`
+2. Present a card or enter a PIN on the intercom
+3. The event should appear within a second
+
 ### Automations
 
-The `doorman_access` event fires whenever an access attempt is detected:
+The `doorman_access` event fires on every access attempt:
 
 ```yaml
 trigger:
   - platform: event
     event_type: doorman_access
     event_data:
-      event_type: authenticated
+      event_type: UserAuthenticated
 action:
   - service: notify.mobile_app_phone
     data:
       message: "{{ trigger.event.data.params.user.name }} entered"
 ```
 
-### Services
-
-| Service | Description |
-|---------|-------------|
-| `doorman.create_user` | Add a new user to the 2N directory |
-| `doorman.update_user` | Update an existing user's credentials |
-| `doorman.delete_user` | Remove a user from the 2N directory |
-| `doorman.grant_access` | Open an access point immediately |
+Available `event_type` values: `UserAuthenticated`, `UserRejected`, `CodeEntered`, `CardEntered`, `FingerEntered`, `MobKeyEntered`.
 
 ---
 
