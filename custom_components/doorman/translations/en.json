@@ -33,6 +33,17 @@
       "reauth_successful": "Re-authentication was successful."
     }
   },
+  "exceptions": {
+    "unknown_device": {
+      "message": "Unknown Doorman device: {device}"
+    },
+    "no_devices_configured": {
+      "message": "No Doorman devices are configured."
+    },
+    "multiple_devices_no_selector": {
+      "message": "Multiple Doorman devices configured — specify the 'device' field (config entry ID) to target one."
+    }
+  },
   "issues": {
     "no_write_permission": {
       "title": "Doorman: directory write unavailable on {device_name}",

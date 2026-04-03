@@ -1,6 +1,7 @@
 """Tests for the Doorman coordinator — polling, error handling, and event firing."""
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -220,10 +221,8 @@ async def test_start_log_listener_is_idempotent(
     assert task_1 is task_2  # same task object, no duplicate
 
     task_1.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task_1
-    except asyncio.CancelledError:
-        pass
 
 
 @pytest.mark.asyncio

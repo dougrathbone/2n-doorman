@@ -31,6 +31,15 @@ function formatDateTime(str) {
   });
 }
 
+function localDateTimeWithOffset(localISO) {
+  if (!localISO) return localISO;
+  const offset = -new Date().getTimezoneOffset(); // minutes ahead of UTC
+  const sign = offset >= 0 ? "+" : "-";
+  const h = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
+  const m = String(Math.abs(offset) % 60).padStart(2, "0");
+  return `${localISO}:00${sign}${h}:${m}`;
+}
+
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
 const BASE_CSS = `
@@ -615,9 +624,9 @@ class DoormanUsersTab extends HTMLElement {
       const code = form.querySelector("#f-code").value.trim();
       if (code) data.code = code;
       const vf = form.querySelector("#f-valid-from")?.value;
-      if (vf) data.valid_from = vf;
+      if (vf) data.valid_from = localDateTimeWithOffset(vf);
       const vt = form.querySelector("#f-valid-to")?.value;
-      if (vt) data.valid_to = vt;
+      if (vt) data.valid_to = localDateTimeWithOffset(vt);
       try {
         await svc(this._hass, "create_user", data, this._entryId);
         this._drawer.close();
@@ -650,10 +659,10 @@ class DoormanUsersTab extends HTMLElement {
       const toLocalISO = ts => { const d = new Date(ts * 1000); const p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
       const vf = form.querySelector("#f-valid-from")?.value;
       const vfCurrent = user.validFrom ? toLocalISO(user.validFrom) : "";
-      if (vf !== vfCurrent) data.valid_from = vf || undefined;
+      if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : undefined;
       const vt = form.querySelector("#f-valid-to")?.value;
       const vtCurrent = user.validTo ? toLocalISO(user.validTo) : "";
-      if (vt !== vtCurrent) data.valid_to = vt || undefined;
+      if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : undefined;
       try {
         await svc(this._hass, "update_user", data, this._entryId);
         // Handle HA user link change
@@ -955,8 +964,8 @@ class DoormanPanel extends HTMLElement {
       this._devices = res.devices || [];
       this._loadError = null;
       if (this._devices.length > 0) {
-        // Restore last selection from localStorage, falling back to the first device
-        const saved = localStorage.getItem("doorman_selected_entry_id");
+        // Restore last selection from sessionStorage, falling back to the first device
+        const saved = sessionStorage.getItem("doorman_selected_entry_id");
         if (saved && this._devices.some(d => d.entry_id === saved)) {
           this._selectedEntryId = saved;
         } else {
@@ -1082,7 +1091,7 @@ class DoormanPanel extends HTMLElement {
       }
       deviceSelect.addEventListener("change", (e) => {
         this._selectedEntryId = e.target.value;
-        localStorage.setItem("doorman_selected_entry_id", this._selectedEntryId);
+        sessionStorage.setItem("doorman_selected_entry_id", this._selectedEntryId);
         this._mountTab();
       });
     }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import timedelta
 from typing import Any
@@ -85,10 +86,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Cancel the log listener task on unload."""
         if self._log_task and not self._log_task.done():
             self._log_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._log_task
-            except asyncio.CancelledError:
-                pass
         await super().async_shutdown()
 
     async def _log_listener_loop(self) -> None:
@@ -105,7 +104,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning(
-                    "Doorman log listener error (%s). Retrying in 5 s.", err
+                    "Doorman log listener error (%s). Retrying in 5 s.", err, exc_info=True
                 )
                 await asyncio.sleep(5)
                 continue

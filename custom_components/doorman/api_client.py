@@ -56,7 +56,7 @@ class TwoNApiClient:
 
     def __init__(
         self,
-        session: aiohttp.ClientSession,  # kept for interface compatibility; not used internally
+        session: aiohttp.ClientSession,
         host: str,
         username: str,
         password: str,
@@ -84,16 +84,13 @@ class TwoNApiClient:
             ctx.verify_mode = ssl.CERT_NONE
             self._ssl_ctx = ctx
 
-        # Plain session — we handle Digest auth manually in _request
-        self._session = aiohttp.ClientSession()
+        self._session = session
         # Number of access points on this device — loaded from dir/template at startup.
         # 2N devices control per-user enabled/disabled via access.accessPoints[N].enabled.
         self._access_point_count: int = 2
 
     async def async_close(self) -> None:
-        """Close the underlying session. Call from async_unload_entry."""
-        if not self._session.closed:
-            await self._session.close()
+        """No-op: the session is owned and managed by Home Assistant."""
 
     def _ssl_context(self) -> ssl.SSLContext | bool | None:
         """Return the pre-built SSL context (or None for plain HTTP)."""
@@ -267,9 +264,10 @@ class TwoNApiClient:
             if ap_list:
                 self._access_point_count = len(ap_list)
                 _LOGGER.debug("Doorman: device has %d access point(s)", self._access_point_count)
-        except Exception:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
             _LOGGER.debug(
-                "Doorman: could not read dir/template; defaulting to %d access point(s)",
+                "Doorman: could not read dir/template (%s); defaulting to %d access point(s)",
+                err,
                 self._access_point_count,
             )
 
@@ -354,8 +352,10 @@ class TwoNApiClient:
             "PUT", "dir/create",
             json={"users": [self._nest_user(user, self._access_point_count)]},
         )
-        created = (data.get("result", {}).get("users") or [{}])[0]
-        return {**user, "uuid": created.get("uuid", "")}
+        users_result = data.get("result", {}).get("users") or []
+        if not users_result:
+            raise DoormanApiError("Device returned no user record after create — UUID unknown")
+        return {**user, "uuid": users_result[0].get("uuid", "")}
 
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""

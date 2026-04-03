@@ -640,7 +640,7 @@ async def test_write_permission_creates_repair_issue(
     mock_2n_client,
 ) -> None:
     """When write permission is missing a HA repair issue is created with the device name."""
-    from unittest.mock import MagicMock, patch as _patch
+    from unittest.mock import patch as _patch
 
     mock_2n_client.check_directory_write_permission = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value=False)
 

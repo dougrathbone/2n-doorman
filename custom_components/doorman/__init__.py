@@ -9,12 +9,16 @@ import voluptuous as vol
 from homeassistant.components import panel_custom
 from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue, async_delete_issue
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.issue_registry import (
+    IssueSeverity,
+    async_create_issue,
+    async_delete_issue,
+)
 
 from .api_client import TwoNApiClient
 from .const import (
@@ -156,14 +160,22 @@ def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoord
     device = call.data.get("device")
     if device:
         if device not in entries:
-            raise ServiceValidationError(f"Unknown Doorman device: {device}")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unknown_device",
+                translation_placeholders={"device": device},
+            )
         return entries[device]
     if len(entries) == 0:
-        raise ServiceValidationError("No Doorman devices are configured.")
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="no_devices_configured",
+        )
     if len(entries) == 1:
         return next(iter(entries.values()))
     raise ServiceValidationError(
-        "Multiple Doorman devices configured. Specify 'device' (config entry ID) to target one."
+        translation_domain=DOMAIN,
+        translation_key="multiple_devices_no_selector",
     )
 
 

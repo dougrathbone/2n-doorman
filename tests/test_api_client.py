@@ -1,6 +1,7 @@
 """Tests for TwoNApiClient — focusing on long-poll behaviour and timeout plumbing."""
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -198,9 +199,7 @@ async def test_request_passes_timeout_to_aiohttp() -> None:
     with patch("custom_components.doorman.api_client.aiohttp.ClientTimeout",
                side_effect=lambda total: captured_timeouts.append(total) or aiohttp.ClientTimeout(total=total)):
         # Trigger a request — it will fail (mock session) but we only care about timeout
-        try:
+        with contextlib.suppress(Exception):
             await client._request("GET", "system/info", request_timeout=25)
-        except Exception:
-            pass
 
     assert 25 in captured_timeouts

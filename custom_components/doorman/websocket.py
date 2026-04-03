@@ -167,8 +167,8 @@ def ws_get_access_log(
 # ------------------------------------------------------------------ #
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_ha_users"})
-@callback
-def ws_list_ha_users(
+@websocket_api.async_response
+async def ws_list_ha_users(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict,
@@ -178,10 +178,10 @@ def ws_list_ha_users(
         connection.send_error(msg["id"], "unauthorized", "Admin access required")
         return
 
-    # Access the internal auth store to list human users
+    all_users = await hass.auth.async_get_users()
     ha_users = [
         {"id": u.id, "name": u.name}
-        for u in hass.auth._store._users.values()  # noqa: SLF001
+        for u in all_users
         if not u.system_generated and u.is_active
     ]
     connection.send_result(msg["id"], {"users": ha_users})
