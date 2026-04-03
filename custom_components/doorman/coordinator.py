@@ -119,9 +119,12 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._pending_access_saves:
                 store = self.hass.data.get(f"{DOMAIN}_store")
                 if store:
-                    for uuid, utc_time in self._pending_access_saves:
+                    saved = list(self._pending_access_saves)
+                    self._pending_access_saves.clear()
+                    for uuid, utc_time in saved:
                         await store.update_last_access(uuid, utc_time)
-                self._pending_access_saves.clear()
+                else:
+                    self._pending_access_saves.clear()
 
             # Push an update to all listeners so the log tab refreshes immediately
             if self.data is not None:

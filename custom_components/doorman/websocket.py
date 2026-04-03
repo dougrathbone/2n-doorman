@@ -88,7 +88,7 @@ def ws_list_users(
     store = _store(hass)
     links = store.user_links if store else {}
 
-    last_access = coordinator.data.get("last_access", {})
+    last_access = (coordinator.data or {}).get("last_access", {})
     users = [
         {
             **user,
@@ -96,7 +96,7 @@ def ws_list_users(
             "notification_targets": store.get_notification_targets(user.get("uuid", "")) if store else [],
             "last_access": last_access.get(user.get("uuid")),
         }
-        for user in coordinator.data.get("users", [])
+        for user in (coordinator.data or {}).get("users", [])
     ]
     connection.send_result(msg["id"], {
         "users": users,
@@ -158,7 +158,7 @@ def ws_get_access_log(
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
-    events = coordinator.data.get("log_events", [])
+    events = (coordinator.data or {}).get("log_events", [])
     connection.send_result(msg["id"], {"events": events})
 
 

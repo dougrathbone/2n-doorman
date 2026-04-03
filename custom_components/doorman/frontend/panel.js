@@ -238,7 +238,9 @@ class DoormanDrawer extends HTMLElement {
       </div>
     `;
     if (this._content && this._open) {
-      this.shadowRoot.getElementById("drawer-body").appendChild(this._content);
+      const body = this.shadowRoot.getElementById("drawer-body");
+      body.innerHTML = "";
+      body.appendChild(this._content);
     }
     this.shadowRoot.getElementById("close-btn")?.addEventListener("click", () => this.close());
     this.shadowRoot.getElementById("cancel-btn")?.addEventListener("click", () => this.close());
@@ -532,7 +534,7 @@ class DoormanUsersTab extends HTMLElement {
       <div class="field-group">
         <div class="field">
           <label>Name <span class="required">*</span></label>
-          <input id="f-name" type="text" value="${user.name || ""}" placeholder="Jane Doe" required />
+          <input id="f-name" type="text" value="" placeholder="Jane Doe" required />
         </div>
         <div class="field" style="flex-direction:row;align-items:center;gap:10px">
           <input id="f-enabled" type="checkbox" ${enabled ? "checked" : ""} style="width:16px;height:16px;cursor:pointer" />
@@ -541,15 +543,15 @@ class DoormanUsersTab extends HTMLElement {
         <div class="section-title">Credentials <span class="optional-hint">(all optional)</span></div>
         <div class="field">
           <label>PIN code</label>
-          <input id="f-pin" type="text" value="${user.pin || ""}" placeholder="2–15 digits" autocomplete="off" />
+          <input id="f-pin" type="text" value="" placeholder="2–15 digits" autocomplete="off" />
         </div>
         <div class="field">
           <label>RFID card UID (hex)</label>
-          <input id="f-card" type="text" value="${(user.card || [])[0] || ""}" placeholder="e.g. 1A2B3C4D" />
+          <input id="f-card" type="text" value="" placeholder="e.g. 1A2B3C4D" />
         </div>
         <div class="field">
           <label>Switch code</label>
-          <input id="f-code" type="text" value="${(user.code || [])[0] || ""}" placeholder="2–15 digits" />
+          <input id="f-code" type="text" value="" placeholder="2–15 digits" />
         </div>
         <div class="section-title">Validity</div>
         <div class="field">
@@ -578,6 +580,11 @@ class DoormanUsersTab extends HTMLElement {
         <div id="form-error"></div>
       </div>
     `;
+    // Set credential input values safely via DOM properties (avoids XSS in attribute interpolation)
+    form.querySelector("#f-name").value = user.name || "";
+    form.querySelector("#f-pin").value = user.pin || "";
+    form.querySelector("#f-card").value = (user.card || [])[0] || "";
+    form.querySelector("#f-code").value = (user.code || [])[0] || "";
     // Populate HA user select safely (HA usernames are untrusted text)
     const haUserSel = form.querySelector("#f-ha-user");
     if (haUserSel) {
@@ -622,7 +629,7 @@ class DoormanUsersTab extends HTMLElement {
     const form = this._buildUserForm();
     this._drawer.open("Add User", form, async () => {
       const name = form.querySelector("#f-name").value.trim();
-      if (!name) { form.querySelector("#form-error").innerHTML = `<div class="error">Name is required.</div>`; return; }
+      if (!name) { const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = "Name is required."; errEl.appendChild(errDiv); return; }
       const data = { name, enabled: form.querySelector("#f-enabled").checked };
       const pin = form.querySelector("#f-pin").value.trim();
       if (pin) data.pin = pin;
@@ -639,7 +646,7 @@ class DoormanUsersTab extends HTMLElement {
         this._drawer.close();
         this._load();
       } catch (e) {
-        form.querySelector("#form-error").innerHTML = `<div class="error">${e.message}</div>`;
+        const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
       }
     });
   }
@@ -653,7 +660,7 @@ class DoormanUsersTab extends HTMLElement {
     this._drawer.open(`Edit: ${user.name || user.uuid}`, form, async () => {
       const data = { uuid: user.uuid };
       const name = form.querySelector("#f-name").value.trim();
-      if (!name) { form.querySelector("#form-error").innerHTML = `<div class="error">Name is required.</div>`; return; }
+      if (!name) { const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = "Name is required."; errEl.appendChild(errDiv); return; }
       data.name = name; // always required by 2N API
       data.enabled = form.querySelector("#f-enabled").checked;
       const pin = form.querySelector("#f-pin").value.trim();
@@ -696,7 +703,7 @@ class DoormanUsersTab extends HTMLElement {
         this._drawer.close();
         this._load();
       } catch (e) {
-        form.querySelector("#form-error").innerHTML = `<div class="error">${e.message}</div>`;
+        const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
       }
     });
   }
@@ -708,7 +715,12 @@ class DoormanUsersTab extends HTMLElement {
       await svc(this._hass, "delete_user", { uuid }, this._entryId);
       this._load();
     } catch (e) {
-      alert(`Delete failed: ${e.message}`);
+      const msg = document.createElement("div");
+      msg.className = "error";
+      msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
+      msg.textContent = `Delete failed: ${e.message}`;
+      this.shadowRoot.appendChild(msg);
+      setTimeout(() => msg.remove(), 5000);
     }
   }
 }

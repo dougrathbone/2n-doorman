@@ -115,6 +115,8 @@ class TwoNApiClient:
 
         realm = params.get("realm", "")
         nonce = params.get("nonce", "")
+        if not nonce:
+            raise DoormanAuthError("Malformed digest challenge: missing nonce")
         qop = params.get("qop", "")
         algorithm = params.get("algorithm", "MD5").upper()
 
