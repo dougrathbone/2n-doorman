@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.doorman.api_client import DoormanAuthError, DoormanConnectionError
 from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
@@ -87,14 +88,10 @@ async def test_config_flow_cannot_connect(hass: HomeAssistant) -> None:
 
 @pytest.mark.asyncio
 async def test_options_flow_shows_current_interval(
-    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:
     """Options flow form shows the current poll interval as default."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    result = await hass.config_entries.options.async_init(doorman_config_entry.entry_id)
+    result = await hass.config_entries.options.async_init(setup_doorman.entry_id)
 
     assert result["type"] == "form"
     assert result["step_id"] == "init"
@@ -102,35 +99,27 @@ async def test_options_flow_shows_current_interval(
 
 @pytest.mark.asyncio
 async def test_options_flow_saves_poll_interval(
-    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:
     """Options flow saves a new poll interval to entry.options."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    result = await hass.config_entries.options.async_init(doorman_config_entry.entry_id)
+    result = await hass.config_entries.options.async_init(setup_doorman.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"poll_interval": 60}
     )
 
     assert result["type"] == "create_entry"
-    assert doorman_config_entry.options["poll_interval"] == 60
+    assert setup_doorman.options["poll_interval"] == 60
 
 
 @pytest.mark.asyncio
 async def test_reauth_flow_shows_form(
-    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:
     """Re-auth flow shows a form pre-populated with the current username."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
-        context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
-        data=doorman_config_entry.data,
+        context={"source": "reauth", "entry_id": setup_doorman.entry_id},
+        data=setup_doorman.data,
     )
 
     assert result["type"] == "form"
@@ -139,13 +128,9 @@ async def test_reauth_flow_shows_form(
 
 @pytest.mark.asyncio
 async def test_reauth_flow_success(
-    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:
     """Submitting valid credentials in the re-auth flow reloads the entry."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     with patch(
         "custom_components.doorman.config_flow.TwoNApiClient"
     ) as mock_cls:
@@ -153,8 +138,8 @@ async def test_reauth_flow_success(
 
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
-            context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
-            data=doorman_config_entry.data,
+            context={"source": "reauth", "entry_id": setup_doorman.entry_id},
+            data=setup_doorman.data,
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -163,19 +148,15 @@ async def test_reauth_flow_success(
 
     assert result["type"] == "abort"
     assert result["reason"] == "reauth_successful"
-    assert doorman_config_entry.data[CONF_PASSWORD] == "newpassword"
+    assert setup_doorman.data[CONF_PASSWORD] == "newpassword"
 
 
 @pytest.mark.asyncio
 async def test_reauth_flow_invalid_auth(
-    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:
     """Wrong credentials in re-auth show an error and keep the form open."""
     from custom_components.doorman.api_client import DoormanAuthError as _AuthError
-
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
 
     with patch(
         "custom_components.doorman.config_flow.TwoNApiClient"
@@ -186,8 +167,8 @@ async def test_reauth_flow_invalid_auth(
 
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
-            context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
-            data=doorman_config_entry.data,
+            context={"source": "reauth", "entry_id": setup_doorman.entry_id},
+            data=setup_doorman.data,
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],

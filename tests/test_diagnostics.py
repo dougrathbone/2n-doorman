@@ -13,15 +13,10 @@ from .conftest import MOCK_DEVICE_INFO
 @pytest.mark.asyncio
 async def test_diagnostics_returns_coordinator_state(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Diagnostics includes device info, access points, and user/switch counts."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    diag = await async_get_config_entry_diagnostics(hass, doorman_config_entry)
+    diag = await async_get_config_entry_diagnostics(hass, setup_doorman)
 
     assert diag["config_entry"]["host"] == "192.168.1.100"
     assert diag["config_entry"]["password"] == "**REDACTED**"
@@ -52,15 +47,10 @@ async def test_diagnostics_without_coordinator(
 @pytest.mark.asyncio
 async def test_diagnostics_password_is_redacted(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Diagnostics never exposes the API password."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    diag = await async_get_config_entry_diagnostics(hass, doorman_config_entry)
+    diag = await async_get_config_entry_diagnostics(hass, setup_doorman)
 
     # Ensure 'secret' (the fixture password) does not appear anywhere in the output
     diag_str = str(diag)

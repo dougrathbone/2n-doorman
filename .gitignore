@@ -11,3 +11,5 @@ dist/
 venv/
 node_modules/
 *.zip
+tests/integration/ha_config/.HA_VERSION
+tests/integration/ha_config/.ha_run.lock

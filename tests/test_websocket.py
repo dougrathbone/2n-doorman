@@ -27,14 +27,9 @@ def _mock_connection():
 @pytest.mark.asyncio
 async def test_ws_list_devices_single(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_list_devices returns one device when a single entry is configured."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_list_devices(hass, conn, {"id": 1})
 
@@ -42,7 +37,7 @@ async def test_ws_list_devices_single(
     result = conn.send_result.call_args[0][1]
     devices = result["devices"]
     assert len(devices) == 1
-    assert devices[0]["entry_id"] == doorman_config_entry.entry_id
+    assert devices[0]["entry_id"] == setup_doorman.entry_id
     assert devices[0]["serial_number"] == MOCK_DEVICE_INFO["serialNumber"]
     assert devices[0]["device_name"] == MOCK_DEVICE_INFO["deviceName"]
     assert devices[0]["model"] == MOCK_DEVICE_INFO["hwVersion"]
@@ -88,14 +83,9 @@ async def test_ws_list_users_with_entry_id(
 @pytest.mark.asyncio
 async def test_ws_list_users_without_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_list_users without entry_id returns users from the first device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_list_users(hass, conn, {"id": 1})
 
@@ -107,14 +97,9 @@ async def test_ws_list_users_without_entry_id(
 @pytest.mark.asyncio
 async def test_ws_list_users_invalid_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_list_users with a nonexistent entry_id returns not_configured error."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_list_users(hass, conn, {"id": 1, "entry_id": "nonexistent"})
 
@@ -126,16 +111,11 @@ async def test_ws_list_users_invalid_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_device_info_with_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_device_info with entry_id returns info for the specified device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
-    ws_get_device_info(hass, conn, {"id": 1, "entry_id": doorman_config_entry.entry_id})
+    ws_get_device_info(hass, conn, {"id": 1, "entry_id": setup_doorman.entry_id})
 
     conn.send_result.assert_called_once()
     info = conn.send_result.call_args[0][1]["device_info"]
@@ -145,16 +125,11 @@ async def test_ws_get_device_info_with_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_access_log_with_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_access_log with entry_id routes to the specified device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
-    ws_get_access_log(hass, conn, {"id": 1, "entry_id": doorman_config_entry.entry_id})
+    ws_get_access_log(hass, conn, {"id": 1, "entry_id": setup_doorman.entry_id})
     await hass.async_block_till_done()
 
     conn.send_result.assert_called_once()
@@ -164,14 +139,9 @@ async def test_ws_get_access_log_with_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_access_log_without_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_access_log without entry_id falls back to the first device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_get_access_log(hass, conn, {"id": 1})
 
@@ -182,14 +152,9 @@ async def test_ws_get_access_log_without_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_access_log_invalid_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_access_log with an unknown entry_id returns not_configured."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_get_access_log(hass, conn, {"id": 1, "entry_id": "nonexistent"})
 
@@ -200,16 +165,11 @@ async def test_ws_get_access_log_invalid_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_device_info_includes_access_points(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_device_info response includes the access_points list."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
-    ws_get_device_info(hass, conn, {"id": 1, "entry_id": doorman_config_entry.entry_id})
+    ws_get_device_info(hass, conn, {"id": 1, "entry_id": setup_doorman.entry_id})
 
     conn.send_result.assert_called_once()
     result = conn.send_result.call_args[0][1]
@@ -223,14 +183,9 @@ async def test_ws_get_device_info_includes_access_points(
 @pytest.mark.asyncio
 async def test_ws_get_device_info_without_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_device_info without entry_id falls back to the first device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_get_device_info(hass, conn, {"id": 1})
 
@@ -242,14 +197,9 @@ async def test_ws_get_device_info_without_entry_id(
 @pytest.mark.asyncio
 async def test_ws_get_device_info_invalid_entry_id(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_get_device_info with an unknown entry_id returns not_configured."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     conn = _mock_connection()
     ws_get_device_info(hass, conn, {"id": 1, "entry_id": "nonexistent"})
 

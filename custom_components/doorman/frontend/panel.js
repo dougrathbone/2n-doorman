@@ -31,6 +31,13 @@ function formatDateTime(str) {
   });
 }
 
+function toDateTimeLocalValue(unixTs) {
+  if (!unixTs) return "";
+  const d = new Date(unixTs * 1000);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function localDateTimeWithOffset(localISO) {
   if (!localISO) return localISO;
   const offset = -new Date().getTimezoneOffset(); // minutes ahead of UTC
@@ -547,11 +554,11 @@ class DoormanUsersTab extends HTMLElement {
         <div class="section-title">Validity</div>
         <div class="field">
           <label>Valid from</label>
-          <input id="f-valid-from" type="datetime-local" value="${user.validFrom ? (() => { const d = new Date(user.validFrom * 1000); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })() : ""}" />
+          <input id="f-valid-from" type="datetime-local" value="${toDateTimeLocalValue(user.validFrom)}" />
         </div>
         <div class="field">
           <label>Valid until</label>
-          <input id="f-valid-to" type="datetime-local" value="${user.validTo ? (() => { const d = new Date(user.validTo * 1000); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })() : ""}" />
+          <input id="f-valid-to" type="datetime-local" value="${toDateTimeLocalValue(user.validTo)}" />
         </div>
         ${this._haUsers.length ? `
           <div class="section-title">Home Assistant</div>
@@ -655,13 +662,11 @@ class DoormanUsersTab extends HTMLElement {
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
-      // Use local-time ISO for comparison — datetime-local inputs operate in local time
-      const toLocalISO = ts => { const d = new Date(ts * 1000); const p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
       const vf = form.querySelector("#f-valid-from")?.value;
-      const vfCurrent = user.validFrom ? toLocalISO(user.validFrom) : "";
+      const vfCurrent = toDateTimeLocalValue(user.validFrom);
       if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : undefined;
       const vt = form.querySelector("#f-valid-to")?.value;
-      const vtCurrent = user.validTo ? toLocalISO(user.validTo) : "";
+      const vtCurrent = toDateTimeLocalValue(user.validTo);
       if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : undefined;
       try {
         await svc(this._hass, "update_user", data, this._entryId);

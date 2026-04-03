@@ -17,19 +17,12 @@ from .conftest import MOCK_SWITCHES, MOCK_USERS, setup_two_entries
 @pytest.mark.asyncio
 async def test_setup_entry_creates_coordinator(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Integration loads and the coordinator is populated with data from the device."""
-    doorman_config_entry.add_to_hass(hass)
+    assert setup_doorman.state is ConfigEntryState.LOADED
 
-    result = await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert result is True
-    assert doorman_config_entry.state is ConfigEntryState.LOADED
-
-    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
     assert coordinator.data is not None
     assert len(coordinator.data["users"]) == len(MOCK_USERS)
     assert len(coordinator.data["switches"]) == len(MOCK_SWITCHES)
@@ -38,14 +31,9 @@ async def test_setup_entry_creates_coordinator(
 @pytest.mark.asyncio
 async def test_setup_entry_creates_sensor(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """A sensor entity is created and reflects the user count from the device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     state = hass.states.get("sensor.doorman_user_count")
     assert state is not None
     assert state.state == str(len(MOCK_USERS))
@@ -59,14 +47,9 @@ async def test_setup_entry_creates_sensor(
 @pytest.mark.asyncio
 async def test_setup_entry_creates_relay_switches(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """A switch entity is created for each relay reported by the device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     for sw in MOCK_SWITCHES:
         entity_id = f"switch.doorman_relay_{sw['id']}"
         state = hass.states.get(entity_id)
@@ -77,14 +60,9 @@ async def test_setup_entry_creates_relay_switches(
 @pytest.mark.asyncio
 async def test_setup_entry_registers_services(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """All four service actions are registered after setup."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     for service in ("create_user", "update_user", "delete_user", "grant_access"):
         assert hass.services.has_service(DOMAIN, service), (
             f"Service {DOMAIN}.{service} was not registered"
@@ -94,14 +72,10 @@ async def test_setup_entry_registers_services(
 @pytest.mark.asyncio
 async def test_setup_calls_device_api(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """The coordinator fetches device info and directory data during setup."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     mock_2n_client.get_system_info.assert_called_once()
     mock_2n_client.query_users.assert_called()
     mock_2n_client.get_switch_status.assert_called()
@@ -110,34 +84,25 @@ async def test_setup_calls_device_api(
 @pytest.mark.asyncio
 async def test_unload_entry(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Unloading removes coordinator data and de-registers entities."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    assert setup_doorman.state is ConfigEntryState.LOADED
+
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
     await hass.async_block_till_done()
 
-    assert doorman_config_entry.state is ConfigEntryState.LOADED
-
-    await hass.config_entries.async_unload(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert doorman_config_entry.state is ConfigEntryState.NOT_LOADED
-    assert doorman_config_entry.entry_id not in hass.data.get(DOMAIN, {})
+    assert setup_doorman.state is ConfigEntryState.NOT_LOADED
+    assert setup_doorman.entry_id not in hass.data.get(DOMAIN, {})
 
 
 @pytest.mark.asyncio
 async def test_create_user_service(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """Calling doorman.create_user forwards the request to the 2N API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "create_user",
@@ -154,14 +119,10 @@ async def test_create_user_service(
 @pytest.mark.asyncio
 async def test_delete_user_service(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """Calling doorman.delete_user forwards the UUID to the 2N API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "delete_user",
@@ -175,14 +136,10 @@ async def test_delete_user_service(
 @pytest.mark.asyncio
 async def test_update_user_service_name(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with only name change forwards name and uuid to the API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -200,14 +157,10 @@ async def test_update_user_service_name(
 @pytest.mark.asyncio
 async def test_update_user_service_pin(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with a PIN includes pin in the payload."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -222,14 +175,10 @@ async def test_update_user_service_pin(
 @pytest.mark.asyncio
 async def test_update_user_service_empty_pin_not_forwarded(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user omitting pin does not include pin key in the payload."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -244,14 +193,10 @@ async def test_update_user_service_empty_pin_not_forwarded(
 @pytest.mark.asyncio
 async def test_update_user_service_card(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with a card number includes card as a single-element list."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -266,14 +211,10 @@ async def test_update_user_service_card(
 @pytest.mark.asyncio
 async def test_update_user_service_clear_card(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with empty card string clears the card list."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -288,14 +229,10 @@ async def test_update_user_service_clear_card(
 @pytest.mark.asyncio
 async def test_update_user_service_code(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with a code includes code as a single-element list."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -310,15 +247,11 @@ async def test_update_user_service_code(
 @pytest.mark.asyncio
 async def test_update_user_service_valid_from_to(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with valid_from/valid_to converts datetimes to Unix timestamps."""
     from datetime import datetime
-
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
 
     valid_from = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     valid_to = datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -338,14 +271,10 @@ async def test_update_user_service_valid_from_to(
 @pytest.mark.asyncio
 async def test_update_user_service_no_validity_dates(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user without validity dates does not include validFrom/validTo."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -361,15 +290,11 @@ async def test_update_user_service_no_validity_dates(
 @pytest.mark.asyncio
 async def test_update_user_service_all_fields(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with all fields sends the complete payload correctly."""
     from datetime import datetime
-
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
 
     valid_from = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
     valid_to = datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC)
@@ -402,14 +327,10 @@ async def test_update_user_service_all_fields(
 @pytest.mark.asyncio
 async def test_grant_access_service(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """Calling doorman.grant_access triggers the access point on the device."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "grant_access",
@@ -452,14 +373,10 @@ async def test_update_user_service_with_device_param(
 @pytest.mark.asyncio
 async def test_service_routes_to_single_device_without_param(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """With one device, service calls work without the device parameter."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN, "create_user", {"name": "Test"}, blocking=True,
     )
@@ -502,14 +419,9 @@ async def test_service_without_device_param_fails_with_multiple_devices(
 @pytest.mark.asyncio
 async def test_service_with_unknown_device_param_raises(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """An unknown device ID raises a validation error."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     with pytest.raises(ServiceValidationError, match="Unknown Doorman device"):
         await hass.services.async_call(
             DOMAIN, "create_user",
@@ -569,15 +481,10 @@ async def test_unload_one_entry_keeps_other_running(
 @pytest.mark.asyncio
 async def test_setup_starts_log_listener(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """setup_entry starts the background log listener task."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
     assert coordinator._log_task is not None
     assert not coordinator._log_task.done()
 
@@ -585,18 +492,13 @@ async def test_setup_starts_log_listener(
 @pytest.mark.asyncio
 async def test_unload_cancels_log_listener(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Unloading an entry cancels the background log listener task."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
     task = coordinator._log_task
 
-    await hass.config_entries.async_unload(doorman_config_entry.entry_id)
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
     await hass.async_block_till_done()
 
     assert task.done()
@@ -610,15 +512,9 @@ async def test_unload_cancels_log_listener(
 @pytest.mark.asyncio
 async def test_service_with_no_devices_raises(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
-    mock_2n_client,
+    setup_doorman: MockConfigEntry,
 ) -> None:
     """Service call with no configured devices raises a clear validation error."""
-    # Register services without any loaded entries
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     # Remove the entry from hass.data to simulate zero devices
     hass.data[DOMAIN].clear()
 
@@ -669,14 +565,10 @@ async def test_write_permission_creates_repair_issue(
 @pytest.mark.asyncio
 async def test_create_user_service_with_enabled_field(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """create_user with enabled=False forwards the flag to the API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "create_user",
@@ -692,14 +584,10 @@ async def test_create_user_service_with_enabled_field(
 @pytest.mark.asyncio
 async def test_update_user_service_with_enabled_field(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """update_user with enabled=True forwards the flag to the API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "update_user",
@@ -715,14 +603,10 @@ async def test_update_user_service_with_enabled_field(
 @pytest.mark.asyncio
 async def test_grant_access_service_with_user_uuid(
     hass: HomeAssistant,
-    doorman_config_entry: MockConfigEntry,
+    setup_doorman: MockConfigEntry,
     mock_2n_client,
 ) -> None:
     """grant_access with user_uuid forwards it to the API."""
-    doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
-
     await hass.services.async_call(
         DOMAIN,
         "grant_access",

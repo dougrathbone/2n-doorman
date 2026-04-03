@@ -134,6 +134,7 @@ if _PAHCC_AVAILABLE:
             return []
 
         mock.pull_log = _pull_log_side_effect
+        mock.set_switch = AsyncMock(return_value=None)
         mock.get_switch_caps = AsyncMock(return_value=MOCK_SWITCHES)
         mock.create_user = AsyncMock(return_value={"uuid": "uuid-new", "name": "New User"})
         mock.update_user = AsyncMock(return_value=None)
@@ -175,6 +176,16 @@ if _PAHCC_AVAILABLE:
             patch.object(hass, "http", mock_http, create=True),
         ):
             yield
+
+    # ─── Setup fixture ────────────────────────────────────────────────────────────
+
+    @pytest.fixture
+    async def setup_doorman(hass, doorman_config_entry, mock_2n_client):
+        """Set up the Doorman integration and return the config entry."""
+        doorman_config_entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+        return doorman_config_entry
 
     # ─── Multi-device helpers ────────────────────────────────────────────────────
 
