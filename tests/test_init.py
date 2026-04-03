@@ -559,3 +559,177 @@ async def test_unload_one_entry_keeps_other_running(
     assert entry2.entry_id in hass.data[DOMAIN]
     # Panel stays because there's still one entry loaded
     assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+# ------------------------------------------------------------------ #
+# Long-poll background task                                           #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_setup_starts_log_listener(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """setup_entry starts the background log listener task."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    assert coordinator._log_task is not None
+    assert not coordinator._log_task.done()
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_log_listener(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Unloading an entry cancels the background log listener task."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    task = coordinator._log_task
+
+    await hass.config_entries.async_unload(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert task.done()
+
+
+# ------------------------------------------------------------------ #
+# Zero-device edge case                                               #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_service_with_no_devices_raises(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Service call with no configured devices raises a clear validation error."""
+    # Register services without any loaded entries
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # Remove the entry from hass.data to simulate zero devices
+    hass.data[DOMAIN].clear()
+
+    with pytest.raises(ServiceValidationError, match="No Doorman devices"):
+        await hass.services.async_call(
+            DOMAIN, "create_user", {"name": "Test"}, blocking=True,
+        )
+
+
+# ------------------------------------------------------------------ #
+# Per-device write-permission notification                            #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_write_permission_notification_includes_device_name(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """The write-permission notification title contains the device name."""
+    from unittest.mock import patch as _patch
+    from homeassistant.components.persistent_notification import async_create as pn_create
+
+    mock_2n_client.check_directory_write_permission = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value=False)
+
+    notifications = []
+
+    def _capture_pn(hass, message, title=None, notification_id=None):
+        notifications.append({"title": title, "notification_id": notification_id, "message": message})
+
+    doorman_config_entry.add_to_hass(hass)
+
+    with _patch("custom_components.doorman.pn_create", side_effect=_capture_pn):
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert len(notifications) == 1
+    assert "2N IP Verso" in notifications[0]["title"]
+    assert doorman_config_entry.entry_id in notifications[0]["notification_id"]
+
+
+# ------------------------------------------------------------------ #
+# New service fields: enabled, user_uuid                              #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_create_user_service_with_enabled_field(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """create_user with enabled=False forwards the flag to the API."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        "create_user",
+        {"name": "Disabled User", "enabled": False},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.create_user.call_args[0][0]
+    assert call_arg["name"] == "Disabled User"
+    assert call_arg["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_with_enabled_field(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """update_user with enabled=True forwards the flag to the API."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        "update_user",
+        {"uuid": "uuid-jane", "enabled": True},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.update_user.call_args[0][0]
+    assert call_arg["uuid"] == "uuid-jane"
+    assert call_arg["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_grant_access_service_with_user_uuid(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """grant_access with user_uuid forwards it to the API."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        "grant_access",
+        {"access_point_id": 1, "user_uuid": "uuid-jane"},
+        blocking=True,
+    )
+
+    mock_2n_client.grant_access.assert_called_once_with(
+        access_point_id=1, user_uuid="uuid-jane"
+    )

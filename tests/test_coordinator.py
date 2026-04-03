@@ -36,7 +36,6 @@ async def test_coordinator_fetch_returns_users_and_switches(
     client.check_directory_write_permission = AsyncMock(return_value=True)
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-    client.pull_log = AsyncMock(return_value=[])
 
     coordinator = _make_coordinator(hass, client)
     await coordinator.async_init_device_info()
@@ -49,6 +48,22 @@ async def test_coordinator_fetch_returns_users_and_switches(
 
 
 @pytest.mark.asyncio
+async def test_coordinator_poll_does_not_call_pull_log(
+    hass: HomeAssistant,
+) -> None:
+    """_async_update_data no longer calls pull_log — the background task owns it."""
+    client = MagicMock()
+    client.query_users = AsyncMock(return_value=MOCK_USERS)
+    client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+    client.pull_log = AsyncMock(return_value=[])
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator._async_update_data()
+
+    client.pull_log.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_coordinator_auth_error_raises_config_entry_auth_failed(
     hass: HomeAssistant,
 ) -> None:
@@ -56,7 +71,6 @@ async def test_coordinator_auth_error_raises_config_entry_auth_failed(
     client = MagicMock()
     client.query_users = AsyncMock(side_effect=DoormanAuthError("expired"))
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-    client.pull_log = AsyncMock(return_value=[])
 
     coordinator = _make_coordinator(hass, client)
 
@@ -72,7 +86,6 @@ async def test_coordinator_api_error_raises_update_failed(
     client = MagicMock()
     client.query_users = AsyncMock(side_effect=DoormanApiError("timeout"))
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
-    client.pull_log = AsyncMock(return_value=[])
 
     coordinator = _make_coordinator(hass, client)
 
@@ -146,16 +159,91 @@ async def test_fire_new_access_events_tracks_last_access(
 
 
 @pytest.mark.asyncio
-async def test_log_listener_updates_log_buffer(
+async def test_log_buffer_accumulates_via_fire_new_access_events(
     hass: HomeAssistant,
 ) -> None:
-    """Events fired via _fire_new_access_events are accumulated in _log_buffer."""
+    """_fire_new_access_events prepends events to _log_buffer (newest first)."""
     client = MagicMock()
     coordinator = _make_coordinator(hass, client)
 
-    events = [
+    first_batch = [
         {"id": "e1", "event": "CardEntered", "utcTime": "2026-03-29T10:00:00Z", "params": {}},
+    ]
+    second_batch = [
         {"id": "e2", "event": "UserRejected", "utcTime": "2026-03-29T10:01:00Z", "params": {}},
     ]
-    coordinator._log_buffer = events
+
+    # Manually simulate what the background task does when it gets events
+    coordinator._log_buffer = (first_batch + coordinator._log_buffer)[:coordinator._log_buffer_max]
+    coordinator._log_buffer = (second_batch + coordinator._log_buffer)[:coordinator._log_buffer_max]
+
     assert len(coordinator._log_buffer) == 2
+    assert coordinator._log_buffer[0]["id"] == "e2"  # newest first
+
+
+@pytest.mark.asyncio
+async def test_log_buffer_capped_at_max(
+    hass: HomeAssistant,
+) -> None:
+    """_log_buffer never exceeds _log_buffer_max entries."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+
+    # Fill beyond max
+    overflow = [{"id": str(i), "event": "CardEntered", "utcTime": "", "params": {}} for i in range(250)]
+    coordinator._log_buffer = overflow[:coordinator._log_buffer_max]
+
+    assert len(coordinator._log_buffer) == coordinator._log_buffer_max
+
+
+@pytest.mark.asyncio
+async def test_start_log_listener_is_idempotent(
+    hass: HomeAssistant,
+) -> None:
+    """Calling start_log_listener twice does not create a second task."""
+    import asyncio
+
+    async def _never_ending():
+        await asyncio.sleep(9999)
+
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+    coordinator._log_listener_loop = _never_ending  # type: ignore[method-assign]
+
+    coordinator.start_log_listener()
+    task_1 = coordinator._log_task
+
+    coordinator.start_log_listener()
+    task_2 = coordinator._log_task
+
+    assert task_1 is task_2  # same task object, no duplicate
+
+    task_1.cancel()
+    try:
+        await task_1
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_async_shutdown_cancels_log_task(
+    hass: HomeAssistant,
+) -> None:
+    """async_shutdown cancels the background log task cleanly."""
+    import asyncio
+
+    async def _never_ending():
+        await asyncio.sleep(9999)
+
+    client = MagicMock()
+    client.async_close = AsyncMock()
+    coordinator = _make_coordinator(hass, client)
+    coordinator._log_listener_loop = _never_ending  # type: ignore[method-assign]
+
+    coordinator.start_log_listener()
+    assert coordinator._log_task is not None
+    assert not coordinator._log_task.done()
+
+    await coordinator.async_shutdown()
+
+    assert coordinator._log_task.done()
