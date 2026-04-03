@@ -30,7 +30,7 @@ jobs:
         run: ruff check custom_components/ tests/
 
   tests:
-    name: Integration tests
+    name: Unit tests & coverage
     runs-on: ubuntu-latest
     needs: [validate-manifest, lint]
     steps:
@@ -41,15 +41,21 @@ jobs:
           cache: pip
       - name: Install test dependencies
         run: pip install -r requirements_test.txt
-      - name: Run tests
-        run: pytest tests/ --ignore=tests/integration -v --tb=short
-      - name: Upload coverage
-        if: success()
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ --ignore=tests/integration \
+            --cov=custom_components/doorman \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=60 \
+            -v --tb=short
+      - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: .pytest_cache/
-          retention-days: 7
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
 
   hacs-validate:
     name: HACS Action

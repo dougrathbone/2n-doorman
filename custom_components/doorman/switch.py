@@ -43,7 +43,7 @@ class DoormanRelay(CoordinatorEntity[DoormanCoordinator], SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        for sw in self.coordinator.data.get("switches", []):
+        for sw in (self.coordinator.data or {}).get("switches", []):
             if sw["id"] == self._switch_id:
                 return bool(sw.get("active", False))
         return False

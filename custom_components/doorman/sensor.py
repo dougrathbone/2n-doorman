@@ -34,13 +34,13 @@ class DoormanUserCountSensor(CoordinatorEntity[DoormanCoordinator], SensorEntity
 
     @property
     def native_value(self) -> int:
-        return len(self.coordinator.data.get("users", []))
+        return len((self.coordinator.data or {}).get("users", []))
 
     @property
     def extra_state_attributes(self) -> dict:
         return {
             "users": [
                 {"uuid": u.get("uuid"), "name": u.get("name")}
-                for u in self.coordinator.data.get("users", [])
+                for u in (self.coordinator.data or {}).get("users", [])
             ]
         }

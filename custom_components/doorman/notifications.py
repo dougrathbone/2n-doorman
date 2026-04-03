@@ -22,6 +22,9 @@ _NOTIFY_ON = frozenset({"UserAuthenticated"})
 @callback
 def async_setup_notifications(hass: HomeAssistant) -> None:
     """Register the access-event listener that dispatches push notifications."""
+    if hass.data.get(f"{DOMAIN}_notifications_registered"):
+        return
+    hass.data[f"{DOMAIN}_notifications_registered"] = True
 
     @callback
     def _on_access_event(event: Event) -> None:
@@ -65,4 +68,4 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
             )
             _LOGGER.debug("Notification dispatched to %s: %s", service, message)
 
-    hass.bus.async_listen(f"{DOMAIN}_access", _on_access_event)
+    hass.data[f"{DOMAIN}_notifications_unsub"] = hass.bus.async_listen(f"{DOMAIN}_access", _on_access_event)

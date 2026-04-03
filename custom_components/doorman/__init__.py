@@ -132,6 +132,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not hass.data[DOMAIN]:
             async_remove_panel(hass, DOMAIN)
             hass.data.pop(f"{DOMAIN}_panel_registered", None)
+            hass.data.pop(f"{DOMAIN}_websocket_registered", None)
+            if unsub := hass.data.pop(f"{DOMAIN}_notifications_unsub", None):
+                unsub()
+            hass.data.pop(f"{DOMAIN}_notifications_registered", None)
     return unloaded
 
 

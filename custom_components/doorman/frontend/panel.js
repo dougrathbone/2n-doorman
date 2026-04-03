@@ -392,14 +392,18 @@ class DoormanUsersTab extends HTMLElement {
     // Search box — preserved across re-renders via _filter state
     const searchRow = document.createElement("div");
     searchRow.className = "search-row";
-    searchRow.innerHTML = `<input class="search-input" id="search" type="search" placeholder="Filter by name…" value="${this._filter}" />`;
+    const searchInput = document.createElement("input");
+    searchInput.className = "search-input";
+    searchInput.id = "search";
+    searchInput.type = "search";
+    searchInput.placeholder = "Filter by name\u2026";
+    searchInput.value = this._filter;
+    searchRow.appendChild(searchInput);
     content.appendChild(searchRow);
-    const searchInput = searchRow.querySelector("#search");
     searchInput.addEventListener("input", e => {
       this._filter = e.target.value;
       this._rebuildTable(content);
     });
-    // Focus at end so cursor lands after existing text
     searchInput.setSelectionRange(this._filter.length, this._filter.length);
 
     this._rebuildTable(content);
@@ -777,6 +781,12 @@ class DoormanLogTab extends HTMLElement {
         }).join("")}
       </tbody>
     `;
+    if (this._events.length > 100) {
+      const note = document.createElement("p");
+      note.style.cssText = "font-size:12px;color:var(--secondary-text-color);margin:0 0 8px";
+      note.textContent = `Showing 100 of ${this._events.length} events`;
+      content.insertBefore(note, table);
+    }
     content.appendChild(table);
   }
 }

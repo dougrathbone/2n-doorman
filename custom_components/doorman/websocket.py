@@ -12,6 +12,9 @@ from .storage import DoormanStore
 
 def async_setup_websocket(hass: HomeAssistant) -> None:
     """Register all Doorman WebSocket commands."""
+    if hass.data.get(f"{DOMAIN}_websocket_registered"):
+        return
+    hass.data[f"{DOMAIN}_websocket_registered"] = True
     websocket_api.async_register_command(hass, ws_list_devices)
     websocket_api.async_register_command(hass, ws_list_users)
     websocket_api.async_register_command(hass, ws_get_device_info)
