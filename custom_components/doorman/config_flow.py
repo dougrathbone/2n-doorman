@@ -80,6 +80,59 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reauth(
+        self, entry_data: dict  # noqa: ARG002
+    ) -> config_entries.ConfigFlowResult:
+        """Initiate re-authentication when credentials are rejected."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        errors: dict[str, str] = {}
+        entry = self._reauth_entry
+
+        if user_input is not None:
+            session = async_get_clientsession(self.hass)
+            client = TwoNApiClient(
+                session,
+                entry.data[CONF_HOST],
+                user_input[CONF_USERNAME],
+                user_input[CONF_PASSWORD],
+                entry.data.get(CONF_USE_SSL, DEFAULT_USE_SSL),
+                entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+            )
+            try:
+                await client.get_system_info()
+            except DoormanAuthError:
+                errors["base"] = "invalid_auth"
+            except DoormanConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                errors["base"] = "unknown"
+            else:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, **user_input},
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders={"host": entry.data[CONF_HOST]},
+        )
+
 
 OPTIONS_SCHEMA = vol.Schema(
     {

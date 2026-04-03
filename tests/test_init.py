@@ -634,31 +634,31 @@ async def test_service_with_no_devices_raises(
 
 
 @pytest.mark.asyncio
-async def test_write_permission_notification_includes_device_name(
+async def test_write_permission_creates_repair_issue(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,
     mock_2n_client,
 ) -> None:
-    """The write-permission notification title contains the device name."""
-    from unittest.mock import patch as _patch
-    from homeassistant.components.persistent_notification import async_create as pn_create
+    """When write permission is missing a HA repair issue is created with the device name."""
+    from unittest.mock import MagicMock, patch as _patch
 
     mock_2n_client.check_directory_write_permission = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value=False)
 
-    notifications = []
+    issues = []
 
-    def _capture_pn(hass, message, title=None, notification_id=None):
-        notifications.append({"title": title, "notification_id": notification_id, "message": message})
+    def _capture_issue(hass, domain, issue_id, **kwargs):
+        issues.append({"domain": domain, "issue_id": issue_id, **kwargs})
 
     doorman_config_entry.add_to_hass(hass)
 
-    with _patch("custom_components.doorman.pn_create", side_effect=_capture_pn):
+    with _patch("custom_components.doorman.async_create_issue", side_effect=_capture_issue):
         await hass.config_entries.async_setup(doorman_config_entry.entry_id)
         await hass.async_block_till_done()
 
-    assert len(notifications) == 1
-    assert "2N IP Verso" in notifications[0]["title"]
-    assert doorman_config_entry.entry_id in notifications[0]["notification_id"]
+    assert len(issues) == 1
+    assert issues[0]["domain"] == DOMAIN
+    assert doorman_config_entry.entry_id in issues[0]["issue_id"]
+    assert issues[0]["translation_placeholders"]["device_name"] == "2N IP Verso"
 
 
 # ------------------------------------------------------------------ #
@@ -733,3 +733,22 @@ async def test_grant_access_service_with_user_uuid(
     mock_2n_client.grant_access.assert_called_once_with(
         access_point_id=1, user_uuid="uuid-jane"
     )
+
+
+# ------------------------------------------------------------------ #
+# Migration                                                           #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_entry_returns_true(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """async_migrate_entry succeeds for the current schema version."""
+    from custom_components.doorman import async_migrate_entry
+
+    doorman_config_entry.add_to_hass(hass)
+    result = await async_migrate_entry(hass, doorman_config_entry)
+    assert result is True

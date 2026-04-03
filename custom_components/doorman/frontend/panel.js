@@ -793,6 +793,7 @@ class DoormanDeviceTab extends HTMLElement {
     this._users = [];
     this._accessPoints = [];
     this._loading = true;
+    this._error = null;
     this._entryId = null;
   }
 
@@ -802,6 +803,7 @@ class DoormanDeviceTab extends HTMLElement {
 
   async _load() {
     this._loading = true;
+    this._error = null;
     this._render();
     try {
       const [infoRes, usersRes] = await Promise.all([
@@ -811,6 +813,8 @@ class DoormanDeviceTab extends HTMLElement {
       this._info = infoRes.device_info || {};
       this._accessPoints = infoRes.access_points || [];
       this._users = usersRes.users || [];
+    } catch (e) {
+      this._error = e.message || "Failed to load device info";
     } finally {
       this._loading = false;
       this._render();
@@ -835,7 +839,7 @@ class DoormanDeviceTab extends HTMLElement {
           border-radius: 4px; background: var(--card-background-color, white);
           color: var(--primary-text-color); font-size: 13px; margin-bottom: 12px; }
       </style>
-      ${this._loading ? `<div class="loading">Loading device info…</div>` : `
+      ${this._loading ? `<div class="loading">Loading device info…</div>` : this._error ? `<div class="error">${this._error}</div>` : `
         <div class="card">
           <h3>Device Information</h3>
           <div class="info-grid">
@@ -939,6 +943,7 @@ class DoormanPanel extends HTMLElement {
     try {
       const res = await ws(this._hass, "doorman/list_devices");
       this._devices = res.devices || [];
+      this._loadError = null;
       if (this._devices.length > 0) {
         // Restore last selection from localStorage, falling back to the first device
         const saved = localStorage.getItem("doorman_selected_entry_id");
@@ -950,8 +955,9 @@ class DoormanPanel extends HTMLElement {
       }
       this._renderShell();
     } catch (e) {
-      // Fallback: single device, no selector
       this._devices = [];
+      this._loadError = e.message || "Could not connect to Doorman";
+      this._renderShell();
     }
   }
 
@@ -1035,6 +1041,11 @@ class DoormanPanel extends HTMLElement {
         ${tabs.map(t => `<div class="tab${this._tab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("")}
       </div>
       <div class="content">
+        ${this._loadError ? `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 16px;background:#fff3f3;border:1px solid #ffcdd2;border-radius:6px;color:#c62828;font-size:13px;margin-bottom:16px;line-height:1.5">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="#c62828" style="flex-shrink:0;margin-top:1px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+            <span><strong>Doorman is unavailable</strong> — ${this._loadError}</span>
+          </div>` : ""}
         <div id="tab-content"></div>
       </div>
     `;

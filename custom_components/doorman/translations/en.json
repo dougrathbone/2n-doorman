@@ -18,8 +18,25 @@
       "invalid_auth": "Invalid username or password.",
       "unknown": "An unexpected error occurred."
     },
+    "step": {
+      "reauth_confirm": {
+        "title": "Re-authenticate Doorman",
+        "description": "The credentials for **{host}** are no longer valid. Enter new credentials to restore the connection.",
+        "data": {
+          "username": "API username",
+          "password": "API password"
+        }
+      }
+    },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "issues": {
+    "no_write_permission": {
+      "title": "Doorman: directory write unavailable on {device_name}",
+      "description": "The API user `{username}` cannot write to the 2N device directory on **{device_name}**. Create, edit, and delete operations are disabled.\n\n**To fix:** In the 2N web interface go to **Services → HTTP API**, find the API user, and enable **System API** with **Control** access. Access log, switch control, and user viewing will continue to work in the meantime."
     }
   },
   "options": {

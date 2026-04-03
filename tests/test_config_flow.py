@@ -119,6 +119,86 @@ async def test_options_flow_saves_poll_interval(
 
 
 @pytest.mark.asyncio
+async def test_reauth_flow_shows_form(
+    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+) -> None:
+    """Re-auth flow shows a form pre-populated with the current username."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
+        data=doorman_config_entry.data,
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reauth_confirm"
+
+
+@pytest.mark.asyncio
+async def test_reauth_flow_success(
+    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+) -> None:
+    """Submitting valid credentials in the re-auth flow reloads the entry."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    with patch(
+        "custom_components.doorman.config_flow.TwoNApiClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
+            data=doorman_config_entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "admin", CONF_PASSWORD: "newpassword"},
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reauth_successful"
+    assert doorman_config_entry.data[CONF_PASSWORD] == "newpassword"
+
+
+@pytest.mark.asyncio
+async def test_reauth_flow_invalid_auth(
+    hass: HomeAssistant, doorman_config_entry, mock_2n_client
+) -> None:
+    """Wrong credentials in re-auth show an error and keep the form open."""
+    from custom_components.doorman.api_client import DoormanAuthError as _AuthError
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    with patch(
+        "custom_components.doorman.config_flow.TwoNApiClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(
+            side_effect=_AuthError("bad creds")
+        )
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": doorman_config_entry.entry_id},
+            data=doorman_config_entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "admin", CONF_PASSWORD: "wrongpassword"},
+        )
+
+    assert result["type"] == "form"
+    assert result["errors"]["base"] == "invalid_auth"
+
+
+@pytest.mark.asyncio
 async def test_config_flow_duplicate_device_aborts(hass: HomeAssistant, mock_2n_client) -> None:
     """Attempting to add the same device twice aborts with 'already_configured'."""
     with patch(

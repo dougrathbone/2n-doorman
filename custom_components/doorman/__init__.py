@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant.components import panel_custom
 from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.persistent_notification import async_create as pn_create
+from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue, async_delete_issue
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
@@ -70,22 +70,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not coordinator.has_write_permission:
         device_name = coordinator.device_info.get("deviceName") or entry.data[CONF_HOST]
-        pn_create(
+        async_create_issue(
             hass,
-            (
-                f"The Doorman API user (`{entry.data[CONF_USERNAME]}`) on "
-                f"**{device_name}** cannot write to the 2N device directory. "
-                "Create, edit and delete operations will be unavailable.\n\n"
-                "**How to fix:** In the 2N web interface go to "
-                "**Services → HTTP API**, find the API user, and enable "
-                "**System API** with **Control** access (not just Monitoring). "
-                "All directory write operations (`dir/create`, `dir/update`, `dir/delete`) "
-                "require the System – Control privilege. Access log, switch control, "
-                "and user viewing will continue to work in the meantime."
-            ),
-            title=f"Doorman: directory write unavailable ({device_name})",
-            notification_id=f"{DOMAIN}_no_write_permission_{entry.entry_id}",
+            DOMAIN,
+            f"no_write_permission_{entry.entry_id}",
+            is_fixable=False,
+            severity=IssueSeverity.WARNING,
+            translation_key="no_write_permission",
+            translation_placeholders={
+                "device_name": device_name,
+                "username": entry.data[CONF_USERNAME],
+            },
         )
+    else:
+        async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
 
     store = DoormanStore(hass)
     await store.async_load()
@@ -130,10 +128,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_shutdown()
         await coordinator.client.async_close()
+        async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
         if not hass.data[DOMAIN]:
             async_remove_panel(hass, DOMAIN)
             hass.data.pop(f"{DOMAIN}_panel_registered", None)
     return unloaded
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:  # noqa: ARG001
+    """Migrate config entry to the current schema version."""
+    _LOGGER.debug("Migrating Doorman entry from version %s", entry.version)
+    # VERSION 1 is current — no migrations needed yet.
+    return True
 
 
 # ------------------------------------------------------------------ #
