@@ -1,8 +1,8 @@
 {
   "domain": "doorman",
   "name": "Doorman",
-  "version": "0.2.5",
-  "codeowners": [],
+  "version": "0.2.6",
+  "codeowners": ["@dougrathbone"],
   "config_flow": true,
   "documentation": "https://github.com/dougrathbone/2n-doorman",
   "issue_tracker": "https://github.com/dougrathbone/2n-doorman/issues",
