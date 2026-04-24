@@ -1,13 +1,13 @@
 {
   "domain": "doorman",
   "name": "Doorman",
-  "version": "0.2.7",
   "codeowners": ["@dougrathbone"],
   "config_flow": true,
+  "dependencies": ["http", "frontend", "panel_custom"],
   "documentation": "https://github.com/dougrathbone/2n-doorman",
+  "integration_type": "device",
+  "iot_class": "local_polling",
   "issue_tracker": "https://github.com/dougrathbone/2n-doorman/issues",
   "requirements": [],
-  "iot_class": "local_polling",
-  "dependencies": ["http", "frontend", "panel_custom"],
-  "integration_type": "device"
+  "version": "0.2.7"
 }

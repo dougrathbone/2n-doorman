@@ -42,6 +42,8 @@ from .websocket import async_setup_websocket
 
 _LOGGER = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 async def _async_reload_on_options_update(
     hass: HomeAssistant, entry: ConfigEntry
