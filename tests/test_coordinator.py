@@ -66,17 +66,72 @@ async def test_coordinator_poll_does_not_call_pull_log(
 
 
 @pytest.mark.asyncio
-async def test_coordinator_auth_error_raises_config_entry_auth_failed(
+async def test_coordinator_single_auth_error_raises_update_failed(
     hass: HomeAssistant,
 ) -> None:
-    """An auth error from the API triggers a re-auth flow via ConfigEntryAuthFailed."""
+    """A single transient auth error surfaces as UpdateFailed, not re-auth.
+
+    2N devices intermittently return 401 (digest nonce rotation, device
+    briefly busy) and recover on the next poll, so we shouldn't trigger a
+    re-auth flow on a one-off failure.
+    """
+    client = MagicMock()
+    client.query_users = AsyncMock(side_effect=DoormanAuthError("transient"))
+    client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+
+    coordinator = _make_coordinator(hass, client)
+
+    with pytest.raises(UpdateFailed, match="Transient auth error"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_persistent_auth_errors_trigger_reauth(
+    hass: HomeAssistant,
+) -> None:
+    """After AUTH_FAILURE_THRESHOLD consecutive auth errors, escalate to ConfigEntryAuthFailed."""
+    from custom_components.doorman.coordinator import AUTH_FAILURE_THRESHOLD
+
     client = MagicMock()
     client.query_users = AsyncMock(side_effect=DoormanAuthError("expired"))
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
 
     coordinator = _make_coordinator(hass, client)
 
+    for _ in range(AUTH_FAILURE_THRESHOLD - 1):
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
     with pytest.raises(ConfigEntryAuthFailed):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_auth_failure_counter_resets_on_success(
+    hass: HomeAssistant,
+) -> None:
+    """A successful poll between failures resets the consecutive-failure counter."""
+    from custom_components.doorman.coordinator import AUTH_FAILURE_THRESHOLD
+
+    client = MagicMock()
+    client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+
+    coordinator = _make_coordinator(hass, client)
+
+    # Fail threshold-1 times, then succeed once, then fail once more — should
+    # surface as UpdateFailed (not ConfigEntryAuthFailed) because the counter reset.
+    fail_then_succeed_then_fail = (
+        [DoormanAuthError("transient")] * (AUTH_FAILURE_THRESHOLD - 1)
+        + [MOCK_USERS]
+        + [DoormanAuthError("transient")]
+    )
+    client.query_users = AsyncMock(side_effect=fail_then_succeed_then_fail)
+
+    for _ in range(AUTH_FAILURE_THRESHOLD - 1):
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+    await coordinator._async_update_data()
+    with pytest.raises(UpdateFailed):
         await coordinator._async_update_data()
 
 

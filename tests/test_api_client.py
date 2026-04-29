@@ -551,7 +551,7 @@ async def test_request_401_no_digest_challenge_raises_auth_error():
 
 @pytest.mark.asyncio
 async def test_request_401_retry_still_401_raises_auth_error():
-    """If the digest retry also returns 401, raise DoormanAuthError."""
+    """If the digest retry also returns 401 (no stale flag), raise DoormanAuthError."""
     client = _make_client()
 
     resp_401_first = AsyncMock()
@@ -566,6 +566,9 @@ async def test_request_401_retry_still_401_raises_auth_error():
 
     resp_401_second = AsyncMock()
     resp_401_second.status = 401
+    resp_401_second.headers = MagicMock()
+    # No stale flag — credentials genuinely wrong
+    resp_401_second.headers.getall = MagicMock(return_value=[])
     cm_second = AsyncMock()
     cm_second.__aenter__ = AsyncMock(return_value=resp_401_second)
     cm_second.__aexit__ = AsyncMock(return_value=False)
@@ -574,6 +577,53 @@ async def test_request_401_retry_still_401_raises_auth_error():
 
     with pytest.raises(DoormanAuthError, match="Invalid credentials"):
         await client._request("GET", "system/info")
+
+
+@pytest.mark.asyncio
+async def test_request_401_stale_nonce_retries_with_fresh_nonce():
+    """RFC 2617: stale=true on the digest retry means the nonce rotated; retry once more."""
+    client = _make_client()
+
+    # First 401 — initial digest challenge
+    resp_401a = AsyncMock()
+    resp_401a.status = 401
+    resp_401a.headers = MagicMock()
+    resp_401a.headers.getall = MagicMock(return_value=[
+        'Digest realm="2N", nonce="old-nonce", qop="auth"'
+    ])
+    cm_a = AsyncMock()
+    cm_a.__aenter__ = AsyncMock(return_value=resp_401a)
+    cm_a.__aexit__ = AsyncMock(return_value=False)
+
+    # Second 401 — stale nonce, server provides a fresh one
+    resp_401b = AsyncMock()
+    resp_401b.status = 401
+    resp_401b.headers = MagicMock()
+    resp_401b.headers.getall = MagicMock(return_value=[
+        'Digest realm="2N", nonce="fresh-nonce", qop="auth", stale=true'
+    ])
+    cm_b = AsyncMock()
+    cm_b.__aenter__ = AsyncMock(return_value=resp_401b)
+    cm_b.__aexit__ = AsyncMock(return_value=False)
+
+    # Third request — succeeds with the fresh nonce
+    resp_200 = AsyncMock()
+    resp_200.status = 200
+    resp_200.json = AsyncMock(return_value={"success": True, "result": {"info": "ok"}})
+    resp_200.raise_for_status = MagicMock()
+    cm_c = AsyncMock()
+    cm_c.__aenter__ = AsyncMock(return_value=resp_200)
+    cm_c.__aexit__ = AsyncMock(return_value=False)
+
+    client._session.request = MagicMock(side_effect=[cm_a, cm_b, cm_c])
+
+    result = await client._request("GET", "system/info")
+    assert result == {"success": True, "result": {"info": "ok"}}
+    assert client._session.request.call_count == 3
+    # Final attempt must reuse digest auth with the fresh nonce
+    third_call_kwargs = client._session.request.call_args_list[2]
+    auth_header = (third_call_kwargs.kwargs.get("headers") or {}).get("Authorization", "")
+    assert 'nonce="fresh-nonce"' in auth_header
 
 
 @pytest.mark.asyncio

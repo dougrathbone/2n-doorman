@@ -27,6 +27,18 @@ ACCESS_EVENTS = {
     "MobKeyEntered",
 }
 
+# 2N devices intermittently return 401/timeout on polls when the digest
+# nonce rotates or the device is briefly busy. Re-authentication on the
+# next request usually succeeds, so we only surface a re-auth flow after
+# this many consecutive auth failures — otherwise users get spurious
+# "could not authenticate" repair issues for transient hiccups.
+AUTH_FAILURE_THRESHOLD = 3
+
+# Log-listener back-off: start at 5 s, double on each consecutive error,
+# cap at 60 s, reset on the first successful pull.
+LOG_LISTENER_INITIAL_BACKOFF = 5
+LOG_LISTENER_MAX_BACKOFF = 60
+
 
 class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the 2N device and distributes data to all entities."""
@@ -57,6 +69,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_access: dict[str, str] = {}
         self._pending_access_saves: list[tuple[str, str]] = []
         self._log_task: asyncio.Task | None = None
+        self._consecutive_auth_failures = 0
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information and check write permissions at startup."""
@@ -94,21 +107,35 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Long-poll the device log and fire HA events as they arrive.
 
         Uses a 20 s server-side timeout so events are surfaced within 20 s
-        rather than waiting for the next scheduled coordinator poll.  The loop
-        runs indefinitely; transient errors trigger a 5 s back-off.
+        rather than waiting for the next scheduled coordinator poll. Known
+        transient errors back off exponentially (5 → 60 s); unexpected
+        errors include a traceback. Backoff resets on the first success.
         """
+        backoff = LOG_LISTENER_INITIAL_BACKOFF
         while True:
             try:
                 events = await self.client.pull_log(server_timeout=20)
             except asyncio.CancelledError:
                 return
+            except (DoormanApiError, asyncio.TimeoutError) as err:
+                _LOGGER.warning(
+                    "Doorman log listener: %s — retrying in %d s",
+                    err.__class__.__name__ + (f": {err}" if str(err) else ""),
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
+                continue
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning(
-                    "Doorman log listener error (%s). Retrying in 5 s.", err, exc_info=True
+                    "Doorman log listener: unexpected error (%r) — retrying in %d s",
+                    err, backoff, exc_info=True,
                 )
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
                 continue
 
+            backoff = LOG_LISTENER_INITIAL_BACKOFF
             if not events:
                 continue
 
@@ -139,10 +166,17 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.client.get_switch_status(),
             )
         except DoormanAuthError as err:
-            raise ConfigEntryAuthFailed from err
+            self._consecutive_auth_failures += 1
+            if self._consecutive_auth_failures >= AUTH_FAILURE_THRESHOLD:
+                raise ConfigEntryAuthFailed from err
+            # Single transient 401s on 2N devices are common (digest nonce
+            # rotation, device busy). Surface as UpdateFailed so entities go
+            # unavailable for one cycle without triggering a re-auth flow.
+            raise UpdateFailed(f"Transient auth error ({err}); will retry") from err
         except DoormanApiError as err:
             raise UpdateFailed(f"2N API error: {err}") from err
 
+        self._consecutive_auth_failures = 0
         return {
             "users": users,
             "switches": switches,

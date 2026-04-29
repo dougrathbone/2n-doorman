@@ -150,6 +150,19 @@ class TwoNApiClient:
                 f'response="{response}"'
             )
 
+    @staticmethod
+    def _pick_digest_challenge(headers: Any) -> str | None:
+        """Return the Digest WWW-Authenticate challenge from a response, or None."""
+        return next(
+            (v for v in headers.getall("WWW-Authenticate", []) if v.startswith("Digest")),
+            None,
+        )
+
+    @staticmethod
+    def _challenge_is_stale(challenge: str) -> bool:
+        """RFC 2617 stale=true means the nonce expired; the client should retry once."""
+        return "stale=true" in challenge.lower().replace('"', "").replace(" ", "")
+
     async def _request(
         self,
         method: str,
@@ -161,6 +174,19 @@ class TwoNApiClient:
         url = f"{self._base_url}/api/{endpoint}"
         ssl_ctx = self._ssl_context()
         timeout = aiohttp.ClientTimeout(total=request_timeout)
+
+        async def _process_ok(resp: aiohttp.ClientResponse) -> dict[str, Any]:
+            resp.raise_for_status()
+            data: dict = await resp.json()
+            if not data.get("success", True):
+                err = data.get("error", {})
+                _LOGGER.debug(
+                    "%s %s failed — request body: %s — raw response: %s",
+                    method, endpoint, json, data,
+                )
+                _raise_api_error(err, data)
+            return data
+
         try:
             # First attempt — no auth header (some endpoints need no auth)
             async with self._session.request(
@@ -168,55 +194,52 @@ class TwoNApiClient:
             ) as resp:
                 if resp.status == 401:
                     # Device may send multiple WWW-Authenticate headers (Basic + Digest).
-                    # Find the Digest challenge; fall back to raising auth error if absent.
-                    www_auth_values = resp.headers.getall("WWW-Authenticate", [])
-                    digest_challenge = next(
-                        (v for v in www_auth_values if v.startswith("Digest")), None
-                    )
+                    digest_challenge = self._pick_digest_challenge(resp.headers)
                     if digest_challenge is None:
                         raise DoormanAuthError("Invalid credentials")
                     # Second attempt with Digest auth
                     auth_header = self._build_digest_header(method, url, digest_challenge)
                     async with self._session.request(
-                        method,
-                        url,
-                        params=params,
-                        json=json,
-                        ssl=ssl_ctx,
-                        timeout=timeout,
+                        method, url, params=params, json=json,
+                        ssl=ssl_ctx, timeout=timeout,
                         headers={"Authorization": auth_header},
                     ) as resp2:
                         if resp2.status == 401:
+                            # RFC 2617: server may rotate the nonce mid-session and
+                            # respond with stale=true. Retry once with the fresh nonce
+                            # before declaring credentials invalid — this is the source
+                            # of most transient "Invalid credentials" errors during
+                            # long-poll sessions on 2N devices.
+                            stale_challenge = self._pick_digest_challenge(resp2.headers)
+                            if stale_challenge and self._challenge_is_stale(stale_challenge):
+                                stale_auth = self._build_digest_header(
+                                    method, url, stale_challenge
+                                )
+                                async with self._session.request(
+                                    method, url, params=params, json=json,
+                                    ssl=ssl_ctx, timeout=timeout,
+                                    headers={"Authorization": stale_auth},
+                                ) as resp3:
+                                    if resp3.status == 401:
+                                        raise DoormanAuthError("Invalid credentials")
+                                    if resp3.status == 403:
+                                        raise DoormanAuthError(
+                                            "Permission denied — ensure the API user has "
+                                            "Directory access"
+                                        )
+                                    return await _process_ok(resp3)
                             raise DoormanAuthError("Invalid credentials")
                         if resp2.status == 403:
                             raise DoormanAuthError(
                                 "Permission denied — ensure the API user has Directory access"
                             )
-                        resp2.raise_for_status()
-                        data: dict = await resp2.json()
-                        if not data.get("success", True):
-                            err = data.get("error", {})
-                            _LOGGER.debug(
-                                "%s %s failed — request body: %s — raw response: %s",
-                                method, endpoint, json, data,
-                            )
-                            _raise_api_error(err, data)
-                        return data
+                        return await _process_ok(resp2)
 
                 if resp.status == 403:
                     raise DoormanAuthError(
                         "Permission denied — ensure the API user has Directory access"
                     )
-                resp.raise_for_status()
-                data = await resp.json()
-                if not data.get("success", True):
-                    err = data.get("error", {})
-                    _LOGGER.debug(
-                        "%s %s failed — request body: %s — raw response: %s",
-                        method, endpoint, json, data,
-                    )
-                    _raise_api_error(err, data)
-                return data
+                return await _process_ok(resp)
         except aiohttp.ClientConnectorError as err:
             raise DoormanConnectionError(
                 f"Cannot connect to {self._base_url}"
