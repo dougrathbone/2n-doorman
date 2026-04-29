@@ -10,7 +10,10 @@
       "Bash(gh pr:*)",
       "Bash(ssh:*)",
       "Bash(python3 -m pytest tests/test_coordinator.py -x --tb=short)",
-      "Bash(sort -t. -k1)"
+      "Bash(sort -t. -k1)",
+      "Bash(pytest tests/ --ignore=tests/integration --cov=custom_components/doorman --cov-report=term-missing -q)",
+      "Bash(grep -v \"^$\")",
+      "Bash(git push origin main)"
     ]
   }
 }
