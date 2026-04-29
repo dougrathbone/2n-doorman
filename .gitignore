@@ -13,3 +13,7 @@ node_modules/
 *.zip
 tests/integration/ha_config/.HA_VERSION
 tests/integration/ha_config/.ha_run.lock
+
+# Claude Code — per-developer settings and ephemeral subagent worktrees
+.claude/settings.local.json
+.claude/worktrees/
