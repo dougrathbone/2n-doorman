@@ -1174,3 +1174,103 @@ def test_normalize_switch_keeps_id():
     result = TwoNApiClient._normalize_switch({"id": 1, "switch": 1, "name": "Door"})
     assert result["id"] == 1
     assert "switch" in result  # preserved since id already exists
+
+
+# ─── Digest qop-list / algorithm handling ─────────────────────────────────────
+
+def test_build_digest_header_qop_list_prefers_auth():
+    """A comma-separated qop list ("auth,auth-int") engages the auth path."""
+    client = _make_client()
+    www_auth = 'Digest realm="2N", nonce="abc123", qop="auth,auth-int", algorithm=MD5'
+    header = client._build_digest_header("GET", "http://192.168.1.100/api/system/info", www_auth)
+    assert "qop=auth" in header
+    assert "qop=auth-int" not in header
+    assert "nc=00000001" in header
+    assert "cnonce=" in header
+
+
+def test_build_digest_header_honors_sha256():
+    """When the device announces SHA-256 the response is a SHA-256 digest."""
+    import re
+
+    client = _make_client()
+    www_auth = 'Digest realm="2N", nonce="abc123", qop="auth", algorithm=SHA-256'
+    header = client._build_digest_header("GET", "http://192.168.1.100/api/system/info", www_auth)
+    assert "algorithm=SHA-256" in header
+    response = re.search(r'response="([0-9a-f]+)"', header).group(1)
+    assert len(response) == 64  # SHA-256 hex digest, not MD5's 32
+
+
+# ─── Error-code threading / code-12 re-subscribe ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pull_log_renews_on_code_attribute() -> None:
+    """A re-subscribe is driven by the parsed error code, not a message substring."""
+    client = _make_client()
+    client._log_subscription_id = 1
+    renew_called = False
+
+    async def fake_subscribe():
+        nonlocal renew_called
+        renew_called = True
+        client._log_subscription_id = 2
+
+    call_count = 0
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise DoormanApiError("subscription gone", code=12)
+        return {"result": {"events": [{"event": "CardEntered"}]}}
+
+    client._subscribe_log = fake_subscribe
+    client._request = fake_request
+
+    events = await client.pull_log()
+    assert renew_called
+    assert events[0]["event"] == "CardEntered"
+
+
+@pytest.mark.asyncio
+async def test_pull_log_code_112_does_not_resubscribe() -> None:
+    """Error code 112 must NOT be mistaken for code 12 (substring false positive)."""
+    client = _make_client()
+    client._log_subscription_id = 1
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        raise DoormanApiError("API error 112: something", code=112)
+
+    client._request = fake_request
+
+    with pytest.raises(DoormanApiError):
+        await client.pull_log()
+
+
+# ─── Credential redaction in logs ─────────────────────────────────────────────
+
+def test_redact_masks_credential_fields():
+    """_redact masks pin/card/code at any nesting depth, leaving other fields."""
+    from custom_components.doorman.api_client import _redact
+
+    payload = {
+        "users": [
+            {"uuid": "u1", "name": "Jane", "access": {"pin": "1234", "card": ["AABB"], "code": ["99"]}}
+        ]
+    }
+    redacted = _redact(payload)
+    access = redacted["users"][0]["access"]
+    assert access["pin"] == "***"
+    assert access["card"] == "***"
+    assert access["code"] == "***"
+    assert redacted["users"][0]["name"] == "Jane"
+    # original is untouched
+    assert payload["users"][0]["access"]["pin"] == "1234"
+
+
+def test_redact_keeps_scalar_error_code():
+    """A scalar API error 'code' is a diagnostic value, not a credential — keep it."""
+    from custom_components.doorman.api_client import _redact
+
+    redacted = _redact({"success": False, "error": {"code": 12, "description": "x"}})
+    assert redacted["error"]["code"] == 12

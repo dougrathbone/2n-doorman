@@ -70,6 +70,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pending_access_saves: list[tuple[str, str]] = []
         self._log_task: asyncio.Task | None = None
         self._consecutive_auth_failures = 0
+        self._consecutive_listener_auth_failures = 0
 
     async def async_init_device_info(self) -> None:
         """Fetch static device information and check write permissions at startup."""
@@ -117,6 +118,28 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 events = await self.client.pull_log(server_timeout=20)
             except asyncio.CancelledError:
                 return
+            except DoormanAuthError as err:
+                # Distinct from generic API errors: a persistent auth failure
+                # here would otherwise log a warning every backoff cycle forever
+                # while never triggering the re-auth flow (only the poll path
+                # escalates). After repeated failures, start re-authentication
+                # and stop the listener — it will be restarted on reload.
+                self._consecutive_listener_auth_failures += 1
+                if self._consecutive_listener_auth_failures >= AUTH_FAILURE_THRESHOLD:
+                    _LOGGER.error(
+                        "Doorman log listener: authentication failed %d times — "
+                        "starting re-authentication",
+                        self._consecutive_listener_auth_failures,
+                    )
+                    self.config_entry.async_start_reauth(self.hass)
+                    return
+                _LOGGER.warning(
+                    "Doorman log listener: transient auth error (%s) — retrying in %d s",
+                    err, backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
+                continue
             except (DoormanApiError, TimeoutError) as err:
                 _LOGGER.warning(
                     "Doorman log listener: %s — retrying in %d s",
@@ -136,22 +159,21 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
 
             backoff = LOG_LISTENER_INITIAL_BACKOFF
+            self._consecutive_listener_auth_failures = 0
             if not events:
                 continue
 
             self._fire_new_access_events(events)
             self._log_buffer = (events + self._log_buffer)[: self._log_buffer_max]
 
-            # Persist last_access entries collected by _fire_new_access_events
+            # Persist last_access entries collected by _fire_new_access_events.
+            # Coalesce into a single disk write rather than one per event.
             if self._pending_access_saves:
                 store = self.hass.data.get(f"{DOMAIN}_store")
+                saved = list(self._pending_access_saves)
+                self._pending_access_saves.clear()
                 if store:
-                    saved = list(self._pending_access_saves)
-                    self._pending_access_saves.clear()
-                    for uuid, utc_time in saved:
-                        await store.update_last_access(uuid, utc_time)
-                else:
-                    self._pending_access_saves.clear()
+                    await store.update_last_access_batch(saved)
 
             # Push an update to all listeners so the log tab refreshes immediately
             if self.data is not None:
@@ -175,6 +197,10 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"Transient auth error ({err}); will retry") from err
         except DoormanApiError as err:
             raise UpdateFailed(f"2N API error: {err}") from err
+        except TimeoutError as err:
+            # A bare timeout from the device is not an aiohttp.ClientError, so it
+            # escapes _request unwrapped. Surface it cleanly as a retryable failure.
+            raise UpdateFailed(f"Timeout talking to 2N device ({err}); will retry") from err
 
         self._consecutive_auth_failures = 0
         return {

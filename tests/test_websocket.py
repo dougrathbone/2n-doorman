@@ -408,3 +408,22 @@ async def test_ws_set_notification_targets_rejects_non_admin(
 
     conn.send_error.assert_called_once()
     assert conn.send_error.call_args[0][1] == "unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_read_commands_reject_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Sensitive read commands (which expose PINs/cards/codes) reject non-admin users."""
+    conn = _mock_connection(is_admin=False)
+
+    ws_list_users(hass, conn, {"id": 1})
+    ws_get_access_log(hass, conn, {"id": 2})
+    ws_get_device_info(hass, conn, {"id": 3})
+    ws_list_devices(hass, conn, {"id": 4})
+    ws_get_notification_targets(hass, conn, {"id": 5, "two_n_uuid": "uuid-jane"})
+
+    assert conn.send_error.call_count == 5
+    assert all(c.args[1] == "unauthorized" for c in conn.send_error.call_args_list)
+    conn.send_result.assert_not_called()

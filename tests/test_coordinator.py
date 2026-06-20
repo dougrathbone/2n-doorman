@@ -302,3 +302,36 @@ async def test_async_shutdown_cancels_log_task(
     await coordinator.async_shutdown()
 
     assert coordinator._log_task.done()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_timeout_raises_update_failed(hass: HomeAssistant) -> None:
+    """A bare TimeoutError from the device surfaces as a retryable UpdateFailed."""
+    client = MagicMock()
+    client.query_users = AsyncMock(side_effect=TimeoutError("slow"))
+    client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+
+    coordinator = _make_coordinator(hass, client)
+    with pytest.raises(UpdateFailed, match="Timeout"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_log_listener_escalates_persistent_auth_to_reauth(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    """Repeated auth failures in the listener trigger re-auth instead of looping forever."""
+    import custom_components.doorman.coordinator as coord_mod
+
+    client = MagicMock()
+    client.pull_log = AsyncMock(side_effect=DoormanAuthError("bad creds"))
+
+    coordinator = _make_coordinator(hass, client)
+    coordinator.config_entry.async_start_reauth = MagicMock()
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", AsyncMock())
+
+    # Loop returns once the failure threshold is hit and re-auth is started.
+    await coordinator._log_listener_loop()
+
+    coordinator.config_entry.async_start_reauth.assert_called_once()
+    assert client.pull_log.call_count == coord_mod.AUTH_FAILURE_THRESHOLD

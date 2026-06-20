@@ -111,3 +111,46 @@ async def test_multiple_user_links(hass: HomeAssistant) -> None:
     assert store.get_two_n_uuid("ha-user-1") == "uuid-jane"
     assert store.get_two_n_uuid("ha-user-2") == "uuid-john"
     assert len(store.user_links) == 2
+
+
+@pytest.mark.asyncio
+async def test_store_instances_do_not_share_default_state(hass: HomeAssistant) -> None:
+    """Two fresh stores must not alias the same nested default dicts.
+
+    Regression: a shallow copy of a shared module-level default would let a
+    mutation on one store leak into every other store (and across reloads).
+    """
+    store_a = DoormanStore(hass)
+    store_b = DoormanStore(hass)
+
+    store_a._data.setdefault("user_links", {})["x"] = "y"
+
+    assert store_b.user_links == {}
+    assert store_a.user_links == {"x": "y"}
+
+
+@pytest.mark.asyncio
+async def test_update_last_access_batch_persists_all(hass: HomeAssistant) -> None:
+    """update_last_access_batch records every entry and survives a reload."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.update_last_access_batch(
+        [("uuid-jane", "2026-03-29T10:00:00Z"), ("uuid-john", "2026-03-29T11:00:00Z")]
+    )
+
+    assert store.last_access["uuid-jane"] == "2026-03-29T10:00:00Z"
+    assert store.last_access["uuid-john"] == "2026-03-29T11:00:00Z"
+
+    store2 = DoormanStore(hass)
+    await store2.async_load()
+    assert store2.last_access["uuid-john"] == "2026-03-29T11:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_update_last_access_batch_empty_is_noop(hass: HomeAssistant) -> None:
+    """An empty batch does not write anything."""
+    store = DoormanStore(hass)
+    await store.async_load()
+    await store.update_last_access_batch([])
+    assert store.last_access == {}

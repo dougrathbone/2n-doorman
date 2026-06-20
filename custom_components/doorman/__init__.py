@@ -11,7 +11,7 @@ from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.issue_registry import (
@@ -20,7 +20,7 @@ from homeassistant.helpers.issue_registry import (
     async_delete_issue,
 )
 
-from .api_client import TwoNApiClient
+from .api_client import DoormanApiError, TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -70,9 +70,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     coordinator = DoormanCoordinator(hass, entry, client)
-    await coordinator.async_init_device_info()
+    try:
+        await coordinator.async_init_device_info()
+    except DoormanApiError as err:
+        # Device unreachable or transiently erroring at startup: tell HA to
+        # retry the setup later instead of marking the entry permanently failed.
+        raise ConfigEntryNotReady(f"Cannot initialise 2N device: {err}") from err
     await coordinator.async_config_entry_first_refresh()
-    coordinator.start_log_listener()
 
     if not coordinator.has_write_permission:
         device_name = coordinator.device_info.get("deviceName") or entry.data[CONF_HOST]
@@ -91,15 +95,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
 
-    store = DoormanStore(hass)
-    await store.async_load()
+    # The store is shared across all config entries (single STORAGE_KEY), so
+    # create and load it exactly once — recreating it per entry would clobber
+    # the in-memory state of other already-loaded devices.
+    store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
+    if store is None:
+        store = DoormanStore(hass)
+        await store.async_load()
+        hass.data[f"{DOMAIN}_store"] = store
     coordinator._last_access = dict(store.last_access)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    hass.data[f"{DOMAIN}_store"] = store
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options_update))
+
+    # Start the background log listener only after the coordinator is registered
+    # in hass.data and all setup steps that can fail have succeeded. Starting it
+    # earlier risks leaking the task if a later setup step raises (async_unload_entry
+    # only runs for entries that finished setting up).
+    coordinator.start_log_listener()
 
     async_setup_websocket(hass)
     async_setup_notifications(hass)
@@ -120,7 +135,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 sidebar_icon=PANEL_ICON,
                 module_url=f"{PANEL_URL}/panel.js",
                 embed_iframe=False,
-                require_admin=False,
+                # Admin-only: the panel manages door credentials (PINs, cards,
+                # codes) and access linking. The WebSocket commands enforce this
+                # independently, but gating the sidebar entry too avoids exposing
+                # the tool to non-admin users.
+                require_admin=True,
             )
         hass.data[f"{DOMAIN}_panel_registered"] = True
 
@@ -136,12 +155,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.client.async_close()
         async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
         if not hass.data[DOMAIN]:
-            async_remove_panel(hass, DOMAIN)
-            hass.data.pop(f"{DOMAIN}_panel_registered", None)
+            if hass.data.pop(f"{DOMAIN}_panel_registered", None):
+                with contextlib.suppress(ValueError, KeyError):
+                    async_remove_panel(hass, DOMAIN)
             hass.data.pop(f"{DOMAIN}_websocket_registered", None)
             if unsub := hass.data.pop(f"{DOMAIN}_notifications_unsub", None):
                 unsub()
             hass.data.pop(f"{DOMAIN}_notifications_registered", None)
+            hass.data.pop(f"{DOMAIN}_store", None)
     return unloaded
 
 

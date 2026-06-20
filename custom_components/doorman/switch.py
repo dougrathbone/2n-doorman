@@ -19,7 +19,7 @@ async def async_setup_entry(
     coordinator: DoormanCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         DoormanRelay(coordinator, entry, sw)
-        for sw in coordinator.data.get("switches", [])
+        for sw in (coordinator.data or {}).get("switches", [])
     )
 
 
