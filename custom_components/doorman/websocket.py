@@ -38,6 +38,19 @@ def _store(hass: HomeAssistant) -> DoormanStore | None:
     return hass.data.get(f"{DOMAIN}_store")
 
 
+def _require_admin(connection: websocket_api.ActiveConnection, msg: dict) -> bool:
+    """Return True if the caller is an admin; otherwise send an error and return False.
+
+    These commands expose door credentials (PINs, cards, codes), the access log
+    and device details, so they must not be reachable by non-admin HA users even
+    though the WebSocket connection itself is authenticated.
+    """
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Admin access required")
+        return False
+    return True
+
+
 # ------------------------------------------------------------------ #
 # Devices                                                              #
 # ------------------------------------------------------------------ #
@@ -50,6 +63,8 @@ def ws_list_devices(
     msg: dict,
 ) -> None:
     """Return all configured Doorman device entries."""
+    if not _require_admin(connection, msg):
+        return
     entries: dict[str, DoormanCoordinator] = hass.data.get(DOMAIN, {})
     devices = []
     for entry_id, coord in entries.items():
@@ -80,6 +95,8 @@ def ws_list_users(
     msg: dict,
 ) -> None:
     """Return all 2N directory users, annotated with their linked HA user ID."""
+    if not _require_admin(connection, msg):
+        return
     coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
@@ -121,6 +138,8 @@ def ws_get_device_info(
     msg: dict,
 ) -> None:
     """Return static device information (model, firmware, serial)."""
+    if not _require_admin(connection, msg):
+        return
     coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
@@ -154,6 +173,8 @@ def ws_get_access_log(
     Calling pull_log() directly from the panel would race with the coordinator
     and consume events from the shared subscription, causing missed bus events.
     """
+    if not _require_admin(connection, msg):
+        return
     coordinator = _coordinator(hass, msg.get("entry_id"))
     if coordinator is None:
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
@@ -252,6 +273,8 @@ def ws_list_notify_services(
     msg: dict,
 ) -> None:
     """Return all registered notify.* service targets."""
+    if not _require_admin(connection, msg):
+        return
     notify_services = list(hass.services.async_services().get("notify", {}).keys())
     targets = [f"notify.{s}" for s in notify_services if s not in ("notify", "send_message")]
     connection.send_result(msg["id"], {"services": targets})
@@ -270,6 +293,8 @@ def ws_get_notification_targets(
     msg: dict,
 ) -> None:
     """Return the notification targets configured for a 2N user."""
+    if not _require_admin(connection, msg):
+        return
     store = _store(hass)
     targets = store.get_notification_targets(msg["two_n_uuid"]) if store else []
     connection.send_result(msg["id"], {"targets": targets})

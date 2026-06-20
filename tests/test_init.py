@@ -636,3 +636,39 @@ async def test_async_migrate_entry_returns_true(
     doorman_config_entry.add_to_hass(hass)
     result = await async_migrate_entry(hass, doorman_config_entry)
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_store_created_once_across_entries(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """The shared store is instantiated once, not recreated per config entry."""
+    from unittest.mock import patch as _patch
+
+    from custom_components.doorman import DoormanStore
+
+    with _patch(
+        "custom_components.doorman.DoormanStore", wraps=DoormanStore
+    ) as spy:
+        await setup_two_entries(hass, doorman_config_entry)
+
+    assert spy.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_retries_when_device_unreachable(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device error during init raises ConfigEntryNotReady so HA retries setup."""
+    from custom_components.doorman.api_client import DoormanConnectionError
+
+    mock_2n_client.get_system_info.side_effect = DoormanConnectionError("offline")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY

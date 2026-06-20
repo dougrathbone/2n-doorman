@@ -11,7 +11,15 @@ from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 
-_EMPTY: dict = {"user_links": {}, "notification_targets": {}, "last_access": {}}
+
+def _empty_data() -> dict:
+    """Return a fresh, independent empty-data structure.
+
+    A factory (not a shared module-level constant) is essential: returning a
+    copy of a shared dict would alias the nested dicts, so a mutation on one
+    store instance would leak into the module global and every other instance.
+    """
+    return {"user_links": {}, "notification_targets": {}, "last_access": {}}
 
 
 class DoormanStore:
@@ -19,12 +27,12 @@ class DoormanStore:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._data: dict = dict(_EMPTY)
+        self._data: dict = _empty_data()
 
     async def async_load(self) -> None:
         """Load data from disk. Call once during integration setup."""
         stored = await self._store.async_load()
-        self._data = stored or dict(_EMPTY)
+        self._data = stored or _empty_data()
 
     # ------------------------------------------------------------------ #
     # Read                                                                 #
@@ -72,6 +80,21 @@ class DoormanStore:
     async def update_last_access(self, two_n_uuid: str, utc_time: str) -> None:
         """Record the most recent successful access time for a user. Persists immediately."""
         self._data.setdefault("last_access", {})[two_n_uuid] = utc_time
+        await self._store.async_save(self._data)
+
+    async def update_last_access_batch(
+        self, entries: list[tuple[str, str]]
+    ) -> None:
+        """Record several access times and persist with a single disk write.
+
+        A batch of access events arriving in one log pull would otherwise
+        trigger one full-dict JSON serialization + disk write per event.
+        """
+        if not entries:
+            return
+        last_access = self._data.setdefault("last_access", {})
+        for two_n_uuid, utc_time in entries:
+            last_access[two_n_uuid] = utc_time
         await self._store.async_save(self._data)
 
     # ------------------------------------------------------------------ #

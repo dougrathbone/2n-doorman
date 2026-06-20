@@ -6,14 +6,24 @@ import logging
 import os
 import ssl
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
+# Credential fields that must never be written to the log, even at DEBUG.
+# "code" is only a credential when it is a list (the user's access codes); the
+# scalar "code" in an API error response is a diagnostic error code, kept visible.
+_ALWAYS_SENSITIVE = ("pin", "card")
+
 
 class DoormanApiError(Exception):
     """Base 2N API error."""
+
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class DoormanAuthError(DoormanApiError):
@@ -39,19 +49,42 @@ def _raise_api_error(err: dict, raw: dict) -> None:
             "enable System API with Control (not just Monitoring) access."
         )
     param_info = f" (param={param!r})" if param else ""
-    raise DoormanApiError(f"API error {code}{param_info}: {err.get('description', raw)}")
+    raise DoormanApiError(
+        f"API error {code}{param_info}: {err.get('description', raw)}", code=code
+    )
+
+
+def _redact(payload: Any) -> Any:
+    """Return a deep copy of a request payload with credential fields masked.
+
+    Used so DEBUG logging of request/response bodies never writes door PINs,
+    card numbers or codes (which appear under ``access.{pin,card,code}`` and,
+    after flattening, at the top level) into the Home Assistant log.
+    """
+    if isinstance(payload, dict):
+        out: dict[str, Any] = {}
+        for k, v in payload.items():
+            if k in _ALWAYS_SENSITIVE or (k == "code" and isinstance(v, list)):
+                out[k] = "***"
+            else:
+                out[k] = _redact(v)
+        return out
+    if isinstance(payload, list):
+        return [_redact(item) for item in payload]
+    return payload
 
 
 class TwoNApiClient:
     """Async wrapper around the 2N IP intercom HTTP API.
 
     Uses Digest auth, which is required by 2N devices for directory (user)
-    endpoints.  Directory operations also require HTTPS; this client always
-    uses HTTPS with ``verify_ssl=False`` by default so that self-signed
-    device certificates work out of the box on local networks.
+    endpoints. The transport (HTTP vs HTTPS) and certificate verification are
+    controlled by the ``use_ssl`` / ``verify_ssl`` arguments, which come from
+    the config entry. Note that 2N directory operations require HTTPS, so a
+    plain-HTTP connection can only read non-directory endpoints.
 
-    Non-directory endpoints (system/info, switch/*, log/*) work over plain
-    HTTP with Digest auth as well, so we use HTTPS everywhere for simplicity.
+    When TLS is enabled but verification is off, the SSL context is built with
+    ``CERT_NONE`` so self-signed device certificates work on local networks.
     """
 
     def __init__(
@@ -61,7 +94,7 @@ class TwoNApiClient:
         username: str,
         password: str,
         use_ssl: bool = True,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
     ) -> None:
         scheme = "https" if use_ssl else "http"
         self._base_url = f"{scheme}://{host}"
@@ -117,38 +150,49 @@ class TwoNApiClient:
         nonce = params.get("nonce", "")
         if not nonce:
             raise DoormanAuthError("Malformed digest challenge: missing nonce")
-        qop = params.get("qop", "")
+        # qop may be a comma-separated list (e.g. "auth,auth-int"); the old code
+        # compared the whole string against "auth" and silently fell back to the
+        # legacy (qop-less) digest when a list was offered. Parse it and prefer
+        # plain "auth". We do not implement auth-int (it requires hashing the
+        # request entity body), so we only engage the qop path for "auth".
+        qop_options = [q.strip() for q in params.get("qop", "").split(",") if q.strip()]
+        use_qop = "auth" if "auth" in qop_options else ""
         algorithm = params.get("algorithm", "MD5").upper()
 
+        # Honor the announced algorithm. Previously the response was always
+        # computed with MD5 regardless, which would silently send a wrong digest
+        # to a device requesting SHA-256.
+        if algorithm.startswith("SHA-256"):
+            def _h(s: str) -> str:
+                return hashlib.sha256(s.encode()).hexdigest()
+        else:
+            def _h(s: str) -> str:
+                return hashlib.md5(s.encode(), usedforsecurity=False).hexdigest()
+
         # Extract the path from the URL for the digest uri
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         uri = parsed.path
         if parsed.query:
             uri += "?" + parsed.query
 
-        def md5(s: str) -> str:
-            return hashlib.md5(s.encode()).hexdigest()
+        ha1 = _h(f"{self._username}:{realm}:{self._password}")
+        ha2 = _h(f"{method.upper()}:{uri}")
 
-        ha1 = md5(f"{self._username}:{realm}:{self._password}")
-        ha2 = md5(f"{method.upper()}:{uri}")
-
-        if qop in ("auth", "auth-int"):
+        if use_qop:
             nc = "00000001"
             cnonce = os.urandom(8).hex()
-            response = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+            response = _h(f"{ha1}:{nonce}:{nc}:{cnonce}:{use_qop}:{ha2}")
             return (
                 f'Digest username="{self._username}", realm="{realm}", '
                 f'nonce="{nonce}", uri="{uri}", algorithm={algorithm}, '
-                f'qop={qop}, nc={nc}, cnonce="{cnonce}", response="{response}"'
+                f'qop={use_qop}, nc={nc}, cnonce="{cnonce}", response="{response}"'
             )
-        else:
-            response = md5(f"{ha1}:{nonce}:{ha2}")
-            return (
-                f'Digest username="{self._username}", realm="{realm}", '
-                f'nonce="{nonce}", uri="{uri}", algorithm={algorithm}, '
-                f'response="{response}"'
-            )
+        response = _h(f"{ha1}:{nonce}:{ha2}")
+        return (
+            f'Digest username="{self._username}", realm="{realm}", '
+            f'nonce="{nonce}", uri="{uri}", algorithm={algorithm}, '
+            f'response="{response}"'
+        )
 
     @staticmethod
     def _pick_digest_challenge(headers: Any) -> str | None:
@@ -182,7 +226,7 @@ class TwoNApiClient:
                 err = data.get("error", {})
                 _LOGGER.debug(
                     "%s %s failed — request body: %s — raw response: %s",
-                    method, endpoint, json, data,
+                    method, endpoint, _redact(json), _redact(data),
                 )
                 _raise_api_error(err, data)
             return data
@@ -385,7 +429,7 @@ class TwoNApiClient:
     async def update_user(self, user: dict[str, Any]) -> None:
         """Update an existing directory entry. ``user`` must include ``uuid``."""
         payload = self._nest_user(user, self._access_point_count)
-        _LOGGER.debug("dir/update payload: %s", payload)
+        _LOGGER.debug("dir/update payload: %s", _redact(payload))
         await self._request("PUT", "dir/update", json={"users": [payload]})
 
     async def delete_user(self, uuid: str) -> None:
@@ -490,8 +534,10 @@ class TwoNApiClient:
                 request_timeout=client_timeout,
             )
         except DoormanApiError as err:
-            # Error code 12 = invalid subscription id (subscription expired or device rebooted)
-            if "12" in str(err):
+            # Error code 12 = invalid subscription id (subscription expired or device rebooted).
+            # Match on the parsed error code, not a substring of the message (which
+            # would also match "112", a param value, or a timestamp containing "12").
+            if err.code == 12 or (err.code is None and "12" in str(err)):
                 await self._subscribe_log()
                 data = await self._request(
                     "GET", "log/pull",
