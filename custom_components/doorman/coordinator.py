@@ -117,7 +117,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 events = await self.client.pull_log(server_timeout=20)
             except asyncio.CancelledError:
                 return
-            except (DoormanApiError, asyncio.TimeoutError) as err:
+            except (DoormanApiError, TimeoutError) as err:
                 _LOGGER.warning(
                     "Doorman log listener: %s — retrying in %d s",
                     err.__class__.__name__ + (f": {err}" if str(err) else ""),
