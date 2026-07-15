@@ -39,11 +39,10 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
             return
 
         params: dict = event.data.get("params", {})
-        user_info: dict = params.get("user", {})
-        # Match the coordinator's last_access keying so a payload that uses
-        # "uuid" (not "id") still resolves stored notification targets.
-        two_n_uuid: str | None = user_info.get("uuid") or user_info.get("id")
-        user_name: str = user_info.get("name") or "Someone"
+        # 2N places identifiers flat on params (name/uuid), not under a
+        # nested "user" object.
+        two_n_uuid: str | None = params.get("uuid")
+        user_name: str = params.get("name") or "Someone"
 
         if not two_n_uuid:
             _LOGGER.debug("Access event has no user UUID — skipping notifications")

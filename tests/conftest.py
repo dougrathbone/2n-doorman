@@ -77,12 +77,14 @@ if _PAHCC_AVAILABLE:
         {"id": 1, "name": "Main Door", "active": False},
     ]
 
+    # NB: 2N places identifiers flat on params (name/uuid) — there is no
+    # nested "user" object. See /api/log/pull output on a real device.
     MOCK_LOG_EVENTS = [
         {
             "id": "evt-001",
             "event": "UserAuthenticated",
             "utcTime": "2026-03-29T10:00:00Z",
-            "params": {"user": {"name": "Jane Doe", "id": "uuid-jane"}, "valid": True},
+            "params": {"ap": 0, "session": 1, "name": "Jane Doe", "uuid": "uuid-jane"},
         },
     ]
 

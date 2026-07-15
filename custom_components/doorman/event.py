@@ -52,6 +52,7 @@ class DoormanAccessEventEntity(EventEntity):
     ) -> None:
         self._attr_unique_id = f"{entry.entry_id}_access_event"
         self._attr_name = "Doorman Access"
+        self._entry_id = entry.entry_id
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
@@ -62,6 +63,11 @@ class DoormanAccessEventEntity(EventEntity):
 
     @callback
     def _handle_bus_event(self, event: Event) -> None:
+        # Ignore events from other Doorman config entries — otherwise every
+        # entity fires for every device in a multi-device install.
+        if event.data.get("entry_id") != self._entry_id:
+            return
+
         raw_type: str = event.data.get("event_type", "")
         ha_type = self._EVENT_MAP.get(raw_type, raw_type.lower())
         params: dict = event.data.get("params", {})
@@ -69,8 +75,8 @@ class DoormanAccessEventEntity(EventEntity):
         self._trigger_event(
             ha_type,
             {
-                "user_name": params.get("user", {}).get("name"),
-                "user_uuid": params.get("user", {}).get("id"),
+                "user_name": params.get("name"),
+                "user_uuid": params.get("uuid"),
                 "card": params.get("card"),
                 "valid": params.get("valid"),
                 "utc_time": event.data.get("utc_time"),

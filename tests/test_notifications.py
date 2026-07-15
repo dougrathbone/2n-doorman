@@ -33,7 +33,7 @@ async def test_notification_dispatched_on_user_authenticated(hass: HomeAssistant
         f"{DOMAIN}_access",
         {
             "event_type": "UserAuthenticated",
-            "params": {"user": {"id": "uuid-abc", "name": "Jane"}},
+            "params": {"uuid": "uuid-abc", "name": "Jane"},
         },
     )
     await hass.async_block_till_done()
@@ -55,7 +55,7 @@ async def test_no_notification_for_non_authenticated_events(hass: HomeAssistant,
 
     hass.bus.async_fire(
         f"{DOMAIN}_access",
-        {"event_type": "CardEntered", "params": {"user": {"id": "uuid-abc", "name": "Jane"}}},
+        {"event_type": "CardEntered", "params": {"uuid": "uuid-abc", "name": "Jane"}},
     )
     await hass.async_block_till_done()
 
@@ -74,7 +74,7 @@ async def test_no_notification_when_user_has_no_targets(hass: HomeAssistant, moc
 
     hass.bus.async_fire(
         f"{DOMAIN}_access",
-        {"event_type": "UserAuthenticated", "params": {"user": {"id": "uuid-abc", "name": "Jane"}}},
+        {"event_type": "UserAuthenticated", "params": {"uuid": "uuid-abc", "name": "Jane"}},
     )
     await hass.async_block_till_done()
 
@@ -93,7 +93,7 @@ async def test_notification_uses_fallback_name(hass: HomeAssistant, mock_store):
 
     hass.bus.async_fire(
         f"{DOMAIN}_access",
-        {"event_type": "UserAuthenticated", "params": {"user": {"id": "uuid-abc"}}},
+        {"event_type": "UserAuthenticated", "params": {"uuid": "uuid-abc"}},
     )
     await hass.async_block_till_done()
 
@@ -109,7 +109,7 @@ async def test_no_notification_when_store_missing(hass: HomeAssistant):
 
     hass.bus.async_fire(
         f"{DOMAIN}_access",
-        {"event_type": "UserAuthenticated", "params": {"user": {"id": "uuid-abc", "name": "Jane"}}},
+        {"event_type": "UserAuthenticated", "params": {"uuid": "uuid-abc", "name": "Jane"}},
     )
     await hass.async_block_till_done()
 
