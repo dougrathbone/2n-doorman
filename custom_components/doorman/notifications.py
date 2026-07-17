@@ -52,7 +52,20 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
         if not targets:
             return
 
-        message = f"{user_name} opened the intercom"
+        # Prefer the config entry title (e.g. "North Gate") over a generic
+        # "the intercom" — many installs are keypad-only Access Units, not
+        # video intercoms, and multi-device setups need to know which door.
+        entry_id: str | None = event.data.get("entry_id")
+        device_name: str | None = None
+        if entry_id:
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is not None:
+                device_name = entry.title
+        message = (
+            f"{user_name} opened {device_name}"
+            if device_name
+            else f"{user_name} opened the door"
+        )
         for target in targets:
             # Stored as "notify.service_name"; strip the domain prefix for the call
             service = target.removeprefix("notify.")

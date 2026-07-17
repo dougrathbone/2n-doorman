@@ -5,8 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.doorman.const import DOMAIN
+from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from custom_components.doorman.notifications import async_setup_notifications
 
 
@@ -17,8 +18,44 @@ def mock_store():
     return store
 
 
-async def test_notification_dispatched_on_user_authenticated(hass: HomeAssistant, mock_store):
-    """UserAuthenticated event fires a notify service call for each target."""
+async def test_notification_uses_config_entry_title_as_device_name(
+    hass: HomeAssistant, mock_store
+):
+    """The message names the specific door via the config entry title."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="North Gate",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+    )
+    entry.add_to_hass(hass)
+
+    calls = []
+    hass.services.async_register(
+        "notify", "mobile_app",
+        lambda call: calls.append(call),
+    )
+
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "UserAuthenticated",
+            "params": {"uuid": "uuid-abc", "name": "Jane"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
+    assert calls[0].data["message"] == "Jane opened North Gate"
+    assert calls[0].data["title"] == "Doorman"
+
+
+async def test_notification_falls_back_when_entry_id_missing(hass: HomeAssistant, mock_store):
+    """Without an entry_id (or with an unknown one), fall back to a generic message."""
     hass.data[f"{DOMAIN}_store"] = mock_store
 
     calls = []
@@ -39,8 +76,7 @@ async def test_notification_dispatched_on_user_authenticated(hass: HomeAssistant
     await hass.async_block_till_done()
 
     assert len(calls) == 1
-    assert calls[0].data["message"] == "Jane opened the intercom"
-    assert calls[0].data["title"] == "Doorman"
+    assert calls[0].data["message"] == "Jane opened the door"
 
 
 async def test_no_notification_for_non_authenticated_events(hass: HomeAssistant, mock_store):
@@ -97,7 +133,7 @@ async def test_notification_uses_fallback_name(hass: HomeAssistant, mock_store):
     )
     await hass.async_block_till_done()
 
-    assert calls[0].data["message"] == "Someone opened the intercom"
+    assert calls[0].data["message"] == "Someone opened the door"
 
 
 async def test_no_notification_when_store_missing(hass: HomeAssistant):
