@@ -169,6 +169,7 @@ class DoormanDrawer extends HTMLElement {
     this._title = title;
     this._content = content;
     this._onSave = onSave;
+    this._saving = false;
     this._open = true;
     this._render();
   }
@@ -219,6 +220,7 @@ class DoormanDrawer extends HTMLElement {
         }
         .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
           border: none; border-radius: 4px; font-size: 14px; cursor: pointer; font-family: inherit; }
+        .btn:disabled { opacity: 0.6; cursor: default; }
         .btn-primary { background: var(--primary-color); color: white; }
         .btn-outlined { background: transparent; border: 1px solid var(--divider-color); color: var(--primary-text-color); }
         .field-group { display: flex; flex-direction: column; gap: 12px; }
@@ -260,8 +262,17 @@ class DoormanDrawer extends HTMLElement {
     }
     this.shadowRoot.getElementById("close-btn")?.addEventListener("click", () => this.close());
     this.shadowRoot.getElementById("cancel-btn")?.addEventListener("click", () => this.close());
-    this.shadowRoot.getElementById("save-btn")?.addEventListener("click", () => {
-      if (this._onSave) this._onSave();
+    this.shadowRoot.getElementById("save-btn")?.addEventListener("click", async (ev) => {
+      // Disable while the async onSave is in flight to prevent double submits
+      if (this._saving) return;
+      this._saving = true;
+      ev.currentTarget.disabled = true;
+      try {
+        if (this._onSave) await this._onSave();
+      } finally {
+        this._saving = false;
+        ev.currentTarget.disabled = false;
+      }
     });
   }
 }
@@ -687,8 +698,10 @@ class DoormanUsersTab extends HTMLElement {
       const vt = form.querySelector("#f-valid-to")?.value;
       const vtCurrent = toDateTimeLocalValue(user.validTo);
       if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : 0;
+      let updated = false;
       try {
         await svc(this._hass, "update_user", data, this._entryId);
+        updated = true;
         // Handle HA user link change
         const haSelect = form.querySelector("#f-ha-user");
         if (haSelect) {
@@ -715,9 +728,27 @@ class DoormanUsersTab extends HTMLElement {
         this._drawer.close();
         this._load();
       } catch (e) {
-        const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
+        if (updated) {
+          // Partial failure: the device state already changed, so refresh the
+          // table to match. The reload wipes the drawer, so report the
+          // follow-up error as a toast instead of in the form.
+          this._drawer.close();
+          await this._load();
+          this._showError(`User saved, but a follow-up update failed: ${e.message}`);
+        } else {
+          const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
+        }
       }
     });
+  }
+
+  _showError(message) {
+    const msg = document.createElement("div");
+    msg.className = "error";
+    msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
+    msg.textContent = message;
+    this.shadowRoot.appendChild(msg);
+    setTimeout(() => msg.remove(), 5000);
   }
 
   async _deleteUser(uuid) {
@@ -727,12 +758,7 @@ class DoormanUsersTab extends HTMLElement {
       await svc(this._hass, "delete_user", { uuid }, this._entryId);
       this._load();
     } catch (e) {
-      const msg = document.createElement("div");
-      msg.className = "error";
-      msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
-      msg.textContent = `Delete failed: ${e.message}`;
-      this.shadowRoot.appendChild(msg);
-      setTimeout(() => msg.remove(), 5000);
+      this._showError(`Delete failed: ${e.message}`);
     }
   }
 }
@@ -985,7 +1011,13 @@ class DoormanPanel extends HTMLElement {
   }
 
   set panel(p) { this._panel = p; }
-  set narrow(n) { this._narrow = n; this._renderShell(); }
+  set narrow(n) {
+    // HA re-sets narrow on every viewport change; skip the re-render (and the
+    // tab remount + WS refetch + drawer state loss it causes) when unchanged.
+    if (n === this._narrow) return;
+    this._narrow = n;
+    this._renderShell();
+  }
 
   async _loadDevices() {
     try {
