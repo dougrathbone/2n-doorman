@@ -332,6 +332,14 @@ def test_flatten_user_valid_from_zero():
     assert result["validTo"] is None
 
 
+def test_flatten_user_non_numeric_validity_returns_none():
+    """Non-numeric validity strings must not crash the poll — treat as unset."""
+    raw = {"uuid": "u6b", "access": {"validFrom": "abc", "validTo": "never"}}
+    result = TwoNApiClient._flatten_user(raw)
+    assert result["validFrom"] is None
+    assert result["validTo"] is None
+
+
 def test_flatten_user_preserves_extra_fields():
     """Fields outside 'access' are preserved in the flattened output."""
     raw = {"uuid": "u7", "name": "Extra", "phone": "+1234", "access": {}}
@@ -1081,6 +1089,20 @@ async def test_subscribe_log_stores_id():
     assert client._log_subscription_id == 77
 
 
+@pytest.mark.asyncio
+async def test_subscribe_log_malformed_response_raises():
+    """A subscribe response without result.id raises DoormanApiError, not KeyError."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        return {"result": {}}
+
+    client._request = fake_request
+    with pytest.raises(DoormanApiError, match="Malformed log/subscribe response"):
+        await client._subscribe_log()
+    assert client._log_subscription_id is None
+
+
 # ─── pull_log with real _request mock (subscription creation) ────────────────
 
 @pytest.mark.asyncio
@@ -1199,6 +1221,17 @@ def test_build_digest_header_honors_sha256():
     assert "algorithm=SHA-256" in header
     response = re.search(r'response="([0-9a-f]+)"', header).group(1)
     assert len(response) == 64  # SHA-256 hex digest, not MD5's 32
+
+
+def test_build_digest_header_rejects_sess_algorithms():
+    """-sess algorithms hash HA1 differently; reject instead of mis-authenticating."""
+    client = _make_client()
+    for algorithm in ("SHA-256-sess", "MD5-sess"):
+        www_auth = f'Digest realm="2N", nonce="abc123", qop="auth", algorithm={algorithm}'
+        with pytest.raises(DoormanAuthError, match="Unsupported digest algorithm"):
+            client._build_digest_header(
+                "GET", "http://192.168.1.100/api/system/info", www_auth
+            )
 
 
 # ─── Error-code threading / code-12 re-subscribe ──────────────────────────────
