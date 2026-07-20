@@ -33,7 +33,13 @@ function formatDate(ts) {
 
 function formatDateTime(str) {
   if (!str) return "—";
-  return new Date(str).toLocaleString(undefined, {
+  // 2N log events report utcTime as epoch seconds (uint32); stored
+  // last_access values may be legacy ISO strings.
+  const d = (typeof str === "number" || /^\d+$/.test(String(str)))
+    ? new Date(Number(str) * 1000)
+    : new Date(str);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -796,7 +802,7 @@ class DoormanLogTab extends HTMLElement {
       <tbody>
         ${this._events.slice(0, 100).map(e => {
           const params = e.params || {};
-          const user = params.name || params.card || "—";
+          const user = params.name || params.uid || "—";
           const valid = params.valid;
           const resultClass = valid === false ? "fail" : "success";
           const resultText = valid === false ? "✗ Denied" : "✓ OK";
