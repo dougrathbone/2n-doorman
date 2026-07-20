@@ -927,3 +927,37 @@ async def test_update_user_service_clear_pin(
 
     call_arg = mock_2n_client.update_user.call_args[0][0]
     assert call_arg["pin"] == ""
+
+
+# ------------------------------------------------------------------ #
+# Device registry                                                      #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_entities_attached_to_device_registry(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """All Doorman entities attach to a single device per config entry."""
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, setup_doorman.entry_id)}
+    )
+    assert device is not None
+    assert device.manufacturer == "2N"
+    assert device.name == setup_doorman.title
+    assert device.model == "535v1"
+    assert device.sw_version == "2.49.0.38"
+
+    entity_registry = er.async_get(hass)
+    for entity_id in (
+        "sensor.doorman_user_count",
+        "switch.doorman_relay_1",
+        "event.doorman_access",
+    ):
+        entity = entity_registry.async_get(entity_id)
+        assert entity is not None, f"Missing entity {entity_id}"
+        assert entity.device_id == device.id

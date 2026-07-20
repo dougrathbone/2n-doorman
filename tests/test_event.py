@@ -156,6 +156,68 @@ async def test_rejected_event_type(
 
 
 @pytest.mark.asyncio
+async def test_card_entered_reads_uid_param(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """The card attribute reads params.uid — the field real 2N devices send."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": doorman_config_entry.entry_id,
+            "event_type": "CardEntered",
+            "utc_time": 1743242400,
+            "params": {
+                "ap": 0,
+                "session": 1,
+                "direction": 0,
+                "reader": 0,
+                "uid": "AABBCCDD",
+                "uuid": "uuid-jane",
+                "valid": True,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("event.doorman_access")
+    assert state is not None
+    assert state.attributes.get("event_type") == "card_entered"
+    assert state.attributes.get("card") == "AABBCCDD"
+
+
+@pytest.mark.asyncio
+async def test_card_entered_falls_back_to_card_param(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A legacy 'card' param is still honored when 'uid' is absent."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": doorman_config_entry.entry_id,
+            "event_type": "CardEntered",
+            "params": {"card": "1234", "uuid": "uuid-jane", "valid": True},
+        },
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("event.doorman_access")
+    assert state is not None
+    assert state.attributes.get("card") == "1234"
+
+
+@pytest.mark.asyncio
 async def test_bus_event_only_triggers_matching_entry(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -53,6 +54,13 @@ class DoormanAccessEventEntity(EventEntity):
         self._attr_unique_id = f"{entry.entry_id}_access_event"
         self._attr_name = "Doorman Access"
         self._entry_id = entry.entry_id
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="2N",
+            model=coordinator.device_info.get("hwVersion"),
+            sw_version=coordinator.device_info.get("swVersion"),
+        )
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
@@ -77,7 +85,9 @@ class DoormanAccessEventEntity(EventEntity):
             {
                 "user_name": params.get("name"),
                 "user_uuid": params.get("uuid"),
-                "card": params.get("card"),
+                # CardEntered carries the card id as "uid" on real 2N devices;
+                # "card" is kept as a defensive fallback.
+                "card": params.get("uid") or params.get("card"),
                 "valid": params.get("valid"),
                 "utc_time": event.data.get("utc_time"),
             },
