@@ -114,3 +114,8 @@ class DoormanStore:
         """Persist the notification targets for a 2N user."""
         self._data.setdefault("notification_targets", {})[two_n_uuid] = targets
         await self._store.async_save(self._data)
+
+    async def clear_notification_targets(self, two_n_uuid: str) -> None:
+        """Remove all notification targets for a 2N UUID. Persists immediately."""
+        if self._data.get("notification_targets", {}).pop(two_n_uuid, None) is not None:
+            await self._store.async_save(self._data)

@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
     ConfigEntryNotReady,
+    HomeAssistantError,
     ServiceValidationError,
 )
 from homeassistant.helpers import config_validation as cv
@@ -180,6 +181,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 unsub()
             hass.data.pop(f"{DOMAIN}_notifications_registered", None)
             hass.data.pop(f"{DOMAIN}_store", None)
+            # No entries left — the domain's services have nothing to act on.
+            for service in _SERVICES:
+                hass.services.async_remove(DOMAIN, service)
     return unloaded
 
 
@@ -193,6 +197,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool: 
 # ------------------------------------------------------------------ #
 # Services                                                            #
 # ------------------------------------------------------------------ #
+
+# All service actions registered below — removed again when the last
+# config entry unloads.
+_SERVICES = ("create_user", "update_user", "delete_user", "grant_access")
+
 
 def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
     """Return the coordinator for a service call, resolving the optional ``device`` field."""
@@ -239,42 +248,69 @@ def _register_services(hass: HomeAssistant) -> None:
             user["validFrom"] = int(valid_from.timestamp())
         if valid_to := call.data.get("valid_to"):
             user["validTo"] = int(valid_to.timestamp())
-        await coordinator.client.create_user(user)
+        try:
+            await coordinator.client.create_user(user)
+        except DoormanApiError as err:
+            # Surface the device message without a raw traceback in the HA log
+            raise HomeAssistantError(f"create_user failed on the 2N device: {err}") from err
         await coordinator.async_request_refresh()
 
     async def handle_update_user(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
         user: dict = {"uuid": call.data["uuid"]}
-        for field in ("name", "pin"):
-            if field in call.data and call.data[field]:
-                user[field] = call.data[field]
+        if "name" in call.data and call.data["name"]:
+            user["name"] = call.data["name"]
+        # An explicitly empty string clears the PIN, mirroring how an empty
+        # card/code below clears those credentials.
+        if "pin" in call.data:
+            user["pin"] = call.data["pin"]
         if "enabled" in call.data:
             user["enabled"] = call.data["enabled"]
         if "card" in call.data:
             user["card"] = [call.data["card"]] if call.data["card"] else []
         if "code" in call.data:
             user["code"] = [call.data["code"]] if call.data["code"] else []
-        if valid_from := call.data.get("valid_from"):
-            user["validFrom"] = int(valid_from.timestamp())
-        if valid_to := call.data.get("valid_to"):
-            user["validTo"] = int(valid_to.timestamp())
-        await coordinator.client.update_user(user)
+        # The panel sends 0 to clear a validity restriction (the 2N API
+        # represents "no restriction" as validFrom/validTo "0").
+        if "valid_from" in call.data:
+            valid_from = call.data["valid_from"]
+            user["validFrom"] = (
+                valid_from if isinstance(valid_from, int) else int(valid_from.timestamp())
+            )
+        if "valid_to" in call.data:
+            valid_to = call.data["valid_to"]
+            user["validTo"] = (
+                valid_to if isinstance(valid_to, int) else int(valid_to.timestamp())
+            )
+        try:
+            await coordinator.client.update_user(user)
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"update_user failed on the 2N device: {err}") from err
         await coordinator.async_request_refresh()
 
     async def handle_delete_user(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
-        await coordinator.client.delete_user(call.data["uuid"])
+        try:
+            await coordinator.client.delete_user(call.data["uuid"])
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"delete_user failed on the 2N device: {err}") from err
         store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
         if store:
             await store.unlink_user(call.data["uuid"])
+            # Drop stale notification targets — a deleted user can never
+            # authenticate again, so dispatching for them is dead weight.
+            await store.clear_notification_targets(call.data["uuid"])
         await coordinator.async_request_refresh()
 
     async def handle_grant_access(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
-        await coordinator.client.grant_access(
-            access_point_id=call.data.get("access_point_id", 1),
-            user_uuid=call.data.get("user_uuid"),
-        )
+        try:
+            await coordinator.client.grant_access(
+                access_point_id=call.data.get("access_point_id", 1),
+                user_uuid=call.data.get("user_uuid"),
+            )
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"grant_access failed on the 2N device: {err}") from err
 
     hass.services.async_register(
         DOMAIN,
@@ -305,8 +341,9 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,
-                vol.Optional("valid_from"): cv.datetime,
-                vol.Optional("valid_to"): cv.datetime,
+                # A datetime sets the restriction; 0 clears it.
+                vol.Optional("valid_from"): vol.Any(cv.datetime, 0),
+                vol.Optional("valid_to"): vol.Any(cv.datetime, 0),
                 vol.Optional("device"): cv.string,
             }
         ),

@@ -770,3 +770,160 @@ async def test_panel_module_url_is_cache_busted(
     module_url = register_panel.call_args.kwargs["module_url"]
     assert module_url.startswith("/api/doorman/panel.js?v=")
     assert len(module_url.removeprefix("/api/doorman/panel.js?v=")) > 0
+
+
+# ------------------------------------------------------------------ #
+# Service error handling & lifecycle                                   #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_create_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during create_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.create_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="create_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "create_user", {"name": "Test"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during update_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.update_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="update_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "update_user", {"uuid": "uuid-jane", "name": "X"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during delete_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.delete_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="delete_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "delete_user", {"uuid": "uuid-jane"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_grant_access_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during grant_access surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.grant_access.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="grant_access failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "grant_access", {"access_point_id": 1}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_services_removed_when_last_entry_unloads(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Unloading the sole entry removes all doorman.* service actions."""
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+
+    for service in ("create_user", "update_user", "delete_user", "grant_access"):
+        assert not hass.services.has_service(DOMAIN, service), (
+            f"Service {DOMAIN}.{service} should have been removed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_clears_notification_targets(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """delete_user also drops the deleted user's stored notification targets."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_targets("uuid-jane", ["notify.mobile_app"])
+    assert store.get_notification_targets("uuid-jane") == ["notify.mobile_app"]
+
+    await hass.services.async_call(
+        DOMAIN, "delete_user", {"uuid": "uuid-jane"}, blocking=True,
+    )
+
+    mock_2n_client.delete_user.assert_called_once_with("uuid-jane")
+    assert store.get_notification_targets("uuid-jane") == []
+
+
+# ------------------------------------------------------------------ #
+# update_user: clearing fields                                         #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_clear_validity(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """valid_from/valid_to of 0 are passed through to clear the restriction."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_user",
+        {"uuid": "uuid-jane", "valid_from": 0, "valid_to": 0},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.update_user.call_args[0][0]
+    assert call_arg["validFrom"] == 0
+    assert call_arg["validTo"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_clear_pin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """An explicitly empty pin string is forwarded to clear the PIN."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_user",
+        {"uuid": "uuid-jane", "pin": ""},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.update_user.call_args[0][0]
+    assert call_arg["pin"] == ""

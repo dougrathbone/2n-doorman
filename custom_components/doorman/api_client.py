@@ -408,21 +408,25 @@ class TwoNApiClient:
         controlled per access point via access.accessPoints[N].enabled.  When the
         caller supplies an 'enabled' value we map it to all access points; omitting
         it leaves the device's existing accessPoints configuration untouched.
+
+        Explicitly-empty credential values ("" pin, [] card/code) and 0 validity
+        epochs are sent to the device as-is: on dir/update they clear the
+        corresponding restriction.  Absent keys leave the device value untouched.
         """
         user = {k: v for k, v in flat.items() if k not in ("pin", "card", "code", "validFrom", "validTo", "enabled")}
         access: dict[str, Any] = {}
         if "enabled" in flat:
             # Set all access points to the same enabled state
             access["accessPoints"] = [{"enabled": flat["enabled"]} for _ in range(access_point_count)]
-        if flat.get("pin"):
+        if flat.get("pin") is not None:
             access["pin"] = flat["pin"]
-        if flat.get("card"):
+        if flat.get("card") is not None:
             access["card"] = flat["card"]
-        if flat.get("code"):
+        if flat.get("code") is not None:
             access["code"] = flat["code"]
-        if flat.get("validFrom"):
+        if flat.get("validFrom") is not None:
             access["validFrom"] = str(flat["validFrom"])
-        if flat.get("validTo"):
+        if flat.get("validTo") is not None:
             access["validTo"] = str(flat["validTo"])
         if access:
             user["access"] = access

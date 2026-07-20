@@ -154,3 +154,22 @@ async def test_update_last_access_batch_empty_is_noop(hass: HomeAssistant) -> No
     await store.async_load()
     await store.update_last_access_batch([])
     assert store.last_access == {}
+
+
+@pytest.mark.asyncio
+async def test_clear_notification_targets(hass: HomeAssistant) -> None:
+    """clear_notification_targets removes the entry and persists the change."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.set_notification_targets("uuid-jane", ["notify.mobile_app"])
+    await store.clear_notification_targets("uuid-jane")
+    assert store.get_notification_targets("uuid-jane") == []
+
+    # Clearing an unknown UUID is a no-op and does not raise
+    await store.clear_notification_targets("uuid-unknown")
+
+    # Reload to verify persistence
+    store2 = DoormanStore(hass)
+    await store2.async_load()
+    assert store2.get_notification_targets("uuid-jane") == []

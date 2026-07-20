@@ -398,11 +398,28 @@ def test_nest_user_with_validity_dates():
     assert result["access"]["validTo"] == "1800000000"
 
 
-def test_nest_user_empty_credentials_omitted():
-    """Empty pin/card/code are not included in access."""
+def test_nest_user_empty_credentials_sent_to_clear():
+    """Explicitly-empty pin/card/code are sent so dir/update clears them on the device."""
     flat = {"uuid": "u1", "pin": "", "card": [], "code": []}
     result = TwoNApiClient._nest_user(flat)
-    assert "access" not in result  # nothing to nest
+    assert result["access"]["pin"] == ""
+    assert result["access"]["card"] == []
+    assert result["access"]["code"] == []
+
+
+def test_nest_user_absent_credentials_omitted():
+    """Absent credential keys leave the device's existing values untouched."""
+    flat = {"uuid": "u1", "name": "Jane"}
+    result = TwoNApiClient._nest_user(flat)
+    assert "access" not in result
+
+
+def test_nest_user_zero_validity_sends_zero_string():
+    """validFrom/validTo of 0 clear the restriction — the device uses "0" for none."""
+    flat = {"uuid": "u1", "validFrom": 0, "validTo": 0}
+    result = TwoNApiClient._nest_user(flat)
+    assert result["access"]["validFrom"] == "0"
+    assert result["access"]["validTo"] == "0"
 
 
 def test_nest_user_roundtrip():
