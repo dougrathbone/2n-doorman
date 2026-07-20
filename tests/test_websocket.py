@@ -10,7 +10,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.doorman.websocket import (
     ws_get_access_log,
     ws_get_device_info,
-    ws_get_notification_targets,
     ws_link_user,
     ws_list_devices,
     ws_list_ha_users,
@@ -353,23 +352,8 @@ async def test_ws_list_notify_services(
 
 
 # ------------------------------------------------------------------ #
-# ws_get_notification_targets / ws_set_notification_targets            #
+# ws_set_notification_targets                                          #
 # ------------------------------------------------------------------ #
-
-
-@pytest.mark.asyncio
-async def test_ws_get_notification_targets(
-    hass: HomeAssistant,
-    setup_doorman: MockConfigEntry,
-) -> None:
-    """ws_get_notification_targets returns a targets list for a user with no targets."""
-    conn = _mock_connection()
-    ws_get_notification_targets(hass, conn, {"id": 1, "two_n_uuid": "uuid-no-targets"})
-
-    conn.send_result.assert_called_once()
-    result = conn.send_result.call_args[0][1]
-    assert "targets" in result
-    assert result["targets"] == []
 
 
 @pytest.mark.asyncio
@@ -377,7 +361,7 @@ async def test_ws_set_notification_targets(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """ws_set_notification_targets persists targets, retrievable via get."""
+    """ws_set_notification_targets persists targets, visible inline via list_users."""
     conn = _mock_connection(is_admin=True)
     ws_set_notification_targets(
         hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "targets": ["notify.mobile_app"]}
@@ -387,11 +371,12 @@ async def test_ws_set_notification_targets(
     conn.send_result.assert_called_once()
     assert conn.send_result.call_args[0][1]["success"] is True
 
-    # Verify via get
+    # Targets arrive inline on the user objects returned by list_users
     conn2 = _mock_connection()
-    ws_get_notification_targets(hass, conn2, {"id": 2, "two_n_uuid": "uuid-jane"})
-    result = conn2.send_result.call_args[0][1]
-    assert result["targets"] == ["notify.mobile_app"]
+    ws_list_users(hass, conn2, {"id": 2})
+    users = conn2.send_result.call_args[0][1]["users"]
+    jane = next(u for u in users if u["uuid"] == "uuid-jane")
+    assert jane["notification_targets"] == ["notify.mobile_app"]
 
 
 @pytest.mark.asyncio
@@ -422,8 +407,26 @@ async def test_read_commands_reject_non_admin(
     ws_get_access_log(hass, conn, {"id": 2})
     ws_get_device_info(hass, conn, {"id": 3})
     ws_list_devices(hass, conn, {"id": 4})
-    ws_get_notification_targets(hass, conn, {"id": 5, "two_n_uuid": "uuid-jane"})
 
-    assert conn.send_error.call_count == 5
+    assert conn.send_error.call_count == 4
     assert all(c.args[1] == "unauthorized" for c in conn.send_error.call_args_list)
+    conn.send_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_entry_id_with_multiple_devices_returns_not_configured(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """With multiple devices and no entry_id, commands refuse to guess a device."""
+    await setup_two_entries(hass, doorman_config_entry)
+
+    conn = _mock_connection()
+    ws_list_users(hass, conn, {"id": 1})
+    ws_get_access_log(hass, conn, {"id": 2})
+    ws_get_device_info(hass, conn, {"id": 3})
+
+    assert conn.send_error.call_count == 3
+    assert all(c.args[1] == "not_configured" for c in conn.send_error.call_args_list)
     conn.send_result.assert_not_called()

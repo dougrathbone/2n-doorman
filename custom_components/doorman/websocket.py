@@ -23,7 +23,6 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_link_user)
     websocket_api.async_register_command(hass, ws_unlink_user)
     websocket_api.async_register_command(hass, ws_list_notify_services)
-    websocket_api.async_register_command(hass, ws_get_notification_targets)
     websocket_api.async_register_command(hass, ws_set_notification_targets)
 
 
@@ -31,7 +30,12 @@ def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> DoormanCoo
     entries = hass.data.get(DOMAIN, {})
     if entry_id:
         return entries.get(entry_id)
-    return next(iter(entries.values()), None)
+    if len(entries) == 1:
+        return next(iter(entries.values()))
+    # Zero entries, or multiple entries without an explicit entry_id — the
+    # caller maps None to a not_configured error. Guessing the first entry
+    # would silently show the wrong device in a multi-device install.
+    return None
 
 
 def _store(hass: HomeAssistant) -> DoormanStore | None:
@@ -278,26 +282,6 @@ def ws_list_notify_services(
     notify_services = list(hass.services.async_services().get("notify", {}).keys())
     targets = [f"notify.{s}" for s in notify_services if s not in ("notify", "send_message")]
     connection.send_result(msg["id"], {"services": targets})
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/get_notification_targets",
-        vol.Required("two_n_uuid"): str,
-    }
-)
-@callback
-def ws_get_notification_targets(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict,
-) -> None:
-    """Return the notification targets configured for a 2N user."""
-    if not _require_admin(connection, msg):
-        return
-    store = _store(hass)
-    targets = store.get_notification_targets(msg["two_n_uuid"]) if store else []
-    connection.send_result(msg["id"], {"targets": targets})
 
 
 @websocket_api.websocket_command(
