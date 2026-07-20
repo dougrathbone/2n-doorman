@@ -672,3 +672,101 @@ async def test_setup_retries_when_device_unreachable(
     await hass.async_block_till_done()
 
     assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+# ------------------------------------------------------------------ #
+# Setup / reload robustness                                            #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_unload_and_reload_entry_succeeds(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """setup → unload → setup again works despite the sticky aiohttp route."""
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+    assert setup_doorman.state is ConfigEntryState.NOT_LOADED
+
+    await hass.config_entries.async_setup(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+
+    assert setup_doorman.state is ConfigEntryState.LOADED
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+@pytest.mark.asyncio
+async def test_setup_tolerates_duplicate_static_path_registration(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """aiohttp refuses duplicate static paths on reload; setup must still succeed."""
+    hass.http.async_register_static_paths.side_effect = ValueError("Duplicate")
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+@pytest.mark.asyncio
+async def test_setup_auth_error_starts_reauth(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Rejected credentials at setup fail the entry and start the reauth flow."""
+    from custom_components.doorman.api_client import DoormanAuthError
+
+    mock_2n_client.get_system_info.side_effect = DoormanAuthError("bad creds")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert any(
+        flow["context"]["source"] == "reauth"
+        for flow in hass.config_entries.flow.async_progress()
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_timeout_retries(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A bare timeout during init is transient — HA retries setup later."""
+    mock_2n_client.get_system_info.side_effect = TimeoutError("slow")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+@pytest.mark.asyncio
+async def test_panel_module_url_is_cache_busted(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """panel.js is registered with a ?v=<version> suffix for cache busting."""
+    from unittest.mock import AsyncMock, patch
+
+    register_panel = AsyncMock()
+    doorman_config_entry.add_to_hass(hass)
+    with patch(
+        "custom_components.doorman.panel_custom.async_register_panel", new=register_panel
+    ):
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    register_panel.assert_called_once()
+    module_url = register_panel.call_args.kwargs["module_url"]
+    assert module_url.startswith("/api/doorman/panel.js?v=")
+    assert len(module_url.removeprefix("/api/doorman/panel.js?v=")) > 0

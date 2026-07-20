@@ -11,7 +11,11 @@ from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.issue_registry import (
@@ -19,8 +23,9 @@ from homeassistant.helpers.issue_registry import (
     async_create_issue,
     async_delete_issue,
 )
+from homeassistant.loader import async_get_integration
 
-from .api_client import DoormanApiError, TwoNApiClient
+from .api_client import DoormanApiError, DoormanAuthError, TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -72,7 +77,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DoormanCoordinator(hass, entry, client)
     try:
         await coordinator.async_init_device_info()
-    except DoormanApiError as err:
+    except DoormanAuthError as err:
+        # Bad credentials will not fix themselves on retry — tell HA to start
+        # the reauth flow. Must be caught before DoormanApiError, which is its
+        # parent class.
+        raise ConfigEntryAuthFailed(f"Cannot authenticate to 2N device: {err}") from err
+    except (DoormanApiError, TimeoutError) as err:
         # Device unreachable or transiently erroring at startup: tell HA to
         # retry the setup later instead of marking the entry permanently failed.
         raise ConfigEntryNotReady(f"Cannot initialise 2N device: {err}") from err
@@ -123,9 +133,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Serve frontend assets and register the sidebar panel (once across all entries)
     if not hass.data.get(f"{DOMAIN}_panel_registered"):
         frontend_dir = Path(__file__).parent / "frontend"
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
-        )
+        # aiohttp routes cannot be unregistered, so after an entry reload the
+        # static path is still registered — re-registering raises
+        # ValueError("Duplicate"). That is harmless: the route keeps serving.
+        with contextlib.suppress(ValueError):
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
+            )
+        # Cache-bust panel.js with the integration version so browsers pick up
+        # new frontend code after a HACS update instead of serving a cached copy.
+        integration = await async_get_integration(hass, DOMAIN)
         with contextlib.suppress(ValueError):
             await panel_custom.async_register_panel(
                 hass,
@@ -133,7 +150,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 frontend_url_path=DOMAIN,
                 sidebar_title=PANEL_TITLE,
                 sidebar_icon=PANEL_ICON,
-                module_url=f"{PANEL_URL}/panel.js",
+                module_url=f"{PANEL_URL}/panel.js?v={integration.version}",
                 embed_iframe=False,
                 # Admin-only: the panel manages door credentials (PINs, cards,
                 # codes) and access linking. The WebSocket commands enforce this
