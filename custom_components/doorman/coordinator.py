@@ -212,23 +212,32 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
-        """Fire HA bus events for log entries returned since the last poll."""
+        """Fire HA bus events for log entries returned since the last poll.
+
+        The bus event carries the originating ``entry_id`` so per-entry
+        listeners (event entities, per-device UI) can ignore events from
+        other coordinators — without an entry_id filter, every event
+        entity would fire for every device in a multi-device install.
+        """
+        entry_id = self.config_entry.entry_id
         for event in events:
             event_type = event.get("event", "")
+            params = event.get("params", {})
+            utc_time = event.get("utcTime")
             if event_type in ACCESS_EVENTS:
                 self.hass.bus.async_fire(
                     f"{DOMAIN}_access",
                     {
+                        "entry_id": entry_id,
                         "event_type": event_type,
-                        "params": event.get("params", {}),
-                        "utc_time": event.get("utcTime"),
+                        "params": params,
+                        "utc_time": utc_time,
                     },
                 )
             if event_type == "UserAuthenticated":
-                params = event.get("params", {})
-                user_info = params.get("user", {})
-                user_uuid = user_info.get("uuid") or user_info.get("id")
-                utc_time = event.get("utcTime")
+                # 2N places identifiers flat on params (name/uuid), not under
+                # a nested "user" object.
+                user_uuid = params.get("uuid")
                 if user_uuid and utc_time:
                     self._last_access[str(user_uuid)] = utc_time
                     self._pending_access_saves.append((str(user_uuid), utc_time))

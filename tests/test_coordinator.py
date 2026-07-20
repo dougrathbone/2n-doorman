@@ -176,6 +176,8 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
 
     assert len(fired_events) == 1
     assert fired_events[0].data["event_type"] == "CardEntered"
+    # entry_id must be included so per-entity listeners can filter on it
+    assert fired_events[0].data["entry_id"] == coordinator.config_entry.entry_id
 
 
 @pytest.mark.asyncio
@@ -207,7 +209,7 @@ async def test_fire_new_access_events_tracks_last_access(
         "id": "evt-003",
         "event": "UserAuthenticated",
         "utcTime": "2026-03-29T11:00:00Z",
-        "params": {"user": {"id": "uuid-jane", "name": "Jane"}, "valid": True},
+        "params": {"ap": 0, "session": 3, "name": "Jane", "uuid": "uuid-jane"},
     }
     coordinator._fire_new_access_events([event])
 

@@ -792,7 +792,7 @@ class DoormanLogTab extends HTMLElement {
       <tbody>
         ${this._events.slice(0, 100).map(e => {
           const params = e.params || {};
-          const user = params.user?.name || params.card || "—";
+          const user = params.name || params.card || "—";
           const valid = params.valid;
           const resultClass = valid === false ? "fail" : "success";
           const resultText = valid === false ? "✗ Denied" : "✓ OK";
