@@ -674,17 +674,19 @@ class DoormanUsersTab extends HTMLElement {
       data.name = name; // always required by 2N API
       data.enabled = form.querySelector("#f-enabled").checked;
       const pin = form.querySelector("#f-pin").value.trim();
-      if (pin && pin !== (user.pin || "")) data.pin = pin;
+      // Mirror card/code: send "" to clear a previously set PIN
+      if (pin !== (user.pin || "")) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
       const vf = form.querySelector("#f-valid-from")?.value;
       const vfCurrent = toDateTimeLocalValue(user.validFrom);
-      if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : undefined;
+      // 0 clears the validity restriction (undefined would be dropped by JSON)
+      if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : 0;
       const vt = form.querySelector("#f-valid-to")?.value;
       const vtCurrent = toDateTimeLocalValue(user.validTo);
-      if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : undefined;
+      if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : 0;
       try {
         await svc(this._hass, "update_user", data, this._entryId);
         // Handle HA user link change
