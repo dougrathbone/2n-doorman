@@ -168,8 +168,8 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
     new_event = {
         "id": "evt-002",
         "event": "CardEntered",
-        "utcTime": "2026-03-29T10:05:00Z",
-        "params": {"card": "AABBCCDD", "valid": True},
+        "utcTime": 1743242700,
+        "params": {"uid": "AABBCCDD", "valid": True},
     }
     coordinator._fire_new_access_events([new_event])
     await hass.async_block_till_done()
@@ -208,13 +208,13 @@ async def test_fire_new_access_events_tracks_last_access(
     event = {
         "id": "evt-003",
         "event": "UserAuthenticated",
-        "utcTime": "2026-03-29T11:00:00Z",
+        "utcTime": 1743246000,
         "params": {"ap": 0, "session": 3, "name": "Jane", "uuid": "uuid-jane"},
     }
     coordinator._fire_new_access_events([event])
 
-    assert coordinator._last_access.get("uuid-jane") == "2026-03-29T11:00:00Z"
-    assert ("uuid-jane", "2026-03-29T11:00:00Z") in coordinator._pending_access_saves
+    assert coordinator._last_access.get("uuid-jane") == 1743246000
+    assert ("uuid-jane", 1743246000) in coordinator._pending_access_saves
 
 
 @pytest.mark.asyncio
@@ -226,10 +226,10 @@ async def test_log_buffer_accumulates_via_fire_new_access_events(
     coordinator = _make_coordinator(hass, client)
 
     first_batch = [
-        {"id": "e1", "event": "CardEntered", "utcTime": "2026-03-29T10:00:00Z", "params": {}},
+        {"id": "e1", "event": "CardEntered", "utcTime": 1743242400, "params": {}},
     ]
     second_batch = [
-        {"id": "e2", "event": "UserRejected", "utcTime": "2026-03-29T10:01:00Z", "params": {}},
+        {"id": "e2", "event": "UserRejected", "utcTime": 1743242460, "params": {}},
     ]
 
     # Manually simulate what the background task does when it gets events

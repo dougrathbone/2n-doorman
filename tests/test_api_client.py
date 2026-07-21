@@ -173,8 +173,8 @@ async def test_pull_log_returns_events_list() -> None:
     client._log_subscription_id = 1
 
     fake_events = [
-        {"event": "UserAuthenticated", "utcTime": "2026-01-01T00:00:00Z"},
-        {"event": "CardEntered", "utcTime": "2026-01-01T00:00:01Z"},
+        {"event": "UserAuthenticated", "utcTime": 1743242400},
+        {"event": "CardEntered", "utcTime": 1743242401},
     ]
 
     async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):

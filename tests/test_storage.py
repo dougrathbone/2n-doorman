@@ -88,13 +88,13 @@ async def test_update_last_access(hass: HomeAssistant) -> None:
 
     assert store.last_access == {}
 
-    await store.update_last_access("uuid-jane", "2026-03-29T10:00:00Z")
-    assert store.last_access["uuid-jane"] == "2026-03-29T10:00:00Z"
+    await store.update_last_access("uuid-jane", 1743242400)
+    assert store.last_access["uuid-jane"] == 1743242400
 
     # Reload to verify persistence
     store2 = DoormanStore(hass)
     await store2.async_load()
-    assert store2.last_access["uuid-jane"] == "2026-03-29T10:00:00Z"
+    assert store2.last_access["uuid-jane"] == 1743242400
 
 
 @pytest.mark.asyncio

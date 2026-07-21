@@ -66,8 +66,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
-        self._last_access: dict[str, str] = {}
-        self._pending_access_saves: list[tuple[str, str]] = []
+        self._last_access: dict[str, int] = {}
+        self._pending_access_saves: list[tuple[str, int]] = []
         self._log_task: asyncio.Task | None = None
         self._consecutive_auth_failures = 0
         self._consecutive_listener_auth_failures = 0
@@ -220,6 +220,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         listeners (event entities, per-device UI) can ignore events from
         other coordinators — without an entry_id filter, every event
         entity would fire for every device in a multi-device install.
+
+        ``utcTime`` is epoch seconds (uint32) per the 2N HTTP API and is
+        passed through as-is; the panel converts it for display.
         """
         entry_id = self.config_entry.entry_id
         for event in events:

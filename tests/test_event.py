@@ -40,7 +40,7 @@ async def test_bus_event_triggers_entity(
         {
             "entry_id": doorman_config_entry.entry_id,
             "event_type": "UserAuthenticated",
-            "utc_time": "2026-03-29T10:00:00Z",
+            "utc_time": 1743242400,
             "params": {
                 "ap": 0,
                 "session": 1,
@@ -58,7 +58,7 @@ async def test_bus_event_triggers_entity(
     assert state.attributes.get("user_name") == "Jane Doe"
     assert state.attributes.get("user_uuid") == "uuid-jane"
     assert state.attributes.get("valid") is True
-    assert state.attributes.get("utc_time") == "2026-03-29T10:00:00Z"
+    assert state.attributes.get("utc_time") == 1743242400
 
 
 @pytest.mark.asyncio
@@ -238,7 +238,7 @@ async def test_bus_event_only_triggers_matching_entry(
         {
             "entry_id": entry1.entry_id,
             "event_type": "UserAuthenticated",
-            "utc_time": "2026-03-29T12:00:00Z",
+            "utc_time": 1743249600,
             "params": {"name": "Jane Doe", "uuid": "uuid-jane"},
         },
     )

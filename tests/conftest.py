@@ -78,12 +78,13 @@ if _PAHCC_AVAILABLE:
     ]
 
     # NB: 2N places identifiers flat on params (name/uuid) — there is no
-    # nested "user" object. See /api/log/pull output on a real device.
+    # nested "user" object. utcTime is epoch seconds (uint32) on a real
+    # device, not an ISO string. See /api/log/pull output on a real device.
     MOCK_LOG_EVENTS = [
         {
             "id": "evt-001",
             "event": "UserAuthenticated",
-            "utcTime": "2026-03-29T10:00:00Z",
+            "utcTime": 1743242400,
             "params": {"ap": 0, "session": 1, "name": "Jane Doe", "uuid": "uuid-jane"},
         },
     ]
