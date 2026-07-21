@@ -580,3 +580,27 @@ class TwoNApiClient:
                 raise
 
         return data.get("result", {}).get("events", [])
+
+    # ------------------------------------------------------------------ #
+    # Calls (/api/call/*)                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def get_call_status(self) -> list[dict[str, Any]]:
+        """Return the list of active call sessions (empty when no call is active)."""
+        data = await self._request("GET", "call/status")
+        return data.get("result", {}).get("sessions", [])
+
+    async def hangup_call(self, session: int) -> None:
+        """Hang up a single call session (session id from :meth:`get_call_status`)."""
+        await self._request("GET", "call/hangup", params={"session": session})
+
+    async def hangup_all_calls(self) -> int:
+        """Hang up every active call session. Returns the number hung up."""
+        hung_up = 0
+        for session in await self.get_call_status():
+            session_id = session.get("session")
+            if session_id is None:
+                continue
+            await self.hangup_call(int(session_id))
+            hung_up += 1
+        return hung_up

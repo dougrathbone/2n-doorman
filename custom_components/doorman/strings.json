@@ -64,6 +64,10 @@
     "grant_access": {
       "name": "Grant access",
       "description": "Open an access point immediately, bypassing credential checks."
+    },
+    "hangup_calls": {
+      "name": "Hang up calls",
+      "description": "Hang up all active call sessions on the 2N device."
     }
   }
 }

@@ -231,3 +231,19 @@ async def test_ws_link_and_unlink_user(ws: HaWebSocket) -> None:
     users_result = await ws.command("doorman/list_users")
     unlinked = next(u for u in users_result["users"] if u["uuid"] == "uuid-test-01")
     assert unlinked["ha_user_id"] is None
+
+
+# ─── Call control ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_hangup_calls_service(
+    ha: HaClient,
+    mock_2n: Mock2nAdmin,
+) -> None:
+    """doorman.hangup_calls hangs up the active session on the device."""
+    await ha.call_service("doorman", "hangup_calls", {})
+
+    calls = await mock_2n.get_calls()
+    hangup_calls = [c for c in calls if c["path"] == "/api/call/hangup"]
+    assert hangup_calls, "Expected a GET /api/call/hangup call"
+    assert hangup_calls[0]["body"]["session"] == 1

@@ -16,6 +16,7 @@ repo was built to cover that gap.
 custom_components/doorman/
   __init__.py          — entry setup, static file serving, panel registration, services
   api_client.py        — TwoNApiClient: async HTTP wrapper around the 2N local REST API
+                         (directory, switches, log, and call control)
   config_flow.py       — UI config flow (host / username / password / SSL options)
   coordinator.py       — DataUpdateCoordinator: polls users, switches, log; fires bus events
   storage.py           — DoormanStore: persists UUID↔HA-user links and notify targets

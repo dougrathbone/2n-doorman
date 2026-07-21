@@ -34,6 +34,9 @@ _state: dict = {
     "switches": [
         {"id": 1, "name": "Main Door", "active": False},
     ],
+    "call_sessions": [
+        {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
+    ],
     "call_log": [],  # {"method", "path", "body"}
 }
 
@@ -122,6 +125,20 @@ async def grant_access(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+async def get_call_status(request: web.Request) -> web.Response:
+    _log("GET", "/api/call/status")
+    return web.json_response({"success": True, "result": {"sessions": _state["call_sessions"]}})
+
+
+async def hangup_call(request: web.Request) -> web.Response:
+    session = int(request.rel_url.query.get("session", 0))
+    _log("GET", "/api/call/hangup", {"session": session})
+    _state["call_sessions"] = [
+        s for s in _state["call_sessions"] if s.get("session") != session
+    ]
+    return web.json_response({"success": True})
+
+
 # ─── Admin endpoints (for test assertions) ──────────────────────────────────
 
 async def admin_get_calls(request: web.Request) -> web.Response:
@@ -144,6 +161,9 @@ async def admin_reset(request: web.Request) -> web.Response:
         }
     ]
     _state["switches"] = [{"id": 1, "name": "Main Door", "active": False}]
+    _state["call_sessions"] = [
+        {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
+    ]
     return web.json_response({"ok": True})
 
 
@@ -172,6 +192,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/log/subscribe", subscribe_log)
     app.router.add_get("/api/log/pull", pull_log)
     app.router.add_get("/api/accesspoint/grantaccess", grant_access)
+    app.router.add_get("/api/call/status", get_call_status)
+    app.router.add_get("/api/call/hangup", hangup_call)
     # Admin
     app.router.add_get("/admin/calls", admin_get_calls)
     app.router.add_post("/admin/reset", admin_reset)

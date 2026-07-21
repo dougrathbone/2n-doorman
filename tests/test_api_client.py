@@ -1324,3 +1324,84 @@ def test_redact_keeps_scalar_error_code():
 
     redacted = _redact({"success": False, "error": {"code": 12, "description": "x"}})
     assert redacted["error"]["code"] == 12
+
+
+@pytest.mark.asyncio
+async def test_get_call_status_returns_sessions():
+    """get_call_status returns the sessions list from the device."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        assert endpoint == "call/status"
+        return {"success": True, "result": {"sessions": [{"session": 1}, {"session": 2}]}}
+
+    client._request = fake_request
+    sessions = await client.get_call_status()
+    assert sessions == [{"session": 1}, {"session": 2}]
+
+
+@pytest.mark.asyncio
+async def test_get_call_status_empty_when_no_result():
+    """get_call_status tolerates a missing result/sessions key."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        return {"success": True, "result": {}}
+
+    client._request = fake_request
+    assert await client.get_call_status() == []
+
+
+@pytest.mark.asyncio
+async def test_hangup_all_calls_hangs_up_each_session():
+    """hangup_all_calls issues call/hangup for every active session."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append((endpoint, params))
+        if endpoint == "call/status":
+            return {"success": True, "result": {"sessions": [{"session": 3}, {"session": 7}]}}
+        return {"success": True}
+
+    client._request = fake_request
+    hung_up = await client.hangup_all_calls()
+
+    assert hung_up == 2
+    assert calls == [
+        ("call/status", None),
+        ("call/hangup", {"session": 3}),
+        ("call/hangup", {"session": 7}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hangup_all_calls_no_active_sessions():
+    """hangup_all_calls with no active sessions is a no-op returning 0."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append(endpoint)
+        return {"success": True, "result": {"sessions": []}}
+
+    client._request = fake_request
+    assert await client.hangup_all_calls() == 0
+    assert calls == ["call/status"]
+
+
+@pytest.mark.asyncio
+async def test_hangup_all_calls_skips_sessions_without_id():
+    """Sessions missing the 'session' key are skipped, not sent as session=None."""
+    client = _make_client()
+    hangups = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "call/status":
+            return {"success": True, "result": {"sessions": [{"state": "ringing"}, {"session": 5}]}}
+        hangups.append(params)
+        return {"success": True}
+
+    client._request = fake_request
+    assert await client.hangup_all_calls() == 1
+    assert hangups == [{"session": 5}]

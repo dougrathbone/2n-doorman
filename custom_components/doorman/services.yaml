@@ -107,3 +107,11 @@ grant_access:
       selector:
         config_entry:
           integration: doorman
+
+hangup_calls:
+  fields:
+    device:
+      required: false
+      selector:
+        config_entry:
+          integration: doorman

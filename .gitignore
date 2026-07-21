@@ -13,6 +13,12 @@ node_modules/
 *.zip
 tests/integration/ha_config/.HA_VERSION
 tests/integration/ha_config/.ha_run.lock
+# Runtime state created by the integration-test HA container
+tests/integration/ha_config/.storage/
+tests/integration/ha_config/.cloud/
+tests/integration/ha_config/blueprints/
+tests/integration/ha_config/home-assistant.log*
+tests/integration/ha_config/home-assistant_v2.db*
 
 # Claude Code — per-developer settings and ephemeral subagent worktrees
 .claude/settings.local.json

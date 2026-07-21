@@ -143,6 +143,9 @@ if _PAHCC_AVAILABLE:
         mock.update_user = AsyncMock(return_value=None)
         mock.delete_user = AsyncMock(return_value=None)
         mock.grant_access = AsyncMock(return_value=None)
+        mock.get_call_status = AsyncMock(return_value=[])
+        mock.hangup_call = AsyncMock(return_value=None)
+        mock.hangup_all_calls = AsyncMock(return_value=0)
         mock.async_close = AsyncMock(return_value=None)
 
         with patch(
