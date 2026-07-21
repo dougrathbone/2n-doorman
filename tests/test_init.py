@@ -62,8 +62,8 @@ async def test_setup_entry_registers_services(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """All four service actions are registered after setup."""
-    for service in ("create_user", "update_user", "delete_user", "grant_access"):
+    """All five service actions are registered after setup."""
+    for service in ("create_user", "update_user", "delete_user", "grant_access", "hangup_calls"):
         assert hass.services.has_service(DOMAIN, service), (
             f"Service {DOMAIN}.{service} was not registered"
         )
@@ -961,3 +961,34 @@ async def test_entities_attached_to_device_registry(
         entity = entity_registry.async_get(entity_id)
         assert entity is not None, f"Missing entity {entity_id}"
         assert entity.device_id == device.id
+
+
+@pytest.mark.asyncio
+async def test_hangup_calls_service(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Calling doorman.hangup_calls hangs up all active sessions on the device."""
+    mock_2n_client.hangup_all_calls.return_value = 2
+
+    await hass.services.async_call(DOMAIN, "hangup_calls", {}, blocking=True)
+
+    mock_2n_client.hangup_all_calls.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hangup_calls_service_api_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device error from hangup_calls surfaces as HomeAssistantError, not a traceback."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.hangup_all_calls.side_effect = DoormanApiError("code 10: no privilege")
+
+    with pytest.raises(HomeAssistantError, match="hangup_calls failed"):
+        await hass.services.async_call(DOMAIN, "hangup_calls", {}, blocking=True)

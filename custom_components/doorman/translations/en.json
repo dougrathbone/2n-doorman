@@ -105,6 +105,13 @@
         "user_uuid": { "name": "User UUID", "description": "2N directory UUID of the user being admitted (required on most firmware versions)." },
         "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
       }
+    },
+    "hangup_calls": {
+      "name": "Hang up calls",
+      "description": "Hang up all active call sessions on the 2N device.",
+      "fields": {
+        "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
+      }
     }
   }
 }

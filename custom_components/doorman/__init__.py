@@ -200,7 +200,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool: 
 
 # All service actions registered below — removed again when the last
 # config entry unloads.
-_SERVICES = ("create_user", "update_user", "delete_user", "grant_access")
+_SERVICES = ("create_user", "update_user", "delete_user", "grant_access", "hangup_calls")
 
 
 def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
@@ -312,6 +312,18 @@ def _register_services(hass: HomeAssistant) -> None:
         except DoormanApiError as err:
             raise HomeAssistantError(f"grant_access failed on the 2N device: {err}") from err
 
+    async def handle_hangup_calls(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
+        try:
+            hung_up = await coordinator.client.hangup_all_calls()
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"hangup_calls failed on the 2N device: {err}") from err
+        _LOGGER.info(
+            "Hung up %d active call(s) on %s",
+            hung_up,
+            coordinator.device_info.get("deviceName") or "the 2N device",
+        )
+
     hass.services.async_register(
         DOMAIN,
         "create_user",
@@ -367,6 +379,16 @@ def _register_services(hass: HomeAssistant) -> None:
             {
                 vol.Optional("access_point_id", default=1): vol.All(int, vol.Range(min=1)),
                 vol.Optional("user_uuid"): cv.string,
+                vol.Optional("device"): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "hangup_calls",
+        handle_hangup_calls,
+        schema=vol.Schema(
+            {
                 vol.Optional("device"): cv.string,
             }
         ),
