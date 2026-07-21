@@ -16,6 +16,14 @@ const svc = (hass, service, data = {}, entryId = null) => {
   return hass.callService("doorman", service, d);
 };
 
+// Escape untrusted text before interpolating into innerHTML. All strings from
+// the 2N device (names, UUIDs, log fields, device info) are device-controlled.
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function formatDate(ts) {
   if (!ts) return "Always";
   return new Date(ts * 1000).toLocaleDateString(undefined, {
@@ -25,7 +33,13 @@ function formatDate(ts) {
 
 function formatDateTime(str) {
   if (!str) return "—";
-  return new Date(str).toLocaleString(undefined, {
+  // 2N log events report utcTime as epoch seconds (uint32); stored
+  // last_access values may be legacy ISO strings.
+  const d = (typeof str === "number" || /^\d+$/.test(String(str)))
+    ? new Date(Number(str) * 1000)
+    : new Date(str);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, {
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -155,6 +169,7 @@ class DoormanDrawer extends HTMLElement {
     this._title = title;
     this._content = content;
     this._onSave = onSave;
+    this._saving = false;
     this._open = true;
     this._render();
   }
@@ -205,6 +220,7 @@ class DoormanDrawer extends HTMLElement {
         }
         .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
           border: none; border-radius: 4px; font-size: 14px; cursor: pointer; font-family: inherit; }
+        .btn:disabled { opacity: 0.6; cursor: default; }
         .btn-primary { background: var(--primary-color); color: white; }
         .btn-outlined { background: transparent; border: 1px solid var(--divider-color); color: var(--primary-text-color); }
         .field-group { display: flex; flex-direction: column; gap: 12px; }
@@ -224,7 +240,7 @@ class DoormanDrawer extends HTMLElement {
       <div class="overlay">
         <div class="drawer">
           <div class="drawer-header">
-            <h2>${this._title || ""}</h2>
+            <h2 id="drawer-title"></h2>
             <button class="close-btn" id="close-btn">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
@@ -237,6 +253,8 @@ class DoormanDrawer extends HTMLElement {
         </div>
       </div>
     `;
+    // Title comes from device-controlled strings (user name/UUID) — set via textContent
+    this.shadowRoot.getElementById("drawer-title").textContent = this._title || "";
     if (this._content && this._open) {
       const body = this.shadowRoot.getElementById("drawer-body");
       body.innerHTML = "";
@@ -244,8 +262,17 @@ class DoormanDrawer extends HTMLElement {
     }
     this.shadowRoot.getElementById("close-btn")?.addEventListener("click", () => this.close());
     this.shadowRoot.getElementById("cancel-btn")?.addEventListener("click", () => this.close());
-    this.shadowRoot.getElementById("save-btn")?.addEventListener("click", () => {
-      if (this._onSave) this._onSave();
+    this.shadowRoot.getElementById("save-btn")?.addEventListener("click", async (ev) => {
+      // Disable while the async onSave is in flight to prevent double submits
+      if (this._saving) return;
+      this._saving = true;
+      ev.currentTarget.disabled = true;
+      try {
+        if (this._onSave) await this._onSave();
+      } finally {
+        this._saving = false;
+        ev.currentTarget.disabled = false;
+      }
     });
   }
 }
@@ -305,12 +332,6 @@ class DoormanUsersTab extends HTMLElement {
 
   _haUserName(id) {
     return this._haUsers.find(u => u.id === id)?.name || id;
-  }
-
-  _esc(str) {
-    return String(str ?? "")
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   _accessStatus(u) {
@@ -399,7 +420,7 @@ class DoormanUsersTab extends HTMLElement {
       return;
     }
     if (this._error) {
-      content.innerHTML = `<div class="error">${this._error}</div>`;
+      content.innerHTML = `<div class="error">${esc(this._error)}</div>`;
       return;
     }
     if (!this._users?.length) {
@@ -468,8 +489,8 @@ class DoormanUsersTab extends HTMLElement {
           const hasTargets = (u.notification_targets || []).length > 0;
           const access = this._accessStatus(u);
           return `
-          <tr data-uuid="${u.uuid}">
-            <td><strong>${u.name || "—"}</strong></td>
+          <tr data-uuid="${esc(u.uuid)}">
+            <td><strong>${esc(u.name || "—")}</strong></td>
             <td><span class="badge ${access.cls}">${access.label}</span></td>
             <td><span class="badge ${u.pin ? "badge-yes" : "badge-no"}">${u.pin ? "Set" : "None"}</span></td>
             <td>${(u.card || []).filter(Boolean).length}</td>
@@ -478,22 +499,22 @@ class DoormanUsersTab extends HTMLElement {
             <td style="color:var(--secondary-text-color);font-size:13px">${u.last_access ? formatDateTime(u.last_access) : "—"}</td>
             <td>
               ${u.ha_user_id
-                ? `<span class="ha-link"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>${this._esc(this._haUserName(u.ha_user_id))}</span>`
+                ? `<span class="ha-link"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>${esc(this._haUserName(u.ha_user_id))}</span>`
                 : `<span style="color:var(--disabled-color,#bbb)">—</span>`}
             </td>
             <td style="text-align:center">
               <svg viewBox="0 0 24 24" width="16" height="16"
                 fill="${hasTargets ? "var(--primary-color)" : "var(--disabled-color,#ccc)"}"
-                title="${hasTargets ? (u.notification_targets || []).join(", ") : "No notifications"}">
+                title="${hasTargets ? esc((u.notification_targets || []).join(", ")) : "No notifications"}">
                 <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
               </svg>
             </td>
             <td class="actions">
               ${this._writePermission ? `
-              <button class="icon-btn edit-btn" data-uuid="${u.uuid}" title="Edit">
+              <button class="icon-btn edit-btn" data-uuid="${esc(u.uuid)}" title="Edit">
                 <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
               </button>
-              <button class="icon-btn del-btn" data-uuid="${u.uuid}" title="Delete">
+              <button class="icon-btn del-btn" data-uuid="${esc(u.uuid)}" title="Delete">
                 <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
               </button>` : ``}
             </td>
@@ -664,19 +685,23 @@ class DoormanUsersTab extends HTMLElement {
       data.name = name; // always required by 2N API
       data.enabled = form.querySelector("#f-enabled").checked;
       const pin = form.querySelector("#f-pin").value.trim();
-      if (pin && pin !== (user.pin || "")) data.pin = pin;
+      // Mirror card/code: send "" to clear a previously set PIN
+      if (pin !== (user.pin || "")) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
       if (card !== ((user.card || [])[0] || "")) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
       if (code !== ((user.code || [])[0] || "")) data.code = code;
       const vf = form.querySelector("#f-valid-from")?.value;
       const vfCurrent = toDateTimeLocalValue(user.validFrom);
-      if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : undefined;
+      // 0 clears the validity restriction (undefined would be dropped by JSON)
+      if (vf !== vfCurrent) data.valid_from = vf ? localDateTimeWithOffset(vf) : 0;
       const vt = form.querySelector("#f-valid-to")?.value;
       const vtCurrent = toDateTimeLocalValue(user.validTo);
-      if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : undefined;
+      if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : 0;
+      let updated = false;
       try {
         await svc(this._hass, "update_user", data, this._entryId);
+        updated = true;
         // Handle HA user link change
         const haSelect = form.querySelector("#f-ha-user");
         if (haSelect) {
@@ -703,9 +728,27 @@ class DoormanUsersTab extends HTMLElement {
         this._drawer.close();
         this._load();
       } catch (e) {
-        const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
+        if (updated) {
+          // Partial failure: the device state already changed, so refresh the
+          // table to match. The reload wipes the drawer, so report the
+          // follow-up error as a toast instead of in the form.
+          this._drawer.close();
+          await this._load();
+          this._showError(`User saved, but a follow-up update failed: ${e.message}`);
+        } else {
+          const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = e.message; errEl.appendChild(errDiv);
+        }
       }
     });
+  }
+
+  _showError(message) {
+    const msg = document.createElement("div");
+    msg.className = "error";
+    msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
+    msg.textContent = message;
+    this.shadowRoot.appendChild(msg);
+    setTimeout(() => msg.remove(), 5000);
   }
 
   async _deleteUser(uuid) {
@@ -715,12 +758,7 @@ class DoormanUsersTab extends HTMLElement {
       await svc(this._hass, "delete_user", { uuid }, this._entryId);
       this._load();
     } catch (e) {
-      const msg = document.createElement("div");
-      msg.className = "error";
-      msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
-      msg.textContent = `Delete failed: ${e.message}`;
-      this.shadowRoot.appendChild(msg);
-      setTimeout(() => msg.remove(), 5000);
+      this._showError(`Delete failed: ${e.message}`);
     }
   }
 }
@@ -783,7 +821,7 @@ class DoormanLogTab extends HTMLElement {
 
     const content = shadow.getElementById("content");
     if (this._loading) { content.innerHTML = `<div class="loading">Loading log…</div>`; return; }
-    if (this._error)   { content.innerHTML = `<div class="error">${this._error}</div>`; return; }
+    if (this._error)   { content.innerHTML = `<div class="error">${esc(this._error)}</div>`; return; }
     if (!this._events?.length) { content.innerHTML = `<div class="empty">No log events found.</div>`; return; }
 
     const table = document.createElement("table");
@@ -792,15 +830,15 @@ class DoormanLogTab extends HTMLElement {
       <tbody>
         ${this._events.slice(0, 100).map(e => {
           const params = e.params || {};
-          const user = params.name || params.card || "—";
+          const user = params.name || params.uid || "—";
           const valid = params.valid;
           const resultClass = valid === false ? "fail" : "success";
           const resultText = valid === false ? "✗ Denied" : "✓ OK";
           return `
             <tr>
               <td>${formatDateTime(e.utcTime)}</td>
-              <td><span class="event-type">${e.event || "—"}</span></td>
-              <td>${user}</td>
+              <td><span class="event-type">${esc(e.event || "—")}</span></td>
+              <td>${esc(user)}</td>
               <td class="${resultClass}">${valid !== undefined ? resultText : "—"}</td>
             </tr>
           `;
@@ -875,18 +913,18 @@ class DoormanDeviceTab extends HTMLElement {
           border-radius: 4px; background: var(--card-background-color, white);
           color: var(--primary-text-color); font-size: 13px; margin-bottom: 12px; }
       </style>
-      ${this._loading ? `<div class="loading">Loading device info…</div>` : this._error ? `<div class="error">${this._error}</div>` : `
+      ${this._loading ? `<div class="loading">Loading device info…</div>` : this._error ? `<div class="error">${esc(this._error)}</div>` : `
         <div class="card">
           <h3>Device Information</h3>
           <div class="info-grid">
             <span class="info-label">Model</span>
-            <span class="info-value">${info.deviceName || "—"}</span>
+            <span class="info-value">${esc(info.deviceName || "—")}</span>
             <span class="info-label">Firmware</span>
-            <span class="info-value">${info.swVersion || "—"}</span>
+            <span class="info-value">${esc(info.swVersion || "—")}</span>
             <span class="info-label">Serial</span>
-            <span class="info-value">${info.serialNumber || "—"}</span>
+            <span class="info-value">${esc(info.serialNumber || "—")}</span>
             <span class="info-label">Hardware</span>
-            <span class="info-value">${info.hwVersion || "—"}</span>
+            <span class="info-value">${esc(info.hwVersion || "—")}</span>
           </div>
         </div>
         <div class="card">
@@ -973,7 +1011,13 @@ class DoormanPanel extends HTMLElement {
   }
 
   set panel(p) { this._panel = p; }
-  set narrow(n) { this._narrow = n; this._renderShell(); }
+  set narrow(n) {
+    // HA re-sets narrow on every viewport change; skip the re-render (and the
+    // tab remount + WS refetch + drawer state loss it causes) when unchanged.
+    if (n === this._narrow) return;
+    this._narrow = n;
+    this._renderShell();
+  }
 
   async _loadDevices() {
     try {
@@ -1080,7 +1124,7 @@ class DoormanPanel extends HTMLElement {
         ${this._loadError ? `
           <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 16px;background:#fff3f3;border:1px solid #ffcdd2;border-radius:6px;color:#c62828;font-size:13px;margin-bottom:16px;line-height:1.5">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#c62828" style="flex-shrink:0;margin-top:1px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-            <span><strong>Doorman is unavailable</strong> — ${this._loadError}</span>
+            <span><strong>Doorman is unavailable</strong> — ${esc(this._loadError)}</span>
           </div>` : ""}
         <div id="tab-content"></div>
       </div>
