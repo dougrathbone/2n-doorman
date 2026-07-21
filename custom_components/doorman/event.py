@@ -53,6 +53,12 @@ class DoormanAccessEventEntity(EventEntity):
     ) -> None:
         self._attr_unique_id = f"{entry.entry_id}_access_event"
         self._attr_name = "Doorman Access"
+        # Keep entity IDs (event.doorman_access) stable: with device_info set,
+        # newer HA versions otherwise prefix the object id with the device name.
+        self._attr_has_entity_name = False
+        # Pin the entity ID explicitly so device_info can't cause device-name
+        # prefixes (HA 2026.7+ prefixes new device-linked entities otherwise).
+        self.entity_id = "event.doorman_access"
         self._entry_id = entry.entry_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},

@@ -43,6 +43,12 @@ class DoormanRelay(CoordinatorEntity[DoormanCoordinator], SwitchEntity):
         self._attr_unique_id = f"{entry.entry_id}_relay_{self._switch_id}"
         # Always use a predictable name so entity_id is stable across renames on the device
         self._attr_name = f"Doorman Relay {self._switch_id}"
+        # Keep entity IDs (switch.doorman_relay_1) stable: with device_info set,
+        # newer HA versions otherwise prefix the object id with the device name.
+        self._attr_has_entity_name = False
+        # Pin the entity ID explicitly (supported alternative to registry
+        # generation) so device_info can't cause device-name prefixes.
+        self.entity_id = f"switch.doorman_relay_{self._switch_id}"
         self._attr_extra_state_attributes = {"device_name": switch_data.get("name", "")}
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},

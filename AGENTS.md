@@ -48,7 +48,10 @@ name — never the 2N device relay name. This produces predictable entity IDs
 (`switch.doorman_relay_1`) even when the relay is renamed on the intercom.
 The device name is stored in `extra_state_attributes["device_name"]`. Don't
 change this without updating all tests and any automations people may have
-written.
+written. All Doorman entities also set `_attr_has_entity_name = False` and pin
+`self.entity_id` explicitly in `__init__`: with `device_info` present, HA
+2026.7+ otherwise generates device-name-prefixed entity IDs
+(`switch.2n_ip_vario_doorman_relay_1`) for new installs.
 
 ### Log events via long-poll subscription
 `DoormanCoordinator` runs a background listener that subscribes to the device

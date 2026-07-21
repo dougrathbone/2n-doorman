@@ -26,12 +26,19 @@ class DoormanUserCountSensor(CoordinatorEntity[DoormanCoordinator], SensorEntity
 
     _attr_icon = "mdi:account-multiple"
     _attr_name = "Doorman User Count"
+    # Keep entity IDs (sensor.doorman_user_count) stable: with device_info set,
+    # newer HA versions otherwise prefix the object id with the device name.
+    _attr_has_entity_name = False
 
     def __init__(
         self, coordinator: DoormanCoordinator, entry: ConfigEntry
     ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_user_count"
+        # Pin the entity ID: with device_info set, HA 2026.7+ would otherwise
+        # generate sensor.<device_name>_doorman_user_count. Setting entity_id
+        # is the supported way for an integration to keep stable object IDs.
+        self.entity_id = "sensor.doorman_user_count"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
