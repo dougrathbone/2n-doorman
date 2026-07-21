@@ -672,3 +672,292 @@ async def test_setup_retries_when_device_unreachable(
     await hass.async_block_till_done()
 
     assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+# ------------------------------------------------------------------ #
+# Setup / reload robustness                                            #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_unload_and_reload_entry_succeeds(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """setup → unload → setup again works despite the sticky aiohttp route."""
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+    assert setup_doorman.state is ConfigEntryState.NOT_LOADED
+
+    await hass.config_entries.async_setup(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+
+    assert setup_doorman.state is ConfigEntryState.LOADED
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+@pytest.mark.asyncio
+async def test_setup_tolerates_duplicate_static_path_registration(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """aiohttp refuses duplicate static paths on reload; setup must still succeed."""
+    hass.http.async_register_static_paths.side_effect = ValueError("Duplicate")
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+@pytest.mark.asyncio
+async def test_setup_auth_error_starts_reauth(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Rejected credentials at setup fail the entry and start the reauth flow."""
+    from custom_components.doorman.api_client import DoormanAuthError
+
+    mock_2n_client.get_system_info.side_effect = DoormanAuthError("bad creds")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert any(
+        flow["context"]["source"] == "reauth"
+        for flow in hass.config_entries.flow.async_progress()
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_timeout_retries(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A bare timeout during init is transient — HA retries setup later."""
+    mock_2n_client.get_system_info.side_effect = TimeoutError("slow")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+@pytest.mark.asyncio
+async def test_panel_module_url_is_cache_busted(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """panel.js is registered with a ?v=<version> suffix for cache busting."""
+    from unittest.mock import AsyncMock, patch
+
+    register_panel = AsyncMock()
+    doorman_config_entry.add_to_hass(hass)
+    with patch(
+        "custom_components.doorman.panel_custom.async_register_panel", new=register_panel
+    ):
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    register_panel.assert_called_once()
+    module_url = register_panel.call_args.kwargs["module_url"]
+    assert module_url.startswith("/api/doorman/panel.js?v=")
+    assert len(module_url.removeprefix("/api/doorman/panel.js?v=")) > 0
+
+
+# ------------------------------------------------------------------ #
+# Service error handling & lifecycle                                   #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_create_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during create_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.create_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="create_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "create_user", {"name": "Test"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during update_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.update_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="update_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "update_user", {"uuid": "uuid-jane", "name": "X"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during delete_user surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.delete_user.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="delete_user failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "delete_user", {"uuid": "uuid-jane"}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_grant_access_service_api_error_raises_ha_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A 2N API failure during grant_access surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.grant_access.side_effect = DoormanApiError("device busy")
+
+    with pytest.raises(HomeAssistantError, match="grant_access failed on the 2N device"):
+        await hass.services.async_call(
+            DOMAIN, "grant_access", {"access_point_id": 1}, blocking=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_services_removed_when_last_entry_unloads(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Unloading the sole entry removes all doorman.* service actions."""
+    await hass.config_entries.async_unload(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+
+    for service in ("create_user", "update_user", "delete_user", "grant_access"):
+        assert not hass.services.has_service(DOMAIN, service), (
+            f"Service {DOMAIN}.{service} should have been removed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_clears_notification_targets(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """delete_user also drops the deleted user's stored notification targets."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_targets("uuid-jane", ["notify.mobile_app"])
+    assert store.get_notification_targets("uuid-jane") == ["notify.mobile_app"]
+
+    await hass.services.async_call(
+        DOMAIN, "delete_user", {"uuid": "uuid-jane"}, blocking=True,
+    )
+
+    mock_2n_client.delete_user.assert_called_once_with("uuid-jane")
+    assert store.get_notification_targets("uuid-jane") == []
+
+
+# ------------------------------------------------------------------ #
+# update_user: clearing fields                                         #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_clear_validity(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """valid_from/valid_to of 0 are passed through to clear the restriction."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_user",
+        {"uuid": "uuid-jane", "valid_from": 0, "valid_to": 0},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.update_user.call_args[0][0]
+    assert call_arg["validFrom"] == 0
+    assert call_arg["validTo"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_user_service_clear_pin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """An explicitly empty pin string is forwarded to clear the PIN."""
+    await hass.services.async_call(
+        DOMAIN,
+        "update_user",
+        {"uuid": "uuid-jane", "pin": ""},
+        blocking=True,
+    )
+
+    call_arg = mock_2n_client.update_user.call_args[0][0]
+    assert call_arg["pin"] == ""
+
+
+# ------------------------------------------------------------------ #
+# Device registry                                                      #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_entities_attached_to_device_registry(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """All Doorman entities attach to a single device per config entry."""
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, setup_doorman.entry_id)}
+    )
+    assert device is not None
+    assert device.manufacturer == "2N"
+    assert device.name == setup_doorman.title
+    assert device.model == "535v1"
+    assert device.sw_version == "2.49.0.38"
+
+    entity_registry = er.async_get(hass)
+    for entity_id in (
+        "sensor.doorman_user_count",
+        "switch.doorman_relay_1",
+        "event.doorman_access",
+    ):
+        entity = entity_registry.async_get(entity_id)
+        assert entity is not None, f"Missing entity {entity_id}"
+        assert entity.device_id == device.id

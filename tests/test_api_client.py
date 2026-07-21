@@ -173,8 +173,8 @@ async def test_pull_log_returns_events_list() -> None:
     client._log_subscription_id = 1
 
     fake_events = [
-        {"event": "UserAuthenticated", "utcTime": "2026-01-01T00:00:00Z"},
-        {"event": "CardEntered", "utcTime": "2026-01-01T00:00:01Z"},
+        {"event": "UserAuthenticated", "utcTime": 1743242400},
+        {"event": "CardEntered", "utcTime": 1743242401},
     ]
 
     async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
@@ -332,6 +332,14 @@ def test_flatten_user_valid_from_zero():
     assert result["validTo"] is None
 
 
+def test_flatten_user_non_numeric_validity_returns_none():
+    """Non-numeric validity strings must not crash the poll — treat as unset."""
+    raw = {"uuid": "u6b", "access": {"validFrom": "abc", "validTo": "never"}}
+    result = TwoNApiClient._flatten_user(raw)
+    assert result["validFrom"] is None
+    assert result["validTo"] is None
+
+
 def test_flatten_user_preserves_extra_fields():
     """Fields outside 'access' are preserved in the flattened output."""
     raw = {"uuid": "u7", "name": "Extra", "phone": "+1234", "access": {}}
@@ -390,11 +398,28 @@ def test_nest_user_with_validity_dates():
     assert result["access"]["validTo"] == "1800000000"
 
 
-def test_nest_user_empty_credentials_omitted():
-    """Empty pin/card/code are not included in access."""
+def test_nest_user_empty_credentials_sent_to_clear():
+    """Explicitly-empty pin/card/code are sent so dir/update clears them on the device."""
     flat = {"uuid": "u1", "pin": "", "card": [], "code": []}
     result = TwoNApiClient._nest_user(flat)
-    assert "access" not in result  # nothing to nest
+    assert result["access"]["pin"] == ""
+    assert result["access"]["card"] == []
+    assert result["access"]["code"] == []
+
+
+def test_nest_user_absent_credentials_omitted():
+    """Absent credential keys leave the device's existing values untouched."""
+    flat = {"uuid": "u1", "name": "Jane"}
+    result = TwoNApiClient._nest_user(flat)
+    assert "access" not in result
+
+
+def test_nest_user_zero_validity_sends_zero_string():
+    """validFrom/validTo of 0 clear the restriction — the device uses "0" for none."""
+    flat = {"uuid": "u1", "validFrom": 0, "validTo": 0}
+    result = TwoNApiClient._nest_user(flat)
+    assert result["access"]["validFrom"] == "0"
+    assert result["access"]["validTo"] == "0"
 
 
 def test_nest_user_roundtrip():
@@ -1081,6 +1106,20 @@ async def test_subscribe_log_stores_id():
     assert client._log_subscription_id == 77
 
 
+@pytest.mark.asyncio
+async def test_subscribe_log_malformed_response_raises():
+    """A subscribe response without result.id raises DoormanApiError, not KeyError."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        return {"result": {}}
+
+    client._request = fake_request
+    with pytest.raises(DoormanApiError, match="Malformed log/subscribe response"):
+        await client._subscribe_log()
+    assert client._log_subscription_id is None
+
+
 # ─── pull_log with real _request mock (subscription creation) ────────────────
 
 @pytest.mark.asyncio
@@ -1199,6 +1238,17 @@ def test_build_digest_header_honors_sha256():
     assert "algorithm=SHA-256" in header
     response = re.search(r'response="([0-9a-f]+)"', header).group(1)
     assert len(response) == 64  # SHA-256 hex digest, not MD5's 32
+
+
+def test_build_digest_header_rejects_sess_algorithms():
+    """-sess algorithms hash HA1 differently; reject instead of mis-authenticating."""
+    client = _make_client()
+    for algorithm in ("SHA-256-sess", "MD5-sess"):
+        www_auth = f'Digest realm="2N", nonce="abc123", qop="auth", algorithm={algorithm}'
+        with pytest.raises(DoormanAuthError, match="Unsupported digest algorithm"):
+            client._build_digest_header(
+                "GET", "http://192.168.1.100/api/system/info", www_auth
+            )
 
 
 # ─── Error-code threading / code-12 re-subscribe ──────────────────────────────

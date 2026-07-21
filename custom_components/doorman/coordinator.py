@@ -66,8 +66,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.has_write_permission: bool = True
         self._log_buffer: list[dict[str, Any]] = []
         self._log_buffer_max = 200
-        self._last_access: dict[str, str] = {}
-        self._pending_access_saves: list[tuple[str, str]] = []
+        self._last_access: dict[str, int] = {}
+        self._pending_access_saves: list[tuple[str, int]] = []
         self._log_task: asyncio.Task | None = None
         self._consecutive_auth_failures = 0
         self._consecutive_listener_auth_failures = 0
@@ -111,11 +111,39 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         rather than waiting for the next scheduled coordinator poll. Known
         transient errors back off exponentially (5 → 60 s); unexpected
         errors include a traceback. Backoff resets on the first success.
+
+        The post-pull work (event firing, persistence, listener updates) is
+        inside the try so one failure there (e.g. a store write error) backs
+        off and retries instead of permanently killing the listener — which
+        would silently stop all access events until the next reload.
         """
         backoff = LOG_LISTENER_INITIAL_BACKOFF
         while True:
             try:
                 events = await self.client.pull_log(server_timeout=20)
+
+                backoff = LOG_LISTENER_INITIAL_BACKOFF
+                self._consecutive_listener_auth_failures = 0
+                if not events:
+                    continue
+
+                self._fire_new_access_events(events)
+                self._log_buffer = (events + self._log_buffer)[: self._log_buffer_max]
+
+                # Persist last_access entries collected by _fire_new_access_events.
+                # Coalesce into a single disk write rather than one per event.
+                if self._pending_access_saves:
+                    store = self.hass.data.get(f"{DOMAIN}_store")
+                    saved = list(self._pending_access_saves)
+                    self._pending_access_saves.clear()
+                    if store:
+                        await store.update_last_access_batch(saved)
+
+                # Push an update to all listeners so the log tab refreshes immediately
+                if self.data is not None:
+                    self.async_set_updated_data(
+                        {**self.data, "log_events": self._log_buffer, "last_access": self._last_access}
+                    )
             except asyncio.CancelledError:
                 return
             except DoormanAuthError as err:
@@ -139,7 +167,6 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
-                continue
             except (DoormanApiError, TimeoutError) as err:
                 _LOGGER.warning(
                     "Doorman log listener: %s — retrying in %d s",
@@ -148,7 +175,6 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
-                continue
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning(
                     "Doorman log listener: unexpected error (%r) — retrying in %d s",
@@ -156,30 +182,6 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, LOG_LISTENER_MAX_BACKOFF)
-                continue
-
-            backoff = LOG_LISTENER_INITIAL_BACKOFF
-            self._consecutive_listener_auth_failures = 0
-            if not events:
-                continue
-
-            self._fire_new_access_events(events)
-            self._log_buffer = (events + self._log_buffer)[: self._log_buffer_max]
-
-            # Persist last_access entries collected by _fire_new_access_events.
-            # Coalesce into a single disk write rather than one per event.
-            if self._pending_access_saves:
-                store = self.hass.data.get(f"{DOMAIN}_store")
-                saved = list(self._pending_access_saves)
-                self._pending_access_saves.clear()
-                if store:
-                    await store.update_last_access_batch(saved)
-
-            # Push an update to all listeners so the log tab refreshes immediately
-            if self.data is not None:
-                self.async_set_updated_data(
-                    {**self.data, "log_events": self._log_buffer, "last_access": self._last_access}
-                )
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -218,6 +220,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         listeners (event entities, per-device UI) can ignore events from
         other coordinators — without an entry_id filter, every event
         entity would fire for every device in a multi-device install.
+
+        ``utcTime`` is epoch seconds (uint32) per the 2N HTTP API and is
+        passed through as-is; the panel converts it for display.
         """
         entry_id = self.config_entry.entry_id
         for event in events:

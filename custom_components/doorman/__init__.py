@@ -11,7 +11,12 @@ from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.issue_registry import (
@@ -19,8 +24,9 @@ from homeassistant.helpers.issue_registry import (
     async_create_issue,
     async_delete_issue,
 )
+from homeassistant.loader import async_get_integration
 
-from .api_client import DoormanApiError, TwoNApiClient
+from .api_client import DoormanApiError, DoormanAuthError, TwoNApiClient
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -72,7 +78,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DoormanCoordinator(hass, entry, client)
     try:
         await coordinator.async_init_device_info()
-    except DoormanApiError as err:
+    except DoormanAuthError as err:
+        # Bad credentials will not fix themselves on retry — tell HA to start
+        # the reauth flow. Must be caught before DoormanApiError, which is its
+        # parent class.
+        raise ConfigEntryAuthFailed(f"Cannot authenticate to 2N device: {err}") from err
+    except (DoormanApiError, TimeoutError) as err:
         # Device unreachable or transiently erroring at startup: tell HA to
         # retry the setup later instead of marking the entry permanently failed.
         raise ConfigEntryNotReady(f"Cannot initialise 2N device: {err}") from err
@@ -123,9 +134,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Serve frontend assets and register the sidebar panel (once across all entries)
     if not hass.data.get(f"{DOMAIN}_panel_registered"):
         frontend_dir = Path(__file__).parent / "frontend"
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
-        )
+        # aiohttp routes cannot be unregistered, so after an entry reload the
+        # static path is still registered — re-registering raises
+        # ValueError("Duplicate"). That is harmless: the route keeps serving.
+        with contextlib.suppress(ValueError):
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
+            )
+        # Cache-bust panel.js with the integration version so browsers pick up
+        # new frontend code after a HACS update instead of serving a cached copy.
+        integration = await async_get_integration(hass, DOMAIN)
         with contextlib.suppress(ValueError):
             await panel_custom.async_register_panel(
                 hass,
@@ -133,7 +151,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 frontend_url_path=DOMAIN,
                 sidebar_title=PANEL_TITLE,
                 sidebar_icon=PANEL_ICON,
-                module_url=f"{PANEL_URL}/panel.js",
+                module_url=f"{PANEL_URL}/panel.js?v={integration.version}",
                 embed_iframe=False,
                 # Admin-only: the panel manages door credentials (PINs, cards,
                 # codes) and access linking. The WebSocket commands enforce this
@@ -163,6 +181,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 unsub()
             hass.data.pop(f"{DOMAIN}_notifications_registered", None)
             hass.data.pop(f"{DOMAIN}_store", None)
+            # No entries left — the domain's services have nothing to act on.
+            for service in _SERVICES:
+                hass.services.async_remove(DOMAIN, service)
     return unloaded
 
 
@@ -176,6 +197,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool: 
 # ------------------------------------------------------------------ #
 # Services                                                            #
 # ------------------------------------------------------------------ #
+
+# All service actions registered below — removed again when the last
+# config entry unloads.
+_SERVICES = ("create_user", "update_user", "delete_user", "grant_access")
+
 
 def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
     """Return the coordinator for a service call, resolving the optional ``device`` field."""
@@ -222,42 +248,69 @@ def _register_services(hass: HomeAssistant) -> None:
             user["validFrom"] = int(valid_from.timestamp())
         if valid_to := call.data.get("valid_to"):
             user["validTo"] = int(valid_to.timestamp())
-        await coordinator.client.create_user(user)
+        try:
+            await coordinator.client.create_user(user)
+        except DoormanApiError as err:
+            # Surface the device message without a raw traceback in the HA log
+            raise HomeAssistantError(f"create_user failed on the 2N device: {err}") from err
         await coordinator.async_request_refresh()
 
     async def handle_update_user(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
         user: dict = {"uuid": call.data["uuid"]}
-        for field in ("name", "pin"):
-            if field in call.data and call.data[field]:
-                user[field] = call.data[field]
+        if "name" in call.data and call.data["name"]:
+            user["name"] = call.data["name"]
+        # An explicitly empty string clears the PIN, mirroring how an empty
+        # card/code below clears those credentials.
+        if "pin" in call.data:
+            user["pin"] = call.data["pin"]
         if "enabled" in call.data:
             user["enabled"] = call.data["enabled"]
         if "card" in call.data:
             user["card"] = [call.data["card"]] if call.data["card"] else []
         if "code" in call.data:
             user["code"] = [call.data["code"]] if call.data["code"] else []
-        if valid_from := call.data.get("valid_from"):
-            user["validFrom"] = int(valid_from.timestamp())
-        if valid_to := call.data.get("valid_to"):
-            user["validTo"] = int(valid_to.timestamp())
-        await coordinator.client.update_user(user)
+        # The panel sends 0 to clear a validity restriction (the 2N API
+        # represents "no restriction" as validFrom/validTo "0").
+        if "valid_from" in call.data:
+            valid_from = call.data["valid_from"]
+            user["validFrom"] = (
+                valid_from if isinstance(valid_from, int) else int(valid_from.timestamp())
+            )
+        if "valid_to" in call.data:
+            valid_to = call.data["valid_to"]
+            user["validTo"] = (
+                valid_to if isinstance(valid_to, int) else int(valid_to.timestamp())
+            )
+        try:
+            await coordinator.client.update_user(user)
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"update_user failed on the 2N device: {err}") from err
         await coordinator.async_request_refresh()
 
     async def handle_delete_user(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
-        await coordinator.client.delete_user(call.data["uuid"])
+        try:
+            await coordinator.client.delete_user(call.data["uuid"])
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"delete_user failed on the 2N device: {err}") from err
         store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
         if store:
             await store.unlink_user(call.data["uuid"])
+            # Drop stale notification targets — a deleted user can never
+            # authenticate again, so dispatching for them is dead weight.
+            await store.clear_notification_targets(call.data["uuid"])
         await coordinator.async_request_refresh()
 
     async def handle_grant_access(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
-        await coordinator.client.grant_access(
-            access_point_id=call.data.get("access_point_id", 1),
-            user_uuid=call.data.get("user_uuid"),
-        )
+        try:
+            await coordinator.client.grant_access(
+                access_point_id=call.data.get("access_point_id", 1),
+                user_uuid=call.data.get("user_uuid"),
+            )
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"grant_access failed on the 2N device: {err}") from err
 
     hass.services.async_register(
         DOMAIN,
@@ -288,8 +341,9 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("pin"): cv.string,
                 vol.Optional("card"): cv.string,
                 vol.Optional("code"): cv.string,
-                vol.Optional("valid_from"): cv.datetime,
-                vol.Optional("valid_to"): cv.datetime,
+                # A datetime sets the restriction; 0 clears it.
+                vol.Optional("valid_from"): vol.Any(cv.datetime, 0),
+                vol.Optional("valid_to"): vol.Any(cv.datetime, 0),
                 vol.Optional("device"): cv.string,
             }
         ),

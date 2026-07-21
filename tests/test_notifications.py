@@ -150,3 +150,26 @@ async def test_no_notification_when_store_missing(hass: HomeAssistant):
     await hass.async_block_till_done()
 
     assert len(calls) == 0
+
+
+async def test_missing_notify_service_is_skipped(hass: HomeAssistant, mock_store, caplog):
+    """A configured target whose notify service is gone is skipped with a warning.
+
+    Previously the dispatch task called a nonexistent service and raised
+    ServiceNotFound inside a task ("Task exception was never retrieved").
+    """
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    mock_store.get_notification_targets.return_value = ["notify.gone_service"]
+
+    async_setup_notifications(hass)
+
+    with caplog.at_level("WARNING", logger="custom_components.doorman.notifications"):
+        hass.bus.async_fire(
+            f"{DOMAIN}_access",
+            {"event_type": "UserAuthenticated", "params": {"uuid": "uuid-abc", "name": "Jane"}},
+        )
+        await hass.async_block_till_done()
+
+    assert "notify.gone_service is not registered" in caplog.text
+    # No task exceptions leaked into the log
+    assert "Task exception" not in caplog.text

@@ -113,3 +113,28 @@ async def test_switch_has_extra_attributes(
     state = hass.states.get("switch.doorman_relay_1")
     assert state is not None
     assert state.attributes.get("device_name") == "Main Door"
+
+
+@pytest.mark.asyncio
+async def test_malformed_switch_payload_is_skipped(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A switch payload missing both 'switch' and 'id' is skipped, not fatal."""
+    from homeassistant.config_entries import ConfigEntryState
+
+    mock_2n_client.get_switch_status.return_value = [
+        {"id": 1, "name": "Main Door", "active": False},
+        {"active": True},  # malformed — no identifier at all
+    ]
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    # The valid switch still got an entity
+    assert hass.states.get("switch.doorman_relay_1") is not None
+    # ... and is_on tolerates the malformed entry in coordinator data
+    assert hass.states.get("switch.doorman_relay_1").state == "off"

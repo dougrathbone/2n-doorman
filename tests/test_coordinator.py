@@ -168,8 +168,8 @@ async def test_coordinator_fires_ha_bus_events_for_new_log_entries(
     new_event = {
         "id": "evt-002",
         "event": "CardEntered",
-        "utcTime": "2026-03-29T10:05:00Z",
-        "params": {"card": "AABBCCDD", "valid": True},
+        "utcTime": 1743242700,
+        "params": {"uid": "AABBCCDD", "valid": True},
     }
     coordinator._fire_new_access_events([new_event])
     await hass.async_block_till_done()
@@ -208,13 +208,13 @@ async def test_fire_new_access_events_tracks_last_access(
     event = {
         "id": "evt-003",
         "event": "UserAuthenticated",
-        "utcTime": "2026-03-29T11:00:00Z",
+        "utcTime": 1743246000,
         "params": {"ap": 0, "session": 3, "name": "Jane", "uuid": "uuid-jane"},
     }
     coordinator._fire_new_access_events([event])
 
-    assert coordinator._last_access.get("uuid-jane") == "2026-03-29T11:00:00Z"
-    assert ("uuid-jane", "2026-03-29T11:00:00Z") in coordinator._pending_access_saves
+    assert coordinator._last_access.get("uuid-jane") == 1743246000
+    assert ("uuid-jane", 1743246000) in coordinator._pending_access_saves
 
 
 @pytest.mark.asyncio
@@ -226,10 +226,10 @@ async def test_log_buffer_accumulates_via_fire_new_access_events(
     coordinator = _make_coordinator(hass, client)
 
     first_batch = [
-        {"id": "e1", "event": "CardEntered", "utcTime": "2026-03-29T10:00:00Z", "params": {}},
+        {"id": "e1", "event": "CardEntered", "utcTime": 1743242400, "params": {}},
     ]
     second_batch = [
-        {"id": "e2", "event": "UserRejected", "utcTime": "2026-03-29T10:01:00Z", "params": {}},
+        {"id": "e2", "event": "UserRejected", "utcTime": 1743242460, "params": {}},
     ]
 
     # Manually simulate what the background task does when it gets events
@@ -337,3 +337,64 @@ async def test_log_listener_escalates_persistent_auth_to_reauth(
 
     coordinator.config_entry.async_start_reauth.assert_called_once()
     assert client.pull_log.call_count == coord_mod.AUTH_FAILURE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_log_listener_survives_store_save_failure(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    """A failing store write must not kill the background listener.
+
+    Regression: post-pull work ran outside the loop's try/except, so one
+    exception (e.g. a disk error in update_last_access_batch) terminated the
+    listener task and access events silently stopped until reload.
+    """
+    import asyncio
+
+    import custom_components.doorman.coordinator as coord_mod
+
+    store = MagicMock()
+    store.update_last_access_batch = AsyncMock(
+        side_effect=[OSError("disk full"), None]
+    )
+    hass.data[f"{DOMAIN}_store"] = store
+
+    event_a = {
+        "id": "evt-a",
+        "event": "UserAuthenticated",
+        "utcTime": 1743242400,
+        "params": {"ap": 0, "session": 1, "name": "A", "uuid": "uuid-a"},
+    }
+    event_b = {
+        "id": "evt-b",
+        "event": "UserAuthenticated",
+        "utcTime": 1743242460,
+        "params": {"ap": 0, "session": 1, "name": "B", "uuid": "uuid-b"},
+    }
+
+    pull_calls = 0
+
+    async def fake_pull_log(server_timeout: int = 0) -> list[dict]:
+        nonlocal pull_calls
+        pull_calls += 1
+        if pull_calls == 1:
+            return [event_a]
+        if pull_calls == 2:
+            return [event_b]
+        raise asyncio.CancelledError  # stop the loop after both batches
+
+    client = MagicMock()
+    client.pull_log = fake_pull_log
+    coordinator = _make_coordinator(hass, client)
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", AsyncMock())
+
+    fired_events = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired_events.append(e))
+
+    await coordinator._log_listener_loop()
+    await hass.async_block_till_done()
+
+    # Both batches fired bus events — the listener kept running after the
+    # first store save blew up.
+    assert [e.data["params"]["uuid"] for e in fired_events] == ["uuid-a", "uuid-b"]
+    assert store.update_last_access_batch.await_count == 2

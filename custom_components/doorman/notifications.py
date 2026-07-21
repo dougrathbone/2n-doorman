@@ -69,6 +69,14 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
         for target in targets:
             # Stored as "notify.service_name"; strip the domain prefix for the call
             service = target.removeprefix("notify.")
+            if not hass.services.has_service("notify", service):
+                # Target was removed (e.g. the mobile app was uninstalled) —
+                # skip it instead of spawning a task that raises.
+                _LOGGER.warning(
+                    "Doorman: notification target %s is not registered — skipping",
+                    target,
+                )
+                continue
             hass.async_create_task(
                 hass.services.async_call(
                     "notify",

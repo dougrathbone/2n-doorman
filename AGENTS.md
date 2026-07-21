@@ -48,14 +48,22 @@ name — never the 2N device relay name. This produces predictable entity IDs
 (`switch.doorman_relay_1`) even when the relay is renamed on the intercom.
 The device name is stored in `extra_state_attributes["device_name"]`. Don't
 change this without updating all tests and any automations people may have
-written.
+written. All Doorman entities also set `_attr_has_entity_name = False` and pin
+`self.entity_id` explicitly in `__init__`: with `device_info` present, HA
+2026.7+ otherwise generates device-name-prefixed entity IDs
+(`switch.2n_ip_vario_doorman_relay_1`) for new installs.
 
-### First-poll event suppression
-`DoormanCoordinator._fire_new_access_events` records the latest log event ID
-on the first poll but does **not** fire bus events for historical entries.
-Only events that appear on a subsequent poll (i.e., newer than the watermark)
-fire `doorman_access` events. This prevents a flood of stale notifications
-on every HA restart.
+### Log events via long-poll subscription
+`DoormanCoordinator` runs a background listener that subscribes to the device
+log (`/api/log/subscribe`) and long-polls `/api/log/pull` with a 20 s
+server-side timeout. The device keeps an unread queue per subscription, so only
+new events are delivered — there is deliberately no client-side watermark, and
+a fresh subscription after an HA restart starts empty, which prevents a flood
+of stale notifications. The trade-off: events that occur while no subscription
+is active (between a subscription expiry and re-subscribe, or while HA is
+down) are never delivered. `doorman_access` bus events carry the originating
+`entry_id`, and `utcTime` is passed through as epoch seconds (the panel
+converts for display).
 
 ### Notification targets stored per 2N UUID
 `DoormanStore` persists `notification_targets: {two_n_uuid: ["notify.service", …]}`.
@@ -101,7 +109,8 @@ footers to commit messages. Keep commit messages focused on technical changes.
 - **Releases**: tag `vX.Y.Z` → GitHub Actions zips `custom_components/doorman/`
   and creates a GitHub Release. HACS installs from the release zip.
 - **Frontend changes**: edit `frontend/panel.js` directly; no build step.
-  Reload the HA frontend after changes (or bump cache-busting if needed).
+  `panel.js` is cache-busted automatically with `?v={manifest version}` in
+  `__init__.py`, so a release is enough — no manual busting needed.
 - **Storage keys**: `STORAGE_KEY` and `STORAGE_VERSION` are defined in
   `const.py`. Bump `STORAGE_VERSION` when the stored schema changes
   in a breaking way.

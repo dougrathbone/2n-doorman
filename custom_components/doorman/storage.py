@@ -73,17 +73,17 @@ class DoormanStore:
     # ------------------------------------------------------------------ #
 
     @property
-    def last_access(self) -> dict[str, str]:
+    def last_access(self) -> dict[str, int]:
         """Return the full map of ``{two_n_uuid: utcTime}`` for last access."""
         return self._data.get("last_access", {})
 
-    async def update_last_access(self, two_n_uuid: str, utc_time: str) -> None:
+    async def update_last_access(self, two_n_uuid: str, utc_time: int) -> None:
         """Record the most recent successful access time for a user. Persists immediately."""
         self._data.setdefault("last_access", {})[two_n_uuid] = utc_time
         await self._store.async_save(self._data)
 
     async def update_last_access_batch(
-        self, entries: list[tuple[str, str]]
+        self, entries: list[tuple[str, int]]
     ) -> None:
         """Record several access times and persist with a single disk write.
 
@@ -114,3 +114,8 @@ class DoormanStore:
         """Persist the notification targets for a 2N user."""
         self._data.setdefault("notification_targets", {})[two_n_uuid] = targets
         await self._store.async_save(self._data)
+
+    async def clear_notification_targets(self, two_n_uuid: str) -> None:
+        """Remove all notification targets for a 2N UUID. Persists immediately."""
+        if self._data.get("notification_targets", {}).pop(two_n_uuid, None) is not None:
+            await self._store.async_save(self._data)
