@@ -395,6 +395,7 @@ async def test_log_listener_survives_store_save_failure(
     await hass.async_block_till_done()
 
     # Both batches fired bus events — the listener kept running after the
-    # first store save blew up.
-    assert [e.data["params"]["uuid"] for e in fired_events] == ["uuid-a", "uuid-b"]
+    # first store save blew up. Delivery order is not guaranteed when bus
+    # jobs are scheduled across a mocked sleep, so compare unordered.
+    assert sorted(e.data["params"]["uuid"] for e in fired_events) == ["uuid-a", "uuid-b"]
     assert store.update_last_access_batch.await_count == 2
