@@ -8,6 +8,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api_client import DoormanAuthError, DoormanConnectionError, TwoNApiClient
 from .const import (
     CONF_HOST,
+    CONF_NOTIFICATION_CHANNEL_ANDROID,
+    CONF_NOTIFICATION_SOUND_IOS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_USE_SSL,
@@ -140,6 +142,8 @@ OPTIONS_SCHEMA = vol.Schema(
             CONF_POLL_INTERVAL,
             default=DEFAULT_POLL_INTERVAL,
         ): vol.All(int, vol.Range(min=10, max=3600)),
+        vol.Optional(CONF_NOTIFICATION_SOUND_IOS, default=""): str,
+        vol.Optional(CONF_NOTIFICATION_CHANNEL_ANDROID, default=""): str,
     }
 )
 
@@ -153,9 +157,10 @@ class DoormanOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
 
-        current_interval = self.config_entry.options.get(
-            CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
-        )
+        options = self.config_entry.options
+        current_interval = options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        current_ios_sound = options.get(CONF_NOTIFICATION_SOUND_IOS, "")
+        current_android_channel = options.get(CONF_NOTIFICATION_CHANNEL_ANDROID, "")
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -164,6 +169,14 @@ class DoormanOptionsFlow(config_entries.OptionsFlow):
                         CONF_POLL_INTERVAL,
                         default=current_interval,
                     ): vol.All(int, vol.Range(min=10, max=3600)),
+                    vol.Optional(
+                        CONF_NOTIFICATION_SOUND_IOS,
+                        default=current_ios_sound,
+                    ): str,
+                    vol.Optional(
+                        CONF_NOTIFICATION_CHANNEL_ANDROID,
+                        default=current_android_channel,
+                    ): str,
                 }
             ),
         )

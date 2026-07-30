@@ -52,10 +52,16 @@
     "step": {
       "init": {
         "title": "Doorman options",
+        "description": "Adjust how often Doorman polls the device for user and switch updates, and customize how push notifications sound on each platform. Access events are delivered via long-polling regardless of the poll interval.",
         "data": {
-          "poll_interval": "Poll interval (seconds)"
+          "poll_interval": "Poll interval (seconds)",
+          "notification_sound_ios": "iOS notification sound",
+          "notification_channel_android": "Android notification channel"
         },
-        "description": "Adjust how often Doorman polls the device for user and switch updates. Access events are delivered via long-polling regardless of this setting."
+        "data_description": {
+          "notification_sound_ios": "Filename bundled with the Home Assistant iOS Companion app (e.g. US-EN-Alexa-Someone-At-Front-Door.wav). Leave empty to use the app default.",
+          "notification_channel_android": "Notification channel ID configured in the Home Assistant Android Companion app. Leave empty to use the default channel."
+        }
       }
     }
   },

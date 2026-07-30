@@ -8,6 +8,8 @@ CONF_PASSWORD = "password"
 CONF_USE_SSL = "use_ssl"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_POLL_INTERVAL = "poll_interval"
+CONF_NOTIFICATION_SOUND_IOS = "notification_sound_ios"
+CONF_NOTIFICATION_CHANNEL_ANDROID = "notification_channel_android"
 
 DEFAULT_POLL_INTERVAL = 30
 DEFAULT_USE_SSL = False

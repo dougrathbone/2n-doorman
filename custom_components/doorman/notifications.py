@@ -11,7 +11,11 @@ import logging
 
 from homeassistant.core import Event, HomeAssistant, callback
 
-from .const import DOMAIN
+from .const import (
+    CONF_NOTIFICATION_CHANNEL_ANDROID,
+    CONF_NOTIFICATION_SOUND_IOS,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,15 +61,29 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
         # video intercoms, and multi-device setups need to know which door.
         entry_id: str | None = event.data.get("entry_id")
         device_name: str | None = None
+        ios_sound: str = ""
+        android_channel: str = ""
         if entry_id:
             entry = hass.config_entries.async_get_entry(entry_id)
             if entry is not None:
                 device_name = entry.title
+                ios_sound = entry.options.get(CONF_NOTIFICATION_SOUND_IOS, "") or ""
+                android_channel = (
+                    entry.options.get(CONF_NOTIFICATION_CHANNEL_ANDROID, "") or ""
+                )
         message = (
             f"{user_name} opened {device_name}"
             if device_name
             else f"{user_name} opened the door"
         )
+        # iOS Companion reads sound from data.push.sound; Android reads
+        # channel from data.channel. Only include when configured so we
+        # don't override user-chosen defaults with empty strings.
+        data: dict = {"tag": f"doorman_{two_n_uuid}"}
+        if ios_sound:
+            data["push"] = {"sound": ios_sound}
+        if android_channel:
+            data["channel"] = android_channel
         for target in targets:
             # Stored as "notify.service_name"; strip the domain prefix for the call
             service = target.removeprefix("notify.")
@@ -84,7 +102,7 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
                     {
                         "title": "Doorman",
                         "message": message,
-                        "data": {"tag": f"doorman_{two_n_uuid}"},
+                        "data": data,
                     },
                 )
             )

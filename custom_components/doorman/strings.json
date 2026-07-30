@@ -48,6 +48,23 @@
       "description": "The API user `{username}` cannot write to the 2N device directory on **{device_name}**. Create, edit, and delete operations are disabled.\n\n**To fix:** In the 2N web interface go to **Services → HTTP API**, find the API user, and enable **System API** with **Control** access. Access log, switch control, and user viewing will continue to work in the meantime."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Doorman options",
+        "description": "Adjust how often Doorman polls the device for user and switch updates, and customize how push notifications sound on each platform.",
+        "data": {
+          "poll_interval": "Poll interval (seconds)",
+          "notification_sound_ios": "iOS notification sound",
+          "notification_channel_android": "Android notification channel"
+        },
+        "data_description": {
+          "notification_sound_ios": "Filename bundled with the Home Assistant iOS Companion app (e.g. US-EN-Alexa-Someone-At-Front-Door.wav). Leave empty to use the app default.",
+          "notification_channel_android": "Notification channel ID configured in the Home Assistant Android Companion app. Leave empty to use the default channel."
+        }
+      }
+    }
+  },
   "services": {
     "create_user": {
       "name": "Create user",
