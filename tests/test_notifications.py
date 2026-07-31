@@ -7,7 +7,17 @@ import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from custom_components.doorman.const import (
+    CONF_ACCESS_CHANNEL_ANDROID,
+    CONF_ACCESS_SOUND_IOS,
+    CONF_DOORBELL_CHANNEL_ANDROID,
+    CONF_DOORBELL_SOUND_IOS,
+    CONF_DOORBELL_TARGETS,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DOMAIN,
+)
 from custom_components.doorman.notifications import async_setup_notifications
 
 
@@ -173,3 +183,169 @@ async def test_missing_notify_service_is_skipped(hass: HomeAssistant, mock_store
     assert "notify.gone_service is not registered" in caplog.text
     # No task exceptions leaked into the log
     assert "Task exception" not in caplog.text
+
+
+# ─── Per-flow presentation options ───────────────────────────────────────────
+
+async def test_access_notification_includes_ios_sound_when_configured(
+    hass: HomeAssistant, mock_store
+):
+    """access_sound_ios flows through as data.push.sound on the access flow."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="North Gate",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={CONF_ACCESS_SOUND_IOS: "US-EN-Alexa-Front-Door-Opened.wav"},
+    )
+    entry.add_to_hass(hass)
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "UserAuthenticated",
+            "params": {"uuid": "uuid-abc", "name": "Jane"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Front-Door-Opened.wav"}
+    assert "channel" not in calls[0].data["data"]
+
+
+async def test_access_notification_includes_android_channel_when_configured(
+    hass: HomeAssistant, mock_store
+):
+    """access_channel_android flows through as data.channel on the access flow."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="North Gate",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={CONF_ACCESS_CHANNEL_ANDROID: "doorman_access"},
+    )
+    entry.add_to_hass(hass)
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "UserAuthenticated",
+            "params": {"uuid": "uuid-abc", "name": "Jane"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls[0].data["data"]["channel"] == "doorman_access"
+
+
+async def test_access_and_doorbell_flows_use_independent_sound_config(
+    hass: HomeAssistant, mock_store
+):
+    """A doorbell press uses doorbell_sound_ios, not access_sound_ios — proving the flows are
+    independent (per user feedback: 'ideally I could pick the accustomed sound for doorbell
+    and a different sound for other notifications')."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Front Door",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={
+            CONF_ACCESS_SOUND_IOS: "US-EN-Alexa-Front-Door-Opened.wav",
+            CONF_DOORBELL_SOUND_IOS: "US-EN-Alexa-Mail-Has-Arrived.wav",
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+        },
+    )
+    entry.add_to_hass(hass)
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Mail-Has-Arrived.wav"}
+
+
+# ─── Doorbell dispatch ───────────────────────────────────────────────────────
+
+async def test_doorbell_dispatches_to_configured_targets(hass: HomeAssistant):
+    """DoorbellPressed dispatches to notify targets configured in entry options."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Front Door",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_CHANNEL_ANDROID: "doorbell",
+        },
+    )
+    entry.add_to_hass(hass)
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
+    assert calls[0].data["title"] == "Doorbell"
+    assert calls[0].data["message"] == "Front Door: someone rang the doorbell"
+    assert calls[0].data["data"]["tag"] == f"doorman_doorbell_{entry.entry_id}"
+    assert calls[0].data["data"]["channel"] == "doorbell"
+
+
+async def test_doorbell_sends_nothing_when_no_targets_configured(hass: HomeAssistant):
+    """Empty doorbell_targets means no dispatch — protects against forgotten stubs."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Front Door",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={CONF_DOORBELL_TARGETS: []},
+    )
+    entry.add_to_hass(hass)
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls == []
+
+
+async def test_doorbell_without_entry_id_is_skipped(hass: HomeAssistant):
+    """Doorbell targets live on the entry — no entry_id means no dispatch."""
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {"event_type": "DoorbellPressed", "params": {"key": "%1"}},
+    )
+    await hass.async_block_till_done()
+
+    assert calls == []

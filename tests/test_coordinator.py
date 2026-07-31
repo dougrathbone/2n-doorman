@@ -11,16 +11,25 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.doorman.api_client import DoormanApiError, DoormanAuthError
-from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from custom_components.doorman.const import (
+    CONF_DOORBELL_KEY_CODE,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DOMAIN,
+)
 from custom_components.doorman.coordinator import DoormanCoordinator
 
 from .conftest import MOCK_DEVICE_INFO, MOCK_SWITCHES, MOCK_USERS
 
 
-def _make_coordinator(hass: HomeAssistant, client) -> DoormanCoordinator:
+def _make_coordinator(
+    hass: HomeAssistant, client, *, options: dict | None = None
+) -> DoormanCoordinator:
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+        options=options or {},
     )
     entry.add_to_hass(hass)
     return DoormanCoordinator(hass, entry, client)
@@ -215,6 +224,71 @@ async def test_fire_new_access_events_tracks_last_access(
 
     assert coordinator._last_access.get("uuid-jane") == 1743246000
     assert ("uuid-jane", 1743246000) in coordinator._pending_access_saves
+
+
+@pytest.mark.asyncio
+async def test_key_pressed_with_doorbell_key_fires_doorbell_event(
+    hass: HomeAssistant,
+) -> None:
+    """KeyPressed on the default doorbell key (%1) fires a DoorbellPressed bus event."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    coordinator._fire_new_access_events(
+        [{"id": "e-db", "event": "KeyPressed", "utcTime": 1743250000, "params": {"key": "%1"}}]
+    )
+    await hass.async_block_till_done()
+
+    assert len(fired) == 1
+    assert fired[0].data["event_type"] == "DoorbellPressed"
+    assert fired[0].data["entry_id"] == coordinator.config_entry.entry_id
+    assert fired[0].data["params"] == {"key": "%1"}
+
+
+@pytest.mark.asyncio
+async def test_key_pressed_on_non_doorbell_key_does_not_fire(
+    hass: HomeAssistant,
+) -> None:
+    """A keypad digit press (KeyPressed with key='5') is ignored — not a doorbell."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    coordinator._fire_new_access_events(
+        [{"id": "e-key", "event": "KeyPressed", "utcTime": 1743250100, "params": {"key": "5"}}]
+    )
+    await hass.async_block_till_done()
+
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_doorbell_key_code_is_configurable_via_options(
+    hass: HomeAssistant,
+) -> None:
+    """Setting doorbell_key_code in options changes which KeyPressed value fires the doorbell."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client, options={CONF_DOORBELL_KEY_CODE: "%2"})
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    coordinator._fire_new_access_events(
+        [
+            {"id": "e1", "event": "KeyPressed", "utcTime": 1743250200, "params": {"key": "%1"}},
+            {"id": "e2", "event": "KeyPressed", "utcTime": 1743250201, "params": {"key": "%2"}},
+        ]
+    )
+    await hass.async_block_till_done()
+
+    assert len(fired) == 1
+    assert fired[0].data["event_type"] == "DoorbellPressed"
+    assert fired[0].data["params"] == {"key": "%2"}
 
 
 @pytest.mark.asyncio

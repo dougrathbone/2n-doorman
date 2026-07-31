@@ -10,11 +10,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.doorman.websocket import (
     ws_get_access_log,
     ws_get_device_info,
+    ws_get_notification_settings,
     ws_link_user,
     ws_list_devices,
     ws_list_ha_users,
     ws_list_notify_services,
     ws_list_users,
+    ws_send_test_notification,
+    ws_set_notification_settings,
     ws_set_notification_targets,
     ws_unlink_user,
 )
@@ -430,3 +433,145 @@ async def test_no_entry_id_with_multiple_devices_returns_not_configured(
     assert conn.send_error.call_count == 3
     assert all(c.args[1] == "not_configured" for c in conn.send_error.call_args_list)
     conn.send_result.assert_not_called()
+
+
+# ------------------------------------------------------------------ #
+# ws_get_notification_settings / ws_set_notification_settings          #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_ws_get_notification_settings_returns_defaults(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """A fresh entry returns empty settings + a populated iOS sound catalog."""
+    conn = _mock_connection(is_admin=True)
+    ws_get_notification_settings(hass, conn, {"id": 1})
+
+    conn.send_result.assert_called_once()
+    result = conn.send_result.call_args[0][1]
+    assert result["device_name"] == setup_doorman.title
+    assert result["settings"]["access_sound_ios"] == ""
+    assert result["settings"]["doorbell_sound_ios"] == ""
+    assert result["settings"]["doorbell_key_code"] == "%1"
+    assert result["settings"]["doorbell_targets"] == []
+    # Catalog is grouped; sanity-check the shape
+    assert len(result["ios_sound_catalog"]) >= 1
+    first_group = result["ios_sound_catalog"][0]
+    assert "group" in first_group and "sounds" in first_group
+    assert isinstance(result["notify_services"], list)
+
+
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_persists_all_fields(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """set_notification_settings writes to entry.options and get returns them back."""
+    conn = _mock_connection(is_admin=True)
+    settings_in = {
+        "access_sound_ios": "US-EN-Alexa-Front-Door-Opened.wav",
+        "access_channel_android": "doorman_access",
+        "doorbell_sound_ios": "US-EN-Alexa-Mail-Has-Arrived.wav",
+        "doorbell_channel_android": "doorman_doorbell",
+        "doorbell_key_code": "%2",
+        "doorbell_targets": ["notify.mobile_app"],
+    }
+    # ws_set_notification_settings is @async_response — the decorator
+    # schedules the coroutine internally, so callers don't await it.
+    ws_set_notification_settings(
+        hass, conn, {"id": 1, "settings": settings_in}
+    )
+    await hass.async_block_till_done()
+    conn.send_result.assert_called_once()
+
+    conn2 = _mock_connection(is_admin=True)
+    ws_get_notification_settings(hass, conn2, {"id": 2})
+    result = conn2.send_result.call_args[0][1]
+    assert result["settings"] == settings_in
+
+
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    conn = _mock_connection(is_admin=False)
+    ws_set_notification_settings(
+        hass, conn, {"id": 1, "settings": {"doorbell_key_code": "%3"}}
+    )
+    await hass.async_block_till_done()
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unauthorized"
+
+
+# ------------------------------------------------------------------ #
+# ws_send_test_notification                                            #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_dispatches_with_sound(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """The Preview button calls notify.<service> with the chosen sound + channel."""
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    conn = _mock_connection(is_admin=True)
+    ws_send_test_notification(
+        hass, conn,
+        {
+            "id": 1,
+            "target": "notify.mobile_app",
+            "title": "Doorbell",
+            "message": "Front Door: someone rang the doorbell",
+            "ios_sound": "US-EN-Alexa-Mail-Has-Arrived.wav",
+            "android_channel": "doorbell",
+        },
+    )
+    await hass.async_block_till_done()
+
+    conn.send_result.assert_called_once()
+    assert len(calls) == 1
+    assert calls[0].data["title"] == "Doorbell"
+    assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Mail-Has-Arrived.wav"}
+    assert calls[0].data["data"]["channel"] == "doorbell"
+
+
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_reports_unknown_target(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Preview with a stale target returns unknown_target rather than raising."""
+    conn = _mock_connection(is_admin=True)
+    ws_send_test_notification(
+        hass, conn,
+        {
+            "id": 1,
+            "target": "notify.gone_service",
+            "title": "t",
+            "message": "m",
+        },
+    )
+    await hass.async_block_till_done()
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unknown_target"
+
+
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    conn = _mock_connection(is_admin=False)
+    ws_send_test_notification(
+        hass, conn,
+        {"id": 1, "target": "notify.mobile_app", "title": "t", "message": "m"},
+    )
+    await hass.async_block_till_done()
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unauthorized"

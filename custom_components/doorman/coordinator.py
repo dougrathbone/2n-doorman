@@ -13,7 +13,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import DoormanApiError, DoormanAuthError, TwoNApiClient
-from .const import DEFAULT_POLL_INTERVAL, DOMAIN
+from .const import (
+    CONF_DOORBELL_KEY_CODE,
+    DEFAULT_DOORBELL_KEY_CODE,
+    DEFAULT_POLL_INTERVAL,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +31,12 @@ ACCESS_EVENTS = {
     "FingerEntered",
     "MobKeyEntered",
 }
+
+# Synthetic event_type emitted on the bus when a KeyPressed matches the
+# configured doorbell key. Downstream listeners (event entity, notifications)
+# discriminate on this rather than raw "KeyPressed" so keypad digits don't
+# accidentally trigger doorbell logic.
+DOORBELL_EVENT_TYPE = "DoorbellPressed"
 
 # 2N devices intermittently return 401/timeout on polls when the digest
 # nonce rotates or the device is briefly busy. Re-authentication on the
@@ -225,6 +236,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         passed through as-is; the panel converts it for display.
         """
         entry_id = self.config_entry.entry_id
+        doorbell_key = self.config_entry.options.get(
+            CONF_DOORBELL_KEY_CODE, DEFAULT_DOORBELL_KEY_CODE
+        )
         for event in events:
             event_type = event.get("event", "")
             params = event.get("params", {})
@@ -235,6 +249,18 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     {
                         "entry_id": entry_id,
                         "event_type": event_type,
+                        "params": params,
+                        "utc_time": utc_time,
+                    },
+                )
+            # KeyPressed reports every keypad interaction; only the
+            # configured doorbell key fires a doorbell event.
+            elif event_type == "KeyPressed" and params.get("key") == doorbell_key:
+                self.hass.bus.async_fire(
+                    f"{DOMAIN}_access",
+                    {
+                        "entry_id": entry_id,
+                        "event_type": DOORBELL_EVENT_TYPE,
                         "params": params,
                         "utc_time": utc_time,
                     },
