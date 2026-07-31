@@ -48,6 +48,23 @@
       "description": "The API user `{username}` cannot write to the 2N device directory on **{device_name}**. Create, edit, and delete operations are disabled.\n\n**To fix:** In the 2N web interface go to **Services → HTTP API**, find the API user, and enable **System API** with **Control** access. Access log, switch control, and user viewing will continue to work in the meantime."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Doorman options",
+        "description": "Adjust how often Doorman polls the device for user and switch updates, and configure doorbell notifications for this device.",
+        "data": {
+          "poll_interval": "Poll interval (seconds)",
+          "doorbell_key_code": "Doorbell key code",
+          "doorbell_targets": "Doorbell notification targets"
+        },
+        "data_description": {
+          "doorbell_key_code": "Value 2N reports in KeyPressed.params.key when the quick-dial/call button is pressed. Defaults to %1 for the Verso; use %2, %3, ... for additional buttons.",
+          "doorbell_targets": "Devices to notify when the doorbell button is pressed. Nothing is sent if no targets are selected."
+        }
+      }
+    }
+  },
   "services": {
     "create_user": {
       "name": "Create user",

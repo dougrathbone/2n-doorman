@@ -4,15 +4,24 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api_client import DoormanAuthError, DoormanConnectionError, TwoNApiClient
 from .const import (
+    CONF_DOORBELL_KEY_CODE,
+    CONF_DOORBELL_TARGETS,
     CONF_HOST,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_USE_SSL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    DEFAULT_DOORBELL_KEY_CODE,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_USE_SSL,
     DEFAULT_VERIFY_SSL,
@@ -140,6 +149,11 @@ OPTIONS_SCHEMA = vol.Schema(
             CONF_POLL_INTERVAL,
             default=DEFAULT_POLL_INTERVAL,
         ): vol.All(int, vol.Range(min=10, max=3600)),
+        vol.Optional(
+            CONF_DOORBELL_KEY_CODE,
+            default=DEFAULT_DOORBELL_KEY_CODE,
+        ): str,
+        vol.Optional(CONF_DOORBELL_TARGETS, default=[]): [str],
     }
 )
 
@@ -153,9 +167,35 @@ class DoormanOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
 
-        current_interval = self.config_entry.options.get(
-            CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+        options = self.config_entry.options
+        current_interval = options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        current_doorbell_key = options.get(
+            CONF_DOORBELL_KEY_CODE, DEFAULT_DOORBELL_KEY_CODE
         )
+        current_doorbell_targets = options.get(CONF_DOORBELL_TARGETS, []) or []
+
+        # Enumerate registered notify.* services at form-render time so the
+        # dropdown reflects whatever mobile apps / integrations are installed.
+        notify_services = sorted(
+            f"notify.{s}"
+            for s in self.hass.services.async_services().get("notify", {})
+            if s not in ("notify", "send_message")
+        )
+        # Preserve any already-configured targets whose service is currently
+        # unregistered (e.g. a mobile app that hasn't reconnected yet) so the
+        # selector doesn't silently drop them on save.
+        all_target_options = sorted(set(notify_services) | set(current_doorbell_targets))
+        target_selector = SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=s, label=s) for s in all_target_options
+                ],
+                multiple=True,
+                mode=SelectSelectorMode.LIST,
+                custom_value=False,
+            )
+        )
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -164,6 +204,14 @@ class DoormanOptionsFlow(config_entries.OptionsFlow):
                         CONF_POLL_INTERVAL,
                         default=current_interval,
                     ): vol.All(int, vol.Range(min=10, max=3600)),
+                    vol.Optional(
+                        CONF_DOORBELL_KEY_CODE,
+                        default=current_doorbell_key,
+                    ): str,
+                    vol.Optional(
+                        CONF_DOORBELL_TARGETS,
+                        default=current_doorbell_targets,
+                    ): target_selector,
                 }
             ),
         )

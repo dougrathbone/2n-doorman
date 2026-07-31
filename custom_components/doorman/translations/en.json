@@ -52,10 +52,16 @@
     "step": {
       "init": {
         "title": "Doorman options",
+        "description": "Adjust how often Doorman polls the device for user and switch updates, and configure doorbell notifications for this device. Access events are delivered via long-polling regardless of the poll interval.",
         "data": {
-          "poll_interval": "Poll interval (seconds)"
+          "poll_interval": "Poll interval (seconds)",
+          "doorbell_key_code": "Doorbell key code",
+          "doorbell_targets": "Doorbell notification targets"
         },
-        "description": "Adjust how often Doorman polls the device for user and switch updates. Access events are delivered via long-polling regardless of this setting."
+        "data_description": {
+          "doorbell_key_code": "Value 2N reports in KeyPressed.params.key when the quick-dial/call button is pressed. Defaults to %1 for the Verso; use %2, %3, ... for additional buttons.",
+          "doorbell_targets": "Devices to notify when the doorbell button is pressed. Nothing is sent if no targets are selected."
+        }
       }
     }
   },
