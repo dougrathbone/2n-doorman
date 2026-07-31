@@ -484,15 +484,19 @@ async def ws_send_test_notification(
     if msg.get("android_channel"):
         data["channel"] = msg["android_channel"]
 
-    try:
-        await hass.services.async_call(
+    # Fire-and-forget: notify handlers dispatch to the mobile app via a
+    # background task, so blocking=True would only await the initial
+    # dispatch (not the phone actually ringing). Non-blocking also
+    # avoids a Python 3.13 asyncio-scheduling race where the coroutine
+    # continuation after async_call wouldn't run before the WS response
+    # was expected. The pre-flight ``has_service`` check above catches
+    # the common failure mode (target removed); anything else surfaces
+    # as an unretrieved-task warning in the log.
+    hass.async_create_task(
+        hass.services.async_call(
             "notify",
             service,
             {"title": msg["title"], "message": msg["message"], "data": data},
-            blocking=True,
         )
-    except Exception as err:  # noqa: BLE001
-        connection.send_error(msg["id"], "notify_failed", str(err))
-        return
-
+    )
     connection.send_result(msg["id"], {"success": True})
