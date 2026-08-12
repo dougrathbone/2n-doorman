@@ -43,7 +43,7 @@ from .const import (
 )
 from .coordinator import DoormanCoordinator
 from .notifications import async_setup_notifications
-from .storage import DoormanStore
+from .storage import AccessLogStore, DoormanStore
 from .websocket import async_setup_websocket
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,6 +87,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Device unreachable or transiently erroring at startup: tell HA to
         # retry the setup later instead of marking the entry permanently failed.
         raise ConfigEntryNotReady(f"Cannot initialise 2N device: {err}") from err
+
+    # Load the durable access log, then top it up with the history the device
+    # recorded while HA was down. Both run before the first refresh so the
+    # panel has the full record as soon as the entry is loaded. Backfill never
+    # fires doorman_access events — see DoormanCoordinator.async_backfill_access_log.
+    await coordinator.async_load_access_log()
+    await coordinator.async_backfill_access_log()
+
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.has_write_permission:
@@ -185,6 +193,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for service in _SERVICES:
                 hass.services.async_remove(DOMAIN, service)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the entry's persisted access-log history when the device is removed."""
+    await AccessLogStore(hass, entry.entry_id).async_remove()
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:  # noqa: ARG001

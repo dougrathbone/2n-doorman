@@ -100,7 +100,7 @@ The Doorman panel has three tabs:
 | Tab | Description |
 |-----|-------------|
 | **Users** | View all directory entries; add, edit, or delete users and their credentials |
-| **Access Log** | Browse recent access events from the device |
+| **Access Log** | Browse recent access events. The log is stored by Home Assistant, so it survives restarts, and events recorded by the intercom while HA was down are pulled in at startup (silently — historical events never trigger notifications) |
 | **Device** | View device information and trigger immediate access |
 
 ### Linking 2N users to HA accounts

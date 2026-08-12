@@ -1,6 +1,7 @@
 """Async HTTP client for the 2N device REST API."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -533,7 +534,13 @@ class TwoNApiClient:
     # ------------------------------------------------------------------ #
 
     async def _subscribe_log(self) -> int:
-        """Create a log subscription and return the subscription ID."""
+        """Create the live log subscription and return the subscription ID.
+
+        No ``include`` parameter: the device default (``include=new``) is what
+        the live listener needs. Asking for history here would replay old
+        events through the notification path after every restart — history is
+        fetched separately by :meth:`fetch_log_history`, which does not notify.
+        """
         data = await self._request("GET", "log/subscribe")
         sub_id = (data.get("result") or {}).get("id")
         if sub_id is None:
@@ -580,6 +587,71 @@ class TwoNApiClient:
                 raise
 
         return data.get("result", {}).get("events", [])
+
+    async def fetch_log_history(
+        self,
+        seconds: int | None = None,
+        max_pulls: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return the log events already recorded on the device.
+
+        Used for the one-shot startup backfill. This creates and drains its
+        own throwaway subscription and never touches
+        ``self._log_subscription_id``: pulling from the live listener's
+        subscription would consume events it must deliver as bus events.
+
+        ``include=-N`` asks for the last N seconds of history (bounded — the
+        device keeps up to 10 000 events and delivers 128 per pull). Firmware
+        that rejects it falls back to ``include=all``.
+
+        Backfill is best-effort: any device error returns whatever was
+        collected so far (usually nothing) rather than raising, so an
+        unsupported or unhappy device leaves the integration behaving exactly
+        as it did before this call existed.
+        """
+        includes = ([f"-{seconds}"] if seconds else []) + ["all"]
+        sub_id: int | None = None
+        for include in includes:
+            try:
+                data = await self._request(
+                    "GET", "log/subscribe", params={"include": include}
+                )
+            except (DoormanApiError, TimeoutError) as err:
+                _LOGGER.debug(
+                    "2N log history: subscribe include=%s failed (%s)", include, err
+                )
+                continue
+            sub_id = (data.get("result") or {}).get("id")
+            if sub_id is not None:
+                break
+
+        if sub_id is None:
+            _LOGGER.debug("2N log history: device returned no history subscription")
+            return []
+
+        events: list[dict[str, Any]] = []
+        try:
+            for _ in range(max_pulls):
+                data = await self._request(
+                    "GET", "log/pull",
+                    params={"id": sub_id, "timeout": 0},
+                    request_timeout=30,
+                )
+                batch = data.get("result", {}).get("events") or []
+                if not batch:
+                    break
+                events.extend(batch)
+        except (DoormanApiError, TimeoutError) as err:
+            _LOGGER.debug(
+                "2N log history: stopped after %d events (%s)", len(events), err
+            )
+        finally:
+            # Free the channel rather than waiting for it to expire; a failure
+            # here is harmless (the device closes it after `duration`).
+            with contextlib.suppress(DoormanApiError, TimeoutError):
+                await self._request("GET", "log/unsubscribe", params={"id": sub_id})
+
+        return events
 
     # ------------------------------------------------------------------ #
     # Calls (/api/call/*)                                                  #
