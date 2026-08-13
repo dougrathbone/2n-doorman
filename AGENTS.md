@@ -80,14 +80,41 @@ session. Two mechanisms keep it complete:
    burst of events from one `pull_log` costs a single disk write.
    `async_shutdown` flushes any pending write, because HA only auto-flushes
    delayed saves on a clean stop, not on a config entry reload.
-2. **Backfill** — at setup, `DoormanCoordinator.async_backfill_access_log`
-   calls `TwoNApiClient.fetch_log_history`, which creates its **own throwaway
+2. **Backfill** — `DoormanCoordinator._async_run_backfill` calls
+   `TwoNApiClient.fetch_log_history`, which creates its **own throwaway
    subscription** with `include=-<seconds>` (falling back to `include=all`),
    drains it, and unsubscribes. It never touches
    `_log_subscription_id`: pulling from the live listener's subscription would
    consume events the listener must deliver. Any device error returns an empty
    list, so firmware that doesn't support the parameter behaves exactly as it
    did before backfill existed.
+
+**Backfill runs as a background task, never on the setup path.**
+`async_setup_entry` awaits `async_load_access_log()` (a local disk read — the
+panel needs the persisted history immediately) but only *starts*
+`coordinator.start_backfill()`, right after `start_log_listener()`, via
+`hass.async_create_background_task`. Awaiting it inline could stall
+config-entry setup for minutes against an unresponsive intercom: HA logs
+slow-setup warnings and the integration sits unavailable the whole time.
+Starting the live listener first means no event that happens during the
+backfill can slip through the gap; overlap is collapsed by the store's dedupe.
+
+The request budget is deliberately tight: `request_timeout=10` per pull and
+`LOG_BACKFILL_MAX_PULLS = 5`, so a worst-case run is ~50 s. **Consequence:** at
+128 events per pull a single backfill can retrieve at most 640 events (it was
+1280 under the old 10-pull budget). The 7-day `LOG_BACKFILL_SECONDS` window is
+unchanged; a device holding more than 640 events inside that window is only
+partially backfilled.
+
+`async_shutdown` cancels the backfill task **before** flushing `log_store`, and
+sets `_closed`, which `_async_run_backfill` checks immediately before
+`add_events`. Both are needed: the cancel stops the run, and the flag
+guarantees that a run which somehow returns late cannot re-dirty a store that
+has already been flushed — whose debounced write would otherwise re-create the
+history file `async_remove_entry` just deleted.
+
+`doorman.resync_log_history` re-runs the same code path on demand (see
+"Services" below), so everything above applies to it too.
 
 **Backfilled events must never fire `doorman_access` bus events or update
 `_last_access`.** Only the live listener calls `_fire_new_access_events`;
@@ -110,6 +137,31 @@ targets when a `UserAuthenticated` event fires.
 All frontend↔backend communication goes through the 9 WS commands in
 `websocket.py`. Don't add HA services for things that only the panel needs;
 use WS commands instead. Services are for HA automations / scripts.
+
+### `doorman.resync_log_history`
+A service (not a WS command — a manual resync is legitimately automatable)
+that re-runs the access-log backfill on demand. It exists for two reasons:
+the `include=-N` / `include=all` parameters come from the 2N HTTP API docs and
+have **never been confirmed against real firmware**, so the maintainer needs a
+way to exercise them without restarting HA; and users whose first backfill came
+up empty need a retry.
+
+It logs its outcome at INFO, deliberately distinguishing three cases so a bug
+report is unambiguous:
+- `fetched == 0` — the device served *no* history at all. Most likely the
+  firmware rejects the `include` parameter, i.e. the unverified assumption is
+  wrong on that device.
+- `fetched > 0, added == 0` — history retrieval works, there was just nothing
+  new. Before this service existed these two looked identical from the log.
+- `added > 0` — how many rows were actually merged.
+
+Concurrency: `_ensure_backfill_task` reuses the in-flight
+`_backfill_task` and `async_resync_access_log` awaits it under
+`asyncio.shield`, so hammering the service — or resyncing while the startup
+backfill is still running — joins one run instead of opening a second history
+subscription on the device. It targets a single entry via the standard optional
+`device` (config entry ID) field, so only that entry's `AccessLogStore` is
+touched.
 
 ### Dependency mocking in unit tests
 HA's `frontend`, `panel_custom`, and `http` components require heavy optional

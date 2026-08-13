@@ -591,14 +591,19 @@ class TwoNApiClient:
     async def fetch_log_history(
         self,
         seconds: int | None = None,
-        max_pulls: int = 10,
+        max_pulls: int = 5,
     ) -> list[dict[str, Any]]:
         """Return the log events already recorded on the device.
 
-        Used for the one-shot startup backfill. This creates and drains its
-        own throwaway subscription and never touches
+        Used by the access-log backfill (at startup and via
+        ``doorman.resync_log_history``). This creates and drains its own
+        throwaway subscription and never touches
         ``self._log_subscription_id``: pulling from the live listener's
         subscription would consume events it must deliver as bus events.
+
+        ``max_pulls`` defaults to ``LOG_BACKFILL_MAX_PULLS``; each pull uses a
+        10 s request timeout, so a whole run is bounded at ~50 s even against a
+        device that has stopped answering.
 
         ``include=-N`` asks for the last N seconds of history (bounded — the
         device keeps up to 10 000 events and delivers 128 per pull). Firmware
@@ -635,7 +640,7 @@ class TwoNApiClient:
                 data = await self._request(
                     "GET", "log/pull",
                     params={"id": sub_id, "timeout": 0},
-                    request_timeout=30,
+                    request_timeout=10,
                 )
                 batch = data.get("result", {}).get("events") or []
                 if not batch:

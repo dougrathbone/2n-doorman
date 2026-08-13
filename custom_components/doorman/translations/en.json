@@ -112,6 +112,13 @@
       "fields": {
         "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
       }
+    },
+    "resync_log_history": {
+      "name": "Resync log history",
+      "description": "Re-read the access log history stored on the 2N device and merge anything missing into Doorman's log. Adds no duplicates and sends no notifications. The result is written to the Home Assistant log.",
+      "fields": {
+        "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
+      }
     }
   }
 }

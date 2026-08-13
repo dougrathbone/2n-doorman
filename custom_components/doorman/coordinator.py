@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -46,6 +46,20 @@ LOG_LISTENER_INITIAL_BACKOFF = 5
 LOG_LISTENER_MAX_BACKOFF = 60
 
 
+class BackfillResult(NamedTuple):
+    """Outcome of one access-log backfill run.
+
+    ``fetched`` and ``added`` are reported separately so callers can tell
+    "the device served no history at all" (fetched == 0 — most likely the
+    firmware does not accept the ``include`` parameter on /api/log/subscribe)
+    apart from "the device served history but we already had all of it"
+    (fetched > 0, added == 0 — everything working, simply nothing new).
+    """
+
+    fetched: int
+    added: int
+
+
 class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the 2N device and distributes data to all entities."""
 
@@ -76,6 +90,13 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_access: dict[str, int] = {}
         self._pending_access_saves: list[tuple[str, int]] = []
         self._log_task: asyncio.Task | None = None
+        # At most one backfill runs at a time: the startup task and every
+        # doorman.resync_log_history call share this task.
+        self._backfill_task: asyncio.Task[BackfillResult] | None = None
+        # Set by async_shutdown. Once the entry is unloading the store must
+        # never be written again (a write would resurrect a flushed — or, on
+        # entry removal, a deleted — history file).
+        self._closed = False
         self._consecutive_auth_failures = 0
         self._consecutive_listener_auth_failures = 0
 
@@ -111,14 +132,25 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_backfill_access_log(self) -> int:
         """Merge the device's on-box log history into the stored log.
 
-        Runs once at setup. This deliberately does NOT fire ``doorman_access``
-        bus events and does not touch ``_last_access``: backfilled entries are
-        historical, and replaying them through the notification path would
-        spam every notify target with stale door events after each restart.
-        Only the live listener notifies.
+        This deliberately does NOT fire ``doorman_access`` bus events and does
+        not touch ``_last_access``: backfilled entries are historical, and
+        replaying them through the notification path would spam every notify
+        target with stale door events after each restart. Only the live
+        listener notifies.
 
         Returns the number of events added (0 if the device cannot serve
         history — backfill is best-effort and never fails setup).
+        """
+        return (await self._async_run_backfill()).added
+
+    async def _async_run_backfill(self) -> BackfillResult:
+        """Fetch the on-box history and merge it into the store.
+
+        Best-effort: any device error yields ``BackfillResult(0, 0)`` rather
+        than raising, so firmware that cannot serve history behaves exactly as
+        it did before backfill existed. ``asyncio.CancelledError`` is a
+        BaseException and therefore still propagates, which is what lets
+        :meth:`async_shutdown` stop a run in flight.
         """
         try:
             history = await self.client.fetch_log_history(
@@ -126,12 +158,81 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Doorman: access-log backfill unavailable (%r)", err)
-            return 0
+            return BackfillResult(0, 0)
+
+        # The entry may have unloaded while the fetch was in flight. Writing
+        # now would mark the store dirty again after async_shutdown flushed it
+        # (and could re-create a file async_remove_entry has just deleted).
+        if self._closed:
+            _LOGGER.debug(
+                "Doorman: discarding %d backfilled event(s) — the entry is unloading",
+                len(history),
+            )
+            return BackfillResult(len(history), 0)
 
         added = self.log_store.add_events(history)
         if added:
             _LOGGER.debug("Doorman: backfilled %d historical log event(s)", added)
-        return added
+            # Push the merged history to the panel/entities straight away
+            # instead of leaving it invisible until the next scheduled poll.
+            # This is a data update only — no doorman_access events are fired.
+            if self.data is not None:
+                self.async_set_updated_data(
+                    {**self.data, "log_events": self.log_store.events}
+                )
+        return BackfillResult(len(history), added)
+
+    def _ensure_backfill_task(self) -> asyncio.Task[BackfillResult] | None:
+        """Return the running backfill task, starting one if needed.
+
+        Returns None once the entry is unloading. Reusing the in-flight task is
+        what keeps a user hammering doorman.resync_log_history — or resyncing
+        while the startup backfill is still running — from opening a second
+        history subscription on the device.
+        """
+        if self._closed:
+            return None
+        if self._backfill_task is None or self._backfill_task.done():
+            self._backfill_task = self.hass.async_create_background_task(
+                self._async_run_backfill(),
+                name=f"doorman_log_backfill_{self.config_entry.entry_id}",
+            )
+        return self._backfill_task
+
+    def start_backfill(self) -> None:
+        """Kick off the one-shot startup backfill in the background.
+
+        Deliberately not awaited by ``async_setup_entry``: a worst-case run is
+        a subscribe plus ``LOG_BACKFILL_MAX_PULLS`` pulls against a device that
+        may be unresponsive, which would show up as a slow-setup warning and
+        leave the integration unavailable in the meantime.
+        """
+        self._ensure_backfill_task()
+
+    async def async_resync_access_log(self) -> BackfillResult:
+        """Run a backfill on demand and report what it did.
+
+        Joins the in-flight run when there is one, so concurrent callers never
+        duplicate work. Obeys the same no-notify guarantee as the startup
+        backfill.
+        """
+        task = self._ensure_backfill_task()
+        if task is None:
+            return BackfillResult(0, 0)
+        try:
+            # Shielded: if *this* caller goes away the shared run must survive
+            # for the other callers awaiting it.
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                # async_shutdown cancelled the run — the entry is unloading and
+                # nothing was written. Report an empty result rather than
+                # cancelling the (unrelated) service call.
+                _LOGGER.debug(
+                    "Doorman: access-log resync aborted — the config entry unloaded"
+                )
+                return BackfillResult(0, 0)
+            raise
 
     def start_log_listener(self) -> None:
         """Start the background long-poll log listener task."""
@@ -143,7 +244,18 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_shutdown(self) -> None:
-        """Cancel the log listener task and flush the access log on unload."""
+        """Cancel the background tasks and flush the access log on unload."""
+        # Order matters. Both background tasks write to log_store, so they are
+        # stopped *before* the flush below — otherwise a backfill returning
+        # between the flush and async_remove_entry would dirty the store again
+        # and its debounced write would re-create the deleted history file.
+        # _closed additionally blocks any write from a resync that is somehow
+        # still in flight (it is checked immediately before add_events).
+        self._closed = True
+        if self._backfill_task and not self._backfill_task.done():
+            self._backfill_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._backfill_task
         if self._log_task and not self._log_task.done():
             self._log_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

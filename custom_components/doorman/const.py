@@ -40,6 +40,14 @@ LOG_SAVE_DELAY = 10
 # last N seconds (7 days). A full ``include=all`` drain is only used as a
 # fallback — devices keep up to 10 000 events, delivered 128 per pull.
 LOG_BACKFILL_SECONDS = 7 * 24 * 60 * 60
-LOG_BACKFILL_MAX_PULLS = 10
+# Pull budget for a single backfill run. The device delivers up to 128 events
+# per pull, so 5 pulls caps one backfill at 640 events (it was 10 pulls / 1280).
+# Combined with the 10 s per-request timeout in ``fetch_log_history`` this bounds
+# a worst-case run at roughly 50 s against an unresponsive device. Backfill runs
+# as a background task and no longer delays config-entry setup, but the budget
+# stays tight so a sick device is not hammered for minutes. A device holding more
+# than 640 events inside the window is therefore only partially backfilled;
+# events beyond the budget are not retrievable through this path.
+LOG_BACKFILL_MAX_PULLS = 5
 
 PLATFORMS = ["sensor", "switch", "event"]

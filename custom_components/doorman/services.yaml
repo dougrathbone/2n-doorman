@@ -115,3 +115,11 @@ hangup_calls:
       selector:
         config_entry:
           integration: doorman
+
+resync_log_history:
+  fields:
+    device:
+      required: false
+      selector:
+        config_entry:
+          integration: doorman
