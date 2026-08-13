@@ -173,3 +173,94 @@ async def test_clear_notification_targets(hass: HomeAssistant) -> None:
     store2 = DoormanStore(hass)
     await store2.async_load()
     assert store2.get_notification_targets("uuid-jane") == []
+
+
+# ─── Per-entry notification settings ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_notification_settings_defaults(hass: HomeAssistant) -> None:
+    """An entry with nothing stored gets the full default set, not a KeyError."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    assert store.get_notification_settings("entry-1") == {
+        "access_sound_ios": "",
+        "access_channel_android": "",
+        "doorbell_sound_ios": "",
+        "doorbell_channel_android": "",
+        "doorbell_key_code": "%1",
+        "doorbell_targets": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_notification_settings_persist_and_merge(hass: HomeAssistant) -> None:
+    """Partial updates merge into the stored settings and survive a reload."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.set_notification_settings("entry-1", {"doorbell_key_code": "%2"})
+    settings = await store.set_notification_settings(
+        "entry-1", {"doorbell_targets": ["notify.phone"]}
+    )
+
+    assert settings["doorbell_key_code"] == "%2"
+    assert settings["doorbell_targets"] == ["notify.phone"]
+
+    store2 = DoormanStore(hass)
+    await store2.async_load()
+    assert store2.get_notification_settings("entry-1")["doorbell_key_code"] == "%2"
+
+
+@pytest.mark.asyncio
+async def test_notification_settings_are_isolated_per_entry(hass: HomeAssistant) -> None:
+    """The store is shared across config entries, so settings must be keyed by entry_id."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.set_notification_settings("entry-a", {"doorbell_targets": ["notify.a"]})
+    await store.set_notification_settings("entry-b", {"doorbell_targets": ["notify.b"]})
+
+    assert store.get_notification_settings("entry-a")["doorbell_targets"] == ["notify.a"]
+    assert store.get_notification_settings("entry-b")["doorbell_targets"] == ["notify.b"]
+
+
+@pytest.mark.asyncio
+async def test_get_notification_settings_returns_a_copy(hass: HomeAssistant) -> None:
+    """Mutating the returned dict must not corrupt the stored state."""
+    store = DoormanStore(hass)
+    await store.async_load()
+    await store.set_notification_settings("entry-1", {"doorbell_targets": ["notify.a"]})
+
+    settings = store.get_notification_settings("entry-1")
+    settings["doorbell_targets"].append("notify.b")
+    settings["doorbell_key_code"] = "%9"
+
+    assert store.get_notification_settings("entry-1")["doorbell_targets"] == ["notify.a"]
+    assert store.get_notification_settings("entry-1")["doorbell_key_code"] == "%1"
+
+
+@pytest.mark.asyncio
+async def test_async_load_adds_new_keys_to_an_older_store_file(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """A .storage file written before this key existed still loads cleanly.
+
+    Additive schema changes layer over the empty defaults, so no
+    STORAGE_VERSION bump (and no migration) is needed.
+    """
+    hass_storage["doorman.storage"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "doorman.storage",
+        "data": {"user_links": {"uuid-jane": "ha-1"}, "notification_targets": {}},
+    }
+
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    assert store.get_ha_user_id("uuid-jane") == "ha-1"
+    assert store.notification_settings == {}
+    assert store.last_access == {}
+    assert store.get_notification_settings("entry-1")["doorbell_key_code"] == "%1"

@@ -1,7 +1,7 @@
 """Tests for Doorman push notification dispatch."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -19,11 +19,23 @@ from custom_components.doorman.const import (
     DOMAIN,
 )
 from custom_components.doorman.notifications import async_setup_notifications
+from custom_components.doorman.storage import DoormanStore
 
 
 @pytest.fixture
-def mock_store():
-    store = MagicMock()
+def mock_store(hass: HomeAssistant) -> DoormanStore:
+    """A real DoormanStore with the disk layer stubbed out.
+
+    Deliberately not a bare MagicMock: the dispatcher reads settings values
+    straight into the notify payload, so a Mock would be silently truthy and
+    land a ``<MagicMock …>`` in ``data.push.sound``. Using the real object
+    also exercises the defaults/merge logic the panel relies on.
+    """
+    store = DoormanStore(hass)
+    store._store = MagicMock()
+    store._store.async_save = AsyncMock()
+    # Every 2N UUID notifies the same target — these tests are about dispatch
+    # and presentation, not about per-user target lookup.
     store.get_notification_targets = MagicMock(return_value=["notify.mobile_app"])
     return store
 
@@ -185,7 +197,7 @@ async def test_missing_notify_service_is_skipped(hass: HomeAssistant, mock_store
     assert "Task exception" not in caplog.text
 
 
-# ─── Per-flow presentation options ───────────────────────────────────────────
+# ─── Per-flow presentation settings ──────────────────────────────────────────
 
 async def test_access_notification_includes_ios_sound_when_configured(
     hass: HomeAssistant, mock_store
@@ -195,9 +207,11 @@ async def test_access_notification_includes_ios_sound_when_configured(
     entry = MockConfigEntry(
         domain=DOMAIN, title="North Gate",
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
-        options={CONF_ACCESS_SOUND_IOS: "US-EN-Alexa-Front-Door-Opened.wav"},
     )
     entry.add_to_hass(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_ACCESS_SOUND_IOS: "US-EN-Alexa-Front-Door-Opened.wav"}
+    )
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -224,9 +238,11 @@ async def test_access_notification_includes_android_channel_when_configured(
     entry = MockConfigEntry(
         domain=DOMAIN, title="North Gate",
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
-        options={CONF_ACCESS_CHANNEL_ANDROID: "doorman_access"},
     )
     entry.add_to_hass(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_ACCESS_CHANNEL_ANDROID: "doorman_access"}
+    )
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -250,16 +266,20 @@ async def test_access_and_doorbell_flows_use_independent_sound_config(
     """A doorbell press uses doorbell_sound_ios, not access_sound_ios — proving the flows are
     independent (per user feedback: 'ideally I could pick the accustomed sound for doorbell
     and a different sound for other notifications')."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
     entry = MockConfigEntry(
         domain=DOMAIN, title="Front Door",
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
-        options={
+    )
+    entry.add_to_hass(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
             CONF_ACCESS_SOUND_IOS: "US-EN-Alexa-Front-Door-Opened.wav",
             CONF_DOORBELL_SOUND_IOS: "US-EN-Alexa-Mail-Has-Arrived.wav",
             CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
         },
     )
-    entry.add_to_hass(hass)
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -279,17 +299,21 @@ async def test_access_and_doorbell_flows_use_independent_sound_config(
 
 # ─── Doorbell dispatch ───────────────────────────────────────────────────────
 
-async def test_doorbell_dispatches_to_configured_targets(hass: HomeAssistant):
-    """DoorbellPressed dispatches to notify targets configured in entry options."""
+async def test_doorbell_dispatches_to_configured_targets(hass: HomeAssistant, mock_store):
+    """DoorbellPressed dispatches to the notify targets stored for the entry."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
     entry = MockConfigEntry(
         domain=DOMAIN, title="Front Door",
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
-        options={
+    )
+    entry.add_to_hass(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
             CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
             CONF_DOORBELL_CHANNEL_ANDROID: "doorbell",
         },
     )
-    entry.add_to_hass(hass)
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -311,14 +335,17 @@ async def test_doorbell_dispatches_to_configured_targets(hass: HomeAssistant):
     assert calls[0].data["data"]["channel"] == "doorbell"
 
 
-async def test_doorbell_sends_nothing_when_no_targets_configured(hass: HomeAssistant):
+async def test_doorbell_sends_nothing_when_no_targets_configured(
+    hass: HomeAssistant, mock_store
+):
     """Empty doorbell_targets means no dispatch — protects against forgotten stubs."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
     entry = MockConfigEntry(
         domain=DOMAIN, title="Front Door",
         data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
-        options={CONF_DOORBELL_TARGETS: []},
     )
     entry.add_to_hass(hass)
+    await mock_store.set_notification_settings(entry.entry_id, {CONF_DOORBELL_TARGETS: []})
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -336,8 +363,9 @@ async def test_doorbell_sends_nothing_when_no_targets_configured(hass: HomeAssis
     assert calls == []
 
 
-async def test_doorbell_without_entry_id_is_skipped(hass: HomeAssistant):
-    """Doorbell targets live on the entry — no entry_id means no dispatch."""
+async def test_doorbell_without_entry_id_is_skipped(hass: HomeAssistant, mock_store):
+    """Doorbell targets are stored per entry — no entry_id means no dispatch."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
@@ -349,3 +377,51 @@ async def test_doorbell_without_entry_id_is_skipped(hass: HomeAssistant):
     await hass.async_block_till_done()
 
     assert calls == []
+
+
+async def test_doorbell_targets_are_isolated_per_entry(hass: HomeAssistant, mock_store):
+    """A press on device A must not ring device B's phones.
+
+    The store is a single shared instance across every config entry, so its
+    notification settings have to be keyed by entry_id. If they were flat,
+    both doors would share one target list.
+    """
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry_a = MockConfigEntry(
+        domain=DOMAIN, title="Front Door",
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+    )
+    entry_b = MockConfigEntry(
+        domain=DOMAIN, title="Back Gate",
+        data={CONF_HOST: "192.168.1.200", CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+    )
+    entry_a.add_to_hass(hass)
+    entry_b.add_to_hass(hass)
+    await mock_store.set_notification_settings(
+        entry_a.entry_id,
+        {CONF_DOORBELL_TARGETS: ["notify.phone_a"], CONF_DOORBELL_SOUND_IOS: "a.wav"},
+    )
+    await mock_store.set_notification_settings(
+        entry_b.entry_id,
+        {CONF_DOORBELL_TARGETS: ["notify.phone_b"], CONF_DOORBELL_SOUND_IOS: "b.wav"},
+    )
+
+    calls_a, calls_b = [], []
+    hass.services.async_register("notify", "phone_a", lambda call: calls_a.append(call))
+    hass.services.async_register("notify", "phone_b", lambda call: calls_b.append(call))
+
+    async_setup_notifications(hass)
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry_a.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert len(calls_a) == 1
+    assert calls_a[0].data["message"] == "Front Door: someone rang the doorbell"
+    assert calls_a[0].data["data"]["push"] == {"sound": "a.wav"}
+    assert calls_b == []

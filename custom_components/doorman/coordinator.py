@@ -224,6 +224,24 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_access": self._last_access,
         }
 
+    def _doorbell_key_code(self) -> str:
+        """Return the doorbell key configured for this entry.
+
+        Read from DoormanStore on every log batch rather than cached (or read
+        from ``entry.options``): saving the setting from the panel must not
+        reload the entry, because a reload drops the 2N log subscription and a
+        fresh one starts empty with no watermark. Re-reading here means a
+        changed key takes effect on the very next pull, with no reload.
+
+        An empty string means "no doorbell key" — see the WS handler docstring.
+        """
+        store = self.hass.data.get(f"{DOMAIN}_store")
+        if store is None:
+            return DEFAULT_DOORBELL_KEY_CODE
+        return store.get_notification_settings(self.config_entry.entry_id).get(
+            CONF_DOORBELL_KEY_CODE, DEFAULT_DOORBELL_KEY_CODE
+        )
+
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
         """Fire HA bus events for log entries returned since the last poll.
 
@@ -236,9 +254,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         passed through as-is; the panel converts it for display.
         """
         entry_id = self.config_entry.entry_id
-        doorbell_key = self.config_entry.options.get(
-            CONF_DOORBELL_KEY_CODE, DEFAULT_DOORBELL_KEY_CODE
-        )
+        doorbell_key = self._doorbell_key_code()
         for event in events:
             event_type = event.get("event", "")
             params = event.get("params", {})
@@ -254,8 +270,13 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 )
             # KeyPressed reports every keypad interaction; only the
-            # configured doorbell key fires a doorbell event.
-            elif event_type == "KeyPressed" and params.get("key") == doorbell_key:
+            # configured doorbell key fires a doorbell event. An empty
+            # doorbell key disables the flow entirely.
+            elif (
+                event_type == "KeyPressed"
+                and doorbell_key
+                and params.get("key") == doorbell_key
+            ):
                 self.hass.bus.async_fire(
                     f"{DOMAIN}_access",
                     {

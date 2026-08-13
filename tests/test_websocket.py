@@ -5,8 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.doorman.const import CONF_POLL_INTERVAL, DOMAIN
 from custom_components.doorman.websocket import (
     ws_get_access_log,
     ws_get_device_info,
@@ -436,26 +438,38 @@ async def test_no_entry_id_with_multiple_devices_returns_not_configured(
 
 
 # ------------------------------------------------------------------ #
-# ws_get_notification_settings / ws_set_notification_settings          #
+# Notification settings — driven through a real WebSocket client       #
 # ------------------------------------------------------------------ #
+#
+# These go through hass_ws_client rather than calling the handlers with a
+# MagicMock connection so the voluptuous schemas are actually exercised: a
+# direct call bypasses validation entirely, which is how type-only schemas
+# came to ship untested.
 
 
+@pytest.mark.real_http
 @pytest.mark.asyncio
 async def test_ws_get_notification_settings_returns_defaults(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
+    hass_ws_client,
 ) -> None:
-    """A fresh entry returns empty settings + a populated iOS sound catalog."""
-    conn = _mock_connection(is_admin=True)
-    ws_get_notification_settings(hass, conn, {"id": 1})
+    """A fresh entry returns default settings + a populated iOS sound catalog."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "doorman/get_notification_settings"})
+    res = await client.receive_json()
 
-    conn.send_result.assert_called_once()
-    result = conn.send_result.call_args[0][1]
+    assert res["success"], res
+    result = res["result"]
     assert result["device_name"] == setup_doorman.title
-    assert result["settings"]["access_sound_ios"] == ""
-    assert result["settings"]["doorbell_sound_ios"] == ""
-    assert result["settings"]["doorbell_key_code"] == "%1"
-    assert result["settings"]["doorbell_targets"] == []
+    assert result["settings"] == {
+        "access_sound_ios": "",
+        "access_channel_android": "",
+        "doorbell_sound_ios": "",
+        "doorbell_channel_android": "",
+        "doorbell_key_code": "%1",
+        "doorbell_targets": [],
+    }
     # Catalog is grouped; sanity-check the shape
     assert len(result["ios_sound_catalog"]) >= 1
     first_group = result["ios_sound_catalog"][0]
@@ -463,13 +477,14 @@ async def test_ws_get_notification_settings_returns_defaults(
     assert isinstance(result["notify_services"], list)
 
 
+@pytest.mark.real_http
 @pytest.mark.asyncio
-async def test_ws_set_notification_settings_persists_all_fields(
+async def test_ws_set_notification_settings_round_trips_via_the_store(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
+    hass_ws_client,
 ) -> None:
-    """set_notification_settings writes to entry.options and get returns them back."""
-    conn = _mock_connection(is_admin=True)
+    """Saved settings come back from a later get, and land in DoormanStore."""
     settings_in = {
         "access_sound_ios": "US-EN-Alexa-Front-Door-Opened.wav",
         "access_channel_android": "doorman_access",
@@ -478,18 +493,178 @@ async def test_ws_set_notification_settings_persists_all_fields(
         "doorbell_key_code": "%2",
         "doorbell_targets": ["notify.mobile_app"],
     }
-    # ws_set_notification_settings is @async_response — the decorator
-    # schedules the coroutine internally, so callers don't await it.
-    ws_set_notification_settings(
-        hass, conn, {"id": 1, "settings": settings_in}
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/set_notification_settings", "settings": settings_in}
     )
-    await hass.async_block_till_done()
-    conn.send_result.assert_called_once()
+    res = await client.receive_json()
+    assert res["success"], res
+    assert res["result"]["settings"] == settings_in
 
-    conn2 = _mock_connection(is_admin=True)
-    ws_get_notification_settings(hass, conn2, {"id": 2})
-    result = conn2.send_result.call_args[0][1]
-    assert result["settings"] == settings_in
+    await client.send_json_auto_id({"type": "doorman/get_notification_settings"})
+    res = await client.receive_json()
+    assert res["result"]["settings"] == settings_in
+
+    # Persisted in the store, keyed by entry_id — and nowhere near entry.options.
+    store = hass.data[f"{DOMAIN}_store"]
+    assert store.get_notification_settings(setup_doorman.entry_id) == settings_in
+    assert not set(settings_in) & set(setup_doorman.options)
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_merges_partial_updates(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """A save that carries one field must not blank the others."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/set_notification_settings",
+            "settings": {"doorbell_targets": ["notify.mobile_app"], "doorbell_key_code": "%3"},
+        }
+    )
+    assert (await client.receive_json())["success"]
+
+    await client.send_json_auto_id(
+        {"type": "doorman/set_notification_settings", "settings": {"access_sound_ios": "a.wav"}}
+    )
+    res = await client.receive_json()
+
+    assert res["result"]["settings"]["doorbell_targets"] == ["notify.mobile_app"]
+    assert res["result"]["settings"]["doorbell_key_code"] == "%3"
+    assert res["result"]["settings"]["access_sound_ios"] == "a.wav"
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_does_not_reload_the_entry(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Saving must not reload the entry.
+
+    A reload tears down the 2N log subscription; a fresh subscription starts
+    empty with no watermark, so every event in the reload window is lost. On a
+    single-entry install it also unregisters the sidebar panel, drops the
+    store, and removes the doorman.* services out from under the user.
+    """
+    coordinator_before = hass.data[DOMAIN][setup_doorman.entry_id]
+    log_task_before = coordinator_before._log_task
+    assert log_task_before is not None and not log_task_before.done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/set_notification_settings", "settings": {"doorbell_key_code": "%4"}}
+    )
+    assert (await client.receive_json())["success"]
+    await hass.async_block_till_done()
+
+    # Same coordinator object, same still-running listener task.
+    assert hass.data[DOMAIN][setup_doorman.entry_id] is coordinator_before
+    assert coordinator_before._log_task is log_task_before
+    assert not log_task_before.done()
+    # And the panel / services / store the user is standing on are still there.
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+    assert hass.services.has_service(DOMAIN, "create_user")
+    assert hass.data.get(f"{DOMAIN}_store") is not None
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_preserves_poll_interval(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """Notification settings never touch entry.options, so poll_interval survives."""
+    doorman_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        doorman_config_entry, options={CONF_POLL_INTERVAL: 45}
+    )
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/set_notification_settings",
+            "settings": {"doorbell_key_code": "%2", "doorbell_targets": ["notify.mobile_app"]},
+        }
+    )
+    assert (await client.receive_json())["success"]
+
+    assert doorman_config_entry.options == {CONF_POLL_INTERVAL: 45}
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_rejects_bad_input(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """The schema rejects malformed settings instead of persisting them."""
+    client = await hass_ws_client(hass)
+    bad_payloads = [
+        # A bare keypad digit would make every PIN keystroke ring the doorbell.
+        {"doorbell_key_code": "5"},
+        {"doorbell_key_code": "%"},
+        # The panel's UI-only sentinel must never reach data.push.sound.
+        {"doorbell_sound_ios": "__custom__"},
+        {"access_channel_android": "__custom__"},
+        # doorbell_targets is a list of strings, not a bare string.
+        {"doorbell_targets": "notify.mobile_app"},
+        # Unknown keys are rejected rather than silently dropped.
+        {"totally_unknown": "x"},
+    ]
+    for payload in bad_payloads:
+        await client.send_json_auto_id(
+            {"type": "doorman/set_notification_settings", "settings": payload}
+        )
+        res = await client.receive_json()
+        assert not res["success"], payload
+        assert res["error"]["code"] == "invalid_format", payload
+
+    # Nothing was persisted by any of the rejected calls.
+    store = hass.data[f"{DOMAIN}_store"]
+    assert store.get_notification_settings(setup_doorman.entry_id)["doorbell_key_code"] == "%1"
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_accepts_empty_doorbell_key(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """An empty doorbell key is valid: it means "this device has no doorbell button"."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/set_notification_settings", "settings": {"doorbell_key_code": ""}}
+    )
+    res = await client.receive_json()
+
+    assert res["success"], res
+    assert res["result"]["settings"]["doorbell_key_code"] == ""
+
+
+@pytest.mark.asyncio
+async def test_ws_get_notification_settings_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Notification settings expose the configured notify targets — admin only."""
+    conn = _mock_connection(is_admin=False)
+    ws_get_notification_settings(hass, conn, {"id": 1})
+
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unauthorized"
+    conn.send_result.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -511,55 +686,140 @@ async def test_ws_set_notification_settings_rejects_non_admin(
 # ------------------------------------------------------------------ #
 
 
+@pytest.mark.real_http
 @pytest.mark.asyncio
 async def test_ws_send_test_notification_dispatches_with_sound(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
+    hass_ws_client,
 ) -> None:
     """The Preview button calls notify.<service> with the chosen sound + channel."""
     calls = []
     hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
 
-    conn = _mock_connection(is_admin=True)
-    ws_send_test_notification(
-        hass, conn,
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
         {
-            "id": 1,
+            "type": "doorman/send_test_notification",
             "target": "notify.mobile_app",
             "title": "Doorbell",
             "message": "Front Door: someone rang the doorbell",
             "ios_sound": "US-EN-Alexa-Mail-Has-Arrived.wav",
             "android_channel": "doorbell",
-        },
+        }
     )
-    await hass.async_block_till_done()
+    res = await client.receive_json()
 
-    conn.send_result.assert_called_once()
+    assert res["success"], res
     assert len(calls) == 1
     assert calls[0].data["title"] == "Doorbell"
     assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Mail-Has-Arrived.wav"}
     assert calls[0].data["data"]["channel"] == "doorbell"
 
 
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_surfaces_notify_failure(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """A failing notify handler must fail the Preview, not toast "sent".
+
+    Regression guard: the call has to be blocking. Fire-and-forget sends the
+    success result before the notify service has run, so the panel reports
+    success for a notification that never left the building (expired push
+    token, unregistered device, rejected channel) — which defeats the entire
+    purpose of a Preview button.
+    """
+    def _raise(call):
+        raise HomeAssistantError("device not registered")
+
+    hass.services.async_register("notify", "mobile_app", _raise)
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/send_test_notification",
+            "target": "notify.mobile_app",
+            "title": "Doorbell",
+            "message": "test",
+        }
+    )
+    res = await client.receive_json()
+
+    assert not res["success"]
+    assert res["error"]["code"] == "notify_failed"
+    assert "device not registered" in res["error"]["message"]
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_requires_a_target(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """vol.Required("target") is enforced on the wire."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/send_test_notification", "title": "t", "message": "m"}
+    )
+    res = await client.receive_json()
+
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_format"
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_rejects_ui_sentinel_sound(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """The panel's "__custom__" placeholder must never reach data.push.sound."""
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/send_test_notification",
+            "target": "notify.mobile_app",
+            "title": "t",
+            "message": "m",
+            "ios_sound": "__custom__",
+        }
+    )
+    res = await client.receive_json()
+
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_format"
+    assert calls == []
+
+
+@pytest.mark.real_http
 @pytest.mark.asyncio
 async def test_ws_send_test_notification_reports_unknown_target(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
+    hass_ws_client,
 ) -> None:
     """Preview with a stale target returns unknown_target rather than raising."""
-    conn = _mock_connection(is_admin=True)
-    ws_send_test_notification(
-        hass, conn,
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
         {
-            "id": 1,
+            "type": "doorman/send_test_notification",
             "target": "notify.gone_service",
             "title": "t",
             "message": "m",
-        },
+        }
     )
-    await hass.async_block_till_done()
-    conn.send_error.assert_called_once()
-    assert conn.send_error.call_args[0][1] == "unknown_target"
+    res = await client.receive_json()
+
+    assert not res["success"]
+    assert res["error"]["code"] == "unknown_target"
 
 
 @pytest.mark.asyncio
@@ -575,3 +835,4 @@ async def test_ws_send_test_notification_rejects_non_admin(
     await hass.async_block_till_done()
     conn.send_error.assert_called_once()
     assert conn.send_error.call_args[0][1] == "unauthorized"
+

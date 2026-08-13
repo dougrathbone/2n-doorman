@@ -9,10 +9,14 @@ CONF_USE_SSL = "use_ssl"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_POLL_INTERVAL = "poll_interval"
 
-# Per-flow push-notification presentation. Stored on the entry options
-# and configured from the sidebar panel (not the options-flow) so we can
-# offer a real dropdown of iOS Companion sounds + explanatory prose for
-# the Android notification-channel concept.
+# Per-flow push-notification presentation, configured from the sidebar
+# panel (not the options-flow) so we can offer a real dropdown of iOS
+# Companion sounds + explanatory prose for the Android notification-channel
+# concept.
+#
+# These are DoormanStore keys, not config-entry option keys: see
+# `notification_settings` in storage.py for why they are not in
+# entry.options. The names double as the WebSocket wire keys.
 CONF_ACCESS_SOUND_IOS = "access_sound_ios"
 CONF_ACCESS_CHANNEL_ANDROID = "access_channel_android"
 CONF_DOORBELL_SOUND_IOS = "doorbell_sound_ios"

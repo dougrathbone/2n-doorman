@@ -6,15 +6,19 @@ presentation configured per-device from the sidebar panel:
 
 * ``UserAuthenticated`` — dispatch per-user notifications to the notify
   targets configured for that specific 2N user, styled with the entry's
-  ``access_sound_ios`` / ``access_channel_android`` options.
+  ``access_sound_ios`` / ``access_channel_android`` settings.
 * ``DoorbellPressed`` — dispatch per-device notifications to the
   targets under ``doorbell_targets``, styled with the entry's
-  ``doorbell_sound_ios`` / ``doorbell_channel_android`` options.
+  ``doorbell_sound_ios`` / ``doorbell_channel_android`` settings.
+
+All per-flow settings are read from ``DoormanStore`` (keyed by config
+entry_id), not from ``entry.options`` — see storage.py for why.
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
@@ -27,6 +31,10 @@ from .const import (
     CONF_DOORBELL_TARGETS,
     DOMAIN,
 )
+from .coordinator import DOORBELL_EVENT_TYPE
+
+if TYPE_CHECKING:
+    from .storage import DoormanStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,7 +53,7 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
 
         if event_type == "UserAuthenticated":
             _handle_user_authenticated(hass, event, entry)
-        elif event_type == "DoorbellPressed":
+        elif event_type == DOORBELL_EVENT_TYPE:
             _handle_doorbell_pressed(hass, event, entry)
 
     hass.data[f"{DOMAIN}_notifications_unsub"] = hass.bus.async_listen(
@@ -57,6 +65,22 @@ def _lookup_entry(hass: HomeAssistant, entry_id: str | None) -> ConfigEntry | No
     if not entry_id:
         return None
     return hass.config_entries.async_get_entry(entry_id)
+
+
+def _get_store(hass: HomeAssistant) -> DoormanStore | None:
+    return hass.data.get(f"{DOMAIN}_store")
+
+
+def _settings_for(hass: HomeAssistant, entry: ConfigEntry | None) -> dict:
+    """Return an entry's notification settings, or {} when unavailable.
+
+    Read fresh on every event so a panel save takes effect immediately —
+    nothing here is cached and no reload is involved.
+    """
+    store = _get_store(hass)
+    if store is None or entry is None:
+        return {}
+    return store.get_notification_settings(entry.entry_id)
 
 
 def _build_data(
@@ -82,11 +106,7 @@ def _build_data(
 def _handle_user_authenticated(
     hass: HomeAssistant, event: Event, entry: ConfigEntry | None
 ) -> None:
-    # Imported here to avoid a circular at module load (notifications is
-    # wired up during setup, before storage is fully initialised).
-    from .storage import DoormanStore  # noqa: PLC0415
-
-    store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
+    store = _get_store(hass)
     if store is None:
         return
 
@@ -110,10 +130,9 @@ def _handle_user_authenticated(
         if device_name
         else f"{user_name} opened the door"
     )
-    ios_sound = (entry.options.get(CONF_ACCESS_SOUND_IOS, "") if entry else "") or ""
-    android_channel = (
-        entry.options.get(CONF_ACCESS_CHANNEL_ANDROID, "") if entry else ""
-    ) or ""
+    settings = _settings_for(hass, entry)
+    ios_sound = settings.get(CONF_ACCESS_SOUND_IOS, "") or ""
+    android_channel = settings.get(CONF_ACCESS_CHANNEL_ANDROID, "") or ""
     _dispatch(
         hass,
         targets,
@@ -131,12 +150,13 @@ def _handle_doorbell_pressed(
     hass: HomeAssistant, event: Event, entry: ConfigEntry | None
 ) -> None:
     if entry is None:
-        # Doorbell targets live on the config entry — without an entry
+        # Doorbell targets are stored per config entry — without an entry
         # there's nowhere to look up who to notify.
         _LOGGER.debug("Doorbell event has no config entry — skipping notifications")
         return
 
-    targets = entry.options.get(CONF_DOORBELL_TARGETS) or []
+    settings = _settings_for(hass, entry)
+    targets = settings.get(CONF_DOORBELL_TARGETS) or []
     if not targets:
         return
 
@@ -146,8 +166,8 @@ def _handle_doorbell_pressed(
         if device_name
         else "Someone rang the doorbell"
     )
-    ios_sound = entry.options.get(CONF_DOORBELL_SOUND_IOS, "") or ""
-    android_channel = entry.options.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or ""
+    ios_sound = settings.get(CONF_DOORBELL_SOUND_IOS, "") or ""
+    android_channel = settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or ""
     _dispatch(
         hass,
         targets,

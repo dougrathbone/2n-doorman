@@ -19,6 +19,7 @@ from custom_components.doorman.const import (
     DOMAIN,
 )
 from custom_components.doorman.coordinator import DoormanCoordinator
+from custom_components.doorman.storage import DoormanStore
 
 from .conftest import MOCK_DEVICE_INFO, MOCK_SWITCHES, MOCK_USERS
 
@@ -33,6 +34,15 @@ def _make_coordinator(
     )
     entry.add_to_hass(hass)
     return DoormanCoordinator(hass, entry, client)
+
+
+def _install_store(hass: HomeAssistant) -> DoormanStore:
+    """Put a real DoormanStore (no disk) in hass.data and return it."""
+    store = DoormanStore(hass)
+    store._store = MagicMock()
+    store._store.async_save = AsyncMock()
+    hass.data[f"{DOMAIN}_store"] = store
+    return store
 
 
 @pytest.mark.asyncio
@@ -268,12 +278,16 @@ async def test_key_pressed_on_non_doorbell_key_does_not_fire(
 
 
 @pytest.mark.asyncio
-async def test_doorbell_key_code_is_configurable_via_options(
+async def test_doorbell_key_code_is_configurable_via_store(
     hass: HomeAssistant,
 ) -> None:
-    """Setting doorbell_key_code in options changes which KeyPressed value fires the doorbell."""
+    """The stored doorbell_key_code decides which KeyPressed value fires the doorbell."""
     client = MagicMock()
-    coordinator = _make_coordinator(hass, client, options={CONF_DOORBELL_KEY_CODE: "%2"})
+    coordinator = _make_coordinator(hass, client)
+    store = _install_store(hass)
+    await store.set_notification_settings(
+        coordinator.config_entry.entry_id, {CONF_DOORBELL_KEY_CODE: "%2"}
+    )
 
     fired = []
     hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
@@ -289,6 +303,67 @@ async def test_doorbell_key_code_is_configurable_via_options(
     assert len(fired) == 1
     assert fired[0].data["event_type"] == "DoorbellPressed"
     assert fired[0].data["params"] == {"key": "%2"}
+
+
+@pytest.mark.asyncio
+async def test_doorbell_key_change_applies_without_reload(
+    hass: HomeAssistant,
+) -> None:
+    """A doorbell key saved mid-flight takes effect on the next log batch.
+
+    The coordinator re-reads the key from the store per batch precisely so
+    saving from the panel never has to reload the entry (a reload drops the
+    2N log subscription and loses events).
+    """
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+    store = _install_store(hass)
+    entry_id = coordinator.config_entry.entry_id
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    press_2 = [{"id": "e", "event": "KeyPressed", "utcTime": 1, "params": {"key": "%2"}}]
+
+    # Default is %1, so a %2 press is ignored…
+    coordinator._fire_new_access_events(press_2)
+    await hass.async_block_till_done()
+    assert fired == []
+
+    # …until the key is changed in the store — same coordinator object, no reload.
+    await store.set_notification_settings(entry_id, {CONF_DOORBELL_KEY_CODE: "%2"})
+    coordinator._fire_new_access_events(press_2)
+    await hass.async_block_till_done()
+
+    assert len(fired) == 1
+    assert fired[0].data["event_type"] == "DoorbellPressed"
+
+
+@pytest.mark.asyncio
+async def test_empty_doorbell_key_disables_the_doorbell(
+    hass: HomeAssistant,
+) -> None:
+    """An empty doorbell_key_code means "no doorbell button" — nothing fires."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+    store = _install_store(hass)
+    await store.set_notification_settings(
+        coordinator.config_entry.entry_id, {CONF_DOORBELL_KEY_CODE: ""}
+    )
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    coordinator._fire_new_access_events(
+        [
+            {"id": "e1", "event": "KeyPressed", "utcTime": 1, "params": {"key": "%1"}},
+            # A device that reports an empty key must not be treated as a match.
+            {"id": "e2", "event": "KeyPressed", "utcTime": 2, "params": {"key": ""}},
+        ]
+    )
+    await hass.async_block_till_done()
+
+    assert fired == []
 
 
 @pytest.mark.asyncio
