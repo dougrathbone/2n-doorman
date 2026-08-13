@@ -1480,6 +1480,50 @@ async def test_fetch_log_history_stops_at_max_pulls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_log_history_defaults_to_the_configured_pull_budget() -> None:
+    """The default pull budget matches LOG_BACKFILL_MAX_PULLS (5)."""
+    from custom_components.doorman.const import LOG_BACKFILL_MAX_PULLS
+
+    client = _make_client()
+    pulls = 0
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        nonlocal pulls
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            pulls += 1
+            return {"success": True, "result": {"events": [{"id": pulls}]}}
+        return {"success": True}
+
+    client._request = fake_request
+    await client.fetch_log_history()
+
+    assert LOG_BACKFILL_MAX_PULLS == 5
+    assert pulls == LOG_BACKFILL_MAX_PULLS
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_uses_a_ten_second_request_timeout() -> None:
+    """History pulls use a tight timeout so a dead device cannot stall for minutes."""
+    client = _make_client()
+    timeouts: list[int] = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            timeouts.append(request_timeout)
+            return {"success": True, "result": {"events": []}}
+        return {"success": True}
+
+    client._request = fake_request
+    await client.fetch_log_history()
+
+    assert timeouts == [10]
+
+
+@pytest.mark.asyncio
 async def test_fetch_log_history_falls_back_to_include_all() -> None:
     """Firmware that rejects the -seconds window still gets a plain include=all."""
     client = _make_client()

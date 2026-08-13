@@ -1,6 +1,8 @@
 """Integration test — validates the full setup and teardown lifecycle."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
@@ -63,8 +65,15 @@ async def test_setup_entry_registers_services(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """All five service actions are registered after setup."""
-    for service in ("create_user", "update_user", "delete_user", "grant_access", "hangup_calls"):
+    """All six service actions are registered after setup."""
+    for service in (
+        "create_user",
+        "update_user",
+        "delete_user",
+        "grant_access",
+        "hangup_calls",
+        "resync_log_history",
+    ):
         assert hass.services.has_service(DOMAIN, service), (
             f"Service {DOMAIN}.{service} was not registered"
         )
@@ -863,7 +872,13 @@ async def test_services_removed_when_last_entry_unloads(
     await hass.config_entries.async_unload(setup_doorman.entry_id)
     await hass.async_block_till_done()
 
-    for service in ("create_user", "update_user", "delete_user", "grant_access"):
+    for service in (
+        "create_user",
+        "update_user",
+        "delete_user",
+        "grant_access",
+        "resync_log_history",
+    ):
         assert not hass.services.has_service(DOMAIN, service), (
             f"Service {DOMAIN}.{service} should have been removed"
         )
@@ -1107,3 +1122,254 @@ async def test_removing_an_entry_deletes_its_access_log(
     await hass.async_block_till_done()
 
     assert key not in hass_storage
+
+
+# ─── Backfill runs off the setup path ────────────────────────────────────────
+
+
+_HISTORY_EVENT = {
+    "id": 42,
+    "event": "UserAuthenticated",
+    "utcTime": 1743500000,
+    "params": {"name": "Jane", "uuid": "uuid-jane"},
+}
+
+
+def _gated_history(release: asyncio.Event, started: asyncio.Event, events: list[dict]):
+    """Return a fetch_log_history stand-in that hangs until ``release`` is set.
+
+    It gives up after a few seconds so that a regression (backfill awaited on
+    the setup path again) fails the assertions below instead of wedging the
+    test run — ``hass.config_entries.async_setup`` cannot be cancelled from the
+    outside, so an outer timeout would not rescue us.
+    """
+
+    async def _fetch(**_kwargs) -> list[dict]:
+        started.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(release.wait(), 5)
+        return events
+
+    return _fetch
+
+
+def _stored_ids(hass: HomeAssistant, entry_id: str) -> list:
+    return [e["id"] for e in hass.data[DOMAIN][entry_id].log_store.events]
+
+
+@pytest.mark.asyncio
+async def test_setup_does_not_wait_for_backfill(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device that never answers the history request must not stall setup."""
+    release, started = asyncio.Event(), asyncio.Event()
+    mock_2n_client.fetch_log_history = _gated_history(release, started, [_HISTORY_EVENT])
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    # Backfill was started, is still in flight, and setup did not wait for it.
+    assert started.is_set()
+    assert not coordinator._backfill_task.done()
+    assert 42 not in _stored_ids(hass, doorman_config_entry.entry_id)
+
+    release.set()
+    await coordinator._backfill_task
+
+
+@pytest.mark.asyncio
+async def test_backfill_populates_the_store_after_setup(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """The history still lands in the store — just later than setup."""
+    release, started = asyncio.Event(), asyncio.Event()
+    mock_2n_client.fetch_log_history = _gated_history(release, started, [_HISTORY_EVENT])
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    release.set()
+    await coordinator._backfill_task
+    await hass.async_block_till_done()
+
+    assert 42 in _stored_ids(hass, doorman_config_entry.entry_id)
+    # Only the live listener's event notified; the backfilled one never did.
+    assert [e.data["params"].get("uuid") for e in fired] == ["uuid-jane"]
+    assert len(fired) == 1
+
+
+@pytest.mark.asyncio
+async def test_unload_mid_backfill_cancels_cleanly(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    hass_storage,
+    caplog,
+) -> None:
+    """Removing the entry while backfill is in flight leaves nothing behind."""
+    release, started = asyncio.Event(), asyncio.Event()
+    mock_2n_client.fetch_log_history = _gated_history(release, started, [_HISTORY_EVENT])
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    task = coordinator._backfill_task
+    key = f"{LOG_STORAGE_KEY}.{doorman_config_entry.entry_id}"
+
+    caplog.clear()
+    with caplog.at_level("ERROR"):
+        await hass.config_entries.async_remove(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        # The late history reply must not resurrect the removed store.
+        release.set()
+        await hass.async_block_till_done()
+
+    assert task.cancelled()
+    assert key not in hass_storage
+    assert "Task exception" not in caplog.text
+    assert [r.getMessage() for r in caplog.records if r.levelno >= 40] == []
+
+
+# ─── doorman.resync_log_history ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resync_service_adds_new_events(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    caplog,
+) -> None:
+    """The service merges freshly fetched history and reports what it added."""
+    mock_2n_client.fetch_log_history = AsyncMock(return_value=[_HISTORY_EVENT])
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    with caplog.at_level("INFO", logger="custom_components.doorman"):
+        await hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert 42 in _stored_ids(hass, setup_doorman.entry_id)
+    assert "1 new" in caplog.text
+    # The no-notify guarantee holds for the on-demand resync too.
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_resync_service_is_idempotent(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    caplog,
+) -> None:
+    """Re-running against unchanged device history adds nothing and says so."""
+    mock_2n_client.fetch_log_history = AsyncMock(return_value=[_HISTORY_EVENT])
+
+    await hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+    caplog.clear()
+    with caplog.at_level("INFO", logger="custom_components.doorman"):
+        await hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+
+    assert _stored_ids(hass, setup_doorman.entry_id).count(42) == 1
+    assert "already stored" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resync_service_distinguishes_an_empty_device_reply(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    caplog,
+) -> None:
+    """No history at all is logged differently from history with nothing new."""
+    mock_2n_client.fetch_log_history = AsyncMock(return_value=[])
+
+    with caplog.at_level("INFO", logger="custom_components.doorman"):
+        await hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+
+    assert "returned no log history" in caplog.text
+    assert "already stored" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resync_calls_do_not_overlap(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Hammering the service must not open two history subscriptions."""
+    release, started = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def counted(**_kwargs) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return [_HISTORY_EVENT]
+
+    mock_2n_client.fetch_log_history = counted
+
+    first = asyncio.ensure_future(
+        hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+    )
+    second = asyncio.ensure_future(
+        hass.services.async_call(DOMAIN, "resync_log_history", {}, blocking=True)
+    )
+    await started.wait()
+    await asyncio.sleep(0.01)
+    release.set()
+    async with asyncio.timeout(10):
+        await asyncio.gather(first, second)
+
+    assert calls == 1
+    assert _stored_ids(hass, setup_doorman.entry_id).count(42) == 1
+
+
+@pytest.mark.asyncio
+async def test_resync_targets_only_the_requested_entry(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """In a two-device install only the targeted entry's store is touched."""
+    entry1, entry2 = await setup_two_entries(hass, doorman_config_entry)
+    await hass.async_block_till_done()
+
+    mock_2n_client.fetch_log_history = AsyncMock(return_value=[_HISTORY_EVENT])
+
+    await hass.services.async_call(
+        DOMAIN, "resync_log_history", {"device": entry2.entry_id}, blocking=True
+    )
+
+    assert 42 in _stored_ids(hass, entry2.entry_id)
+    assert 42 not in _stored_ids(hass, entry1.entry_id)
+    assert mock_2n_client.fetch_log_history.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resync_with_unknown_device_raises(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """The service uses the same device-resolution rules as the others."""
+    with pytest.raises(ServiceValidationError, match="Unknown Doorman device"):
+        await hass.services.async_call(
+            DOMAIN, "resync_log_history", {"device": "nope"}, blocking=True
+        )

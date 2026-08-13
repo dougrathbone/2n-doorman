@@ -121,6 +121,8 @@ All services accept an optional `device` field (config entry ID) to target a spe
 | `doorman.update_user` | `uuid` (required) + any field above | Update an existing user's credentials |
 | `doorman.delete_user` | `uuid` | Remove a user from the 2N directory |
 | `doorman.grant_access` | `access_point_id` (default 1), `user_uuid` | Open an access point immediately |
+| `doorman.hangup_calls` | — | Hang up all active call sessions |
+| `doorman.resync_log_history` | — | Re-read the device's on-box access log history and merge anything missing into Doorman's log (no duplicates, no notifications). The number of events added is written to the Home Assistant log |
 
 ### Push-like event delivery
 

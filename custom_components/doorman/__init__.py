@@ -88,12 +88,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # retry the setup later instead of marking the entry permanently failed.
         raise ConfigEntryNotReady(f"Cannot initialise 2N device: {err}") from err
 
-    # Load the durable access log, then top it up with the history the device
-    # recorded while HA was down. Both run before the first refresh so the
-    # panel has the full record as soon as the entry is loaded. Backfill never
-    # fires doorman_access events — see DoormanCoordinator.async_backfill_access_log.
+    # Load the durable access log inline: it is a local disk read and the panel
+    # needs the persisted history the moment the entry is loaded. Topping it up
+    # with the device's on-box history is a network round trip per pull, so it
+    # runs as a background task (started further down, once setup cannot fail)
+    # rather than holding up the config entry.
     await coordinator.async_load_access_log()
-    await coordinator.async_backfill_access_log()
 
     await coordinator.async_config_entry_first_refresh()
 
@@ -129,11 +129,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options_update))
 
-    # Start the background log listener only after the coordinator is registered
-    # in hass.data and all setup steps that can fail have succeeded. Starting it
-    # earlier risks leaking the task if a later setup step raises (async_unload_entry
+    # Start the background tasks only after the coordinator is registered in
+    # hass.data and all setup steps that can fail have succeeded. Starting them
+    # earlier risks leaking a task if a later setup step raises (async_unload_entry
     # only runs for entries that finished setting up).
     coordinator.start_log_listener()
+    # Backfill after the listener: the listener's subscription only receives
+    # events from the moment it is created, so starting it first means nothing
+    # that happens during the backfill can slip through the gap. Anything the
+    # two paths both see is deduplicated by the store. Backfill never fires
+    # doorman_access events — see DoormanCoordinator.async_backfill_access_log.
+    coordinator.start_backfill()
 
     async_setup_websocket(hass)
     async_setup_notifications(hass)
@@ -213,7 +219,14 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool: 
 
 # All service actions registered below — removed again when the last
 # config entry unloads.
-_SERVICES = ("create_user", "update_user", "delete_user", "grant_access", "hangup_calls")
+_SERVICES = (
+    "create_user",
+    "update_user",
+    "delete_user",
+    "grant_access",
+    "hangup_calls",
+    "resync_log_history",
+)
 
 
 def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
@@ -337,6 +350,43 @@ def _register_services(hass: HomeAssistant) -> None:
             coordinator.device_info.get("deviceName") or "the 2N device",
         )
 
+    async def handle_resync_log_history(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
+        device_name = coordinator.device_info.get("deviceName") or "the 2N device"
+        # Re-runs the same code path as the startup backfill (and joins it if it
+        # is still running), so it inherits the no-notify guarantee: no
+        # doorman_access events, no last_access updates.
+        fetched, added = await coordinator.async_resync_access_log()
+        if fetched == 0:
+            # Nothing came back at all. Either the device genuinely has no log,
+            # or — far more likely — this firmware does not accept the
+            # include=-<seconds> / include=all parameter on /api/log/subscribe.
+            # That assumption is unverified against real hardware, so say so.
+            _LOGGER.info(
+                "Doorman: resync of %s returned no log history at all (0 events "
+                "fetched, 0 added). The device did not serve any history — its "
+                "firmware may not support the 'include' parameter on "
+                "/api/log/subscribe. Enable debug logging for "
+                "custom_components.doorman.api_client to see the device's reply.",
+                device_name,
+            )
+        elif added == 0:
+            _LOGGER.info(
+                "Doorman: resync of %s fetched %d historical event(s), all of which "
+                "were already stored — 0 added. History retrieval is working; there "
+                "was simply nothing new.",
+                device_name,
+                fetched,
+            )
+        else:
+            _LOGGER.info(
+                "Doorman: resync of %s fetched %d historical event(s) and added %d new "
+                "one(s) to the access log.",
+                device_name,
+                fetched,
+                added,
+            )
+
     hass.services.async_register(
         DOMAIN,
         "create_user",
@@ -400,6 +450,16 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         "hangup_calls",
         handle_hangup_calls,
+        schema=vol.Schema(
+            {
+                vol.Optional("device"): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "resync_log_history",
+        handle_resync_log_history,
         schema=vol.Schema(
             {
                 vol.Optional("device"): cv.string,
