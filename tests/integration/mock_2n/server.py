@@ -7,6 +7,7 @@ via the /admin/* endpoints.
 from __future__ import annotations
 
 import copy
+import time
 import uuid as _uuid
 
 from aiohttp import web
@@ -38,7 +39,32 @@ _state: dict = {
         {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
     ],
     "call_log": [],  # {"method", "path", "body"}
+    # On-box event history, as returned by log/subscribe?include=all
+    "log_history": [],
+    "log_subscriptions": {},  # {subscription_id: [queued events]}
+    "log_subscription_seq": 0,
 }
+
+
+def _initial_log_history() -> list[dict]:
+    """Two recent access events, as a real device would have recorded."""
+    now = int(time.time())
+    return [
+        {
+            "id": 1,
+            "utcTime": now - 3600,
+            "upTime": 100,
+            "event": "UserAuthenticated",
+            "params": {"ap": 0, "session": 1, "name": "Test User", "uuid": "uuid-test-01"},
+        },
+        {
+            "id": 2,
+            "utcTime": now - 1800,
+            "upTime": 1900,
+            "event": "CardEntered",
+            "params": {"ap": 0, "uid": "AABBCCDD", "valid": True},
+        },
+    ]
 
 
 def _log(method: str, path: str, body=None) -> None:
@@ -111,12 +137,47 @@ async def delete_dir(request: web.Request) -> web.Response:
 
 
 async def subscribe_log(request: web.Request) -> web.Response:
-    return web.json_response({"success": True, "result": {"id": 1}})
+    """Create a subscription channel, honouring the ``include`` parameter.
+
+    Mirrors the real device: ``new`` (default) starts with an empty queue,
+    ``all`` pre-fills it with the recorded history, and ``-N`` pre-fills it
+    with the events from the last N seconds.
+    """
+    include = request.rel_url.query.get("include", "new")
+    _log("GET", "/api/log/subscribe", {"include": include})
+
+    if include == "all":
+        queue = list(_state["log_history"])
+    elif include.startswith("-") and include[1:].isdigit():
+        cutoff = int(time.time()) - int(include[1:])
+        queue = [e for e in _state["log_history"] if e.get("utcTime", 0) >= cutoff]
+    else:
+        queue = []
+
+    _state["log_subscription_seq"] += 1
+    sub_id = _state["log_subscription_seq"]
+    _state["log_subscriptions"][sub_id] = queue
+    return web.json_response({"success": True, "result": {"id": sub_id}})
 
 
 async def pull_log(request: web.Request) -> web.Response:
+    """Drain the subscription's queue (unknown ids get error 12, as on device)."""
     _log("GET", "/api/log/pull")
-    return web.json_response({"success": True, "result": {"events": []}})
+    sub_id = int(request.rel_url.query.get("id", 0))
+    if sub_id not in _state["log_subscriptions"]:
+        return web.json_response(
+            {"success": False, "error": {"code": 12, "description": "invalid subscription id"}}
+        )
+    queue = _state["log_subscriptions"][sub_id]
+    _state["log_subscriptions"][sub_id] = []
+    return web.json_response({"success": True, "result": {"events": queue}})
+
+
+async def unsubscribe_log(request: web.Request) -> web.Response:
+    sub_id = int(request.rel_url.query.get("id", 0))
+    _state["log_subscriptions"].pop(sub_id, None)
+    _log("GET", "/api/log/unsubscribe", {"id": sub_id})
+    return web.json_response({"success": True})
 
 
 async def grant_access(request: web.Request) -> web.Response:
@@ -164,6 +225,9 @@ async def admin_reset(request: web.Request) -> web.Response:
     _state["call_sessions"] = [
         {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
     ]
+    _state["log_history"] = _initial_log_history()
+    _state["log_subscriptions"] = {}
+    _state["log_subscription_seq"] = 0
     return web.json_response({"ok": True})
 
 
@@ -179,6 +243,7 @@ async def admin_get_switches(request: web.Request) -> web.Response:
 # ─── App assembly ────────────────────────────────────────────────────────────
 
 def create_app() -> web.Application:
+    _state["log_history"] = _initial_log_history()
     app = web.Application()
     app.router.add_get("/api/system/info", get_system_info)
     app.router.add_get("/api/switch/status", get_switch_status)
@@ -191,6 +256,7 @@ def create_app() -> web.Application:
     app.router.add_put("/api/dir/delete", delete_dir)
     app.router.add_get("/api/log/subscribe", subscribe_log)
     app.router.add_get("/api/log/pull", pull_log)
+    app.router.add_get("/api/log/unsubscribe", unsubscribe_log)
     app.router.add_get("/api/accesspoint/grantaccess", grant_access)
     app.router.add_get("/api/call/status", get_call_status)
     app.router.add_get("/api/call/hangup", hangup_call)

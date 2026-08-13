@@ -1,15 +1,27 @@
 """Persistent HA-side storage for Doorman.
 
-Stores two kinds of per-user metadata:
+``DoormanStore`` stores two kinds of per-user metadata:
   user_links          — 2N UUID → HA User ID (for identity linking)
   notification_targets — 2N UUID → list of notify.* service targets
+
+``AccessLogStore`` stores the durable access-log history, one file per
+config entry.
 """
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import STORAGE_KEY, STORAGE_VERSION
+from .const import (
+    LOG_SAVE_DELAY,
+    LOG_STORAGE_KEY,
+    LOG_STORAGE_VERSION,
+    MAX_STORED_LOG_EVENTS,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
 
 
 def _empty_data() -> dict:
@@ -119,3 +131,137 @@ class DoormanStore:
         """Remove all notification targets for a 2N UUID. Persists immediately."""
         if self._data.get("notification_targets", {}).pop(two_n_uuid, None) is not None:
             await self._store.async_save(self._data)
+
+
+# ---------------------------------------------------------------------- #
+# Access log history                                                       #
+# ---------------------------------------------------------------------- #
+
+
+def _event_key(event: dict[str, Any]) -> str:
+    """Return the dedupe key for a 2N log event.
+
+    2N event ``id`` is a uint32 that restarts at 1 after every device reboot,
+    so it is not unique on its own — pairing it with the event timestamp keeps
+    a genuinely new post-reboot event (same id, later time) while still
+    collapsing the same event seen twice (backfill overlapping the live feed,
+    or a repeated backfill).
+    """
+    stamp = event.get("utcTime")
+    if stamp is None:
+        stamp = event.get("upTime")
+    return f"{event.get('id')}@{stamp}"
+
+
+def _event_time(event: dict[str, Any]) -> int:
+    """Return an event's epoch-seconds timestamp, or 0 if it has none."""
+    try:
+        return int(event.get("utcTime") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+class AccessLogStore:
+    """Durable access-log history for a single config entry.
+
+    Events are kept oldest-first (which is the order the panel expects) and
+    capped at ``max_events``, trimming the oldest. Writes are debounced via
+    ``Store.async_delay_save`` so a burst of events from one log pull costs a
+    single disk write; ``async_flush`` forces any pending write out on unload.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        max_events: int = MAX_STORED_LOG_EVENTS,
+        save_delay: float = LOG_SAVE_DELAY,
+    ) -> None:
+        # One file per entry: a multi-device install must not merge histories,
+        # and one device's events must not rewrite another's file.
+        self._store: Store = Store(
+            hass, LOG_STORAGE_VERSION, f"{LOG_STORAGE_KEY}.{entry_id}"
+        )
+        self._events: list[dict[str, Any]] = []
+        self._keys: set[str] = set()
+        self._max_events = max_events
+        self._save_delay = save_delay
+        self._dirty = False
+
+    async def async_load(self) -> None:
+        """Load the stored history from disk. Call once during setup."""
+        stored = await self._store.async_load() or {}
+        self._events = []
+        self._keys = set()
+        self._dirty = False
+        # Route the stored events through _merge so a hand-edited or
+        # older-format file still ends up deduped, sorted and capped.
+        self._merge(stored.get("events") or [])
+
+    @property
+    def events(self) -> list[dict[str, Any]]:
+        """Return the stored events, oldest first."""
+        return self._events
+
+    def add_events(self, events: list[dict[str, Any]]) -> int:
+        """Merge events into the history and schedule a debounced write.
+
+        Returns the number of events that were actually new. Adding only
+        duplicates schedules no write at all.
+        """
+        added = self._merge(events)
+        if added:
+            self._dirty = True
+            self._store.async_delay_save(self._data_to_save, self._save_delay)
+        return added
+
+    async def async_flush(self) -> None:
+        """Write pending changes immediately (config entry unload / shutdown).
+
+        HA flushes delayed saves itself on a clean stop, but not on a config
+        entry reload — without this, events from the last debounce window
+        would be lost on every reload.
+        """
+        if not self._dirty:
+            return
+        self._dirty = False
+        await self._store.async_save(self._data_to_save())
+
+    async def async_remove(self) -> None:
+        """Delete the stored history (config entry removed)."""
+        self._events = []
+        self._keys = set()
+        self._dirty = False
+        await self._store.async_remove()
+
+    def _data_to_save(self) -> dict[str, Any]:
+        return {"events": self._events}
+
+    def _merge(self, events: list[dict[str, Any]]) -> int:
+        """Add unseen events, keep chronological order, trim the oldest."""
+        fresh: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            key = _event_key(event)
+            if key in self._keys:
+                continue
+            self._keys.add(key)
+            fresh.append(event)
+        if not fresh:
+            return 0
+
+        # A stable sort by timestamp interleaves backfilled history with
+        # already-stored events correctly; events with equal (or missing)
+        # timestamps keep their arrival order.
+        merged = sorted(self._events + fresh, key=_event_time)
+        overflow = len(merged) - self._max_events
+        if overflow > 0:
+            for event in merged[:overflow]:
+                self._keys.discard(_event_key(event))
+            merged = merged[overflow:]
+        # Rebind rather than mutate: the previous list may be in flight to the
+        # JSON encoder in an executor thread, and coordinator.data holds a
+        # reference to it.
+        self._events = merged
+        return len(fresh)

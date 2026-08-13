@@ -189,11 +189,15 @@ async def test_ws_get_device_info_returns_model(ws: HaWebSocket) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_get_access_log_returns_list(ws: HaWebSocket) -> None:
-    """doorman/get_access_log WS command returns a list (empty on mock server)."""
+async def test_ws_get_access_log_returns_backfilled_history(ws: HaWebSocket) -> None:
+    """The startup backfill pulls the device's on-box history into the log."""
     result = await ws.command("doorman/get_access_log")
     assert "events" in result
     assert isinstance(result["events"], list)
+    # The mock device has two historical events recorded before HA started.
+    event_types = [e.get("event") for e in result["events"]]
+    assert "UserAuthenticated" in event_types
+    assert "CardEntered" in event_types
 
 
 @pytest.mark.asyncio

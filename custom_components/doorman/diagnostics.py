@@ -36,7 +36,7 @@ async def async_get_config_entry_diagnostics(
         "log_task_running": (
             coordinator._log_task is not None and not coordinator._log_task.done()  # noqa: SLF001
         ),
-        "log_buffer_size": len(coordinator._log_buffer),  # noqa: SLF001
+        "log_buffer_size": len(coordinator.log_store.events),
         "user_count": len((coordinator.data or {}).get("users", [])),
         "switch_count": len((coordinator.data or {}).get("switches", [])),
     }

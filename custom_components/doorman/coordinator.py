@@ -13,7 +13,13 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_client import DoormanApiError, DoormanAuthError, TwoNApiClient
-from .const import DEFAULT_POLL_INTERVAL, DOMAIN
+from .const import (
+    DEFAULT_POLL_INTERVAL,
+    DOMAIN,
+    LOG_BACKFILL_MAX_PULLS,
+    LOG_BACKFILL_SECONDS,
+)
+from .storage import AccessLogStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,8 +70,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_info: dict[str, Any] = {}
         self.access_points: list[dict[str, Any]] = []
         self.has_write_permission: bool = True
-        self._log_buffer: list[dict[str, Any]] = []
-        self._log_buffer_max = 200
+        # Durable access-log history for this entry — survives restarts and
+        # reloads, unlike the in-memory buffer it replaces.
+        self.log_store = AccessLogStore(hass, entry.entry_id)
         self._last_access: dict[str, int] = {}
         self._pending_access_saves: list[tuple[str, int]] = []
         self._log_task: asyncio.Task | None = None
@@ -87,6 +94,45 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "or enable Directory write access in: Settings → Services → HTTP API → Users."
             )
 
+    async def async_load_access_log(self) -> None:
+        """Load this entry's persisted access-log history.
+
+        A corrupt or unreadable history must not stop the integration from
+        loading — the log is a convenience record, not operational state.
+        """
+        try:
+            await self.log_store.async_load()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "Doorman: could not load the stored access log — starting empty",
+                exc_info=True,
+            )
+
+    async def async_backfill_access_log(self) -> int:
+        """Merge the device's on-box log history into the stored log.
+
+        Runs once at setup. This deliberately does NOT fire ``doorman_access``
+        bus events and does not touch ``_last_access``: backfilled entries are
+        historical, and replaying them through the notification path would
+        spam every notify target with stale door events after each restart.
+        Only the live listener notifies.
+
+        Returns the number of events added (0 if the device cannot serve
+        history — backfill is best-effort and never fails setup).
+        """
+        try:
+            history = await self.client.fetch_log_history(
+                seconds=LOG_BACKFILL_SECONDS, max_pulls=LOG_BACKFILL_MAX_PULLS
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Doorman: access-log backfill unavailable (%r)", err)
+            return 0
+
+        added = self.log_store.add_events(history)
+        if added:
+            _LOGGER.debug("Doorman: backfilled %d historical log event(s)", added)
+        return added
+
     def start_log_listener(self) -> None:
         """Start the background long-poll log listener task."""
         if self._log_task and not self._log_task.done():
@@ -97,11 +143,17 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_shutdown(self) -> None:
-        """Cancel the log listener task on unload."""
+        """Cancel the log listener task and flush the access log on unload."""
         if self._log_task and not self._log_task.done():
             self._log_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._log_task
+        try:
+            await self.log_store.async_flush()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "Doorman: could not persist the access log on shutdown", exc_info=True
+            )
         await super().async_shutdown()
 
     async def _log_listener_loop(self) -> None:
@@ -128,7 +180,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
 
                 self._fire_new_access_events(events)
-                self._log_buffer = (events + self._log_buffer)[: self._log_buffer_max]
+                # Debounced: a burst from one pull costs a single disk write.
+                self.log_store.add_events(events)
 
                 # Persist last_access entries collected by _fire_new_access_events.
                 # Coalesce into a single disk write rather than one per event.
@@ -142,7 +195,11 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Push an update to all listeners so the log tab refreshes immediately
                 if self.data is not None:
                     self.async_set_updated_data(
-                        {**self.data, "log_events": self._log_buffer, "last_access": self._last_access}
+                        {
+                            **self.data,
+                            "log_events": self.log_store.events,
+                            "last_access": self._last_access,
+                        }
                     )
             except asyncio.CancelledError:
                 return
@@ -208,7 +265,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "users": users,
             "switches": switches,
-            "log_events": self._log_buffer,
+            "log_events": self.log_store.events,
             "has_write_permission": self.has_write_permission,
             "last_access": self._last_access,
         }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -9,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.doorman.const import DOMAIN
+from custom_components.doorman.const import DOMAIN, LOG_STORAGE_KEY, LOG_STORAGE_VERSION
 
 from .conftest import MOCK_SWITCHES, MOCK_USERS, setup_two_entries
 
@@ -992,3 +993,117 @@ async def test_hangup_calls_service_api_error(
 
     with pytest.raises(HomeAssistantError, match="hangup_calls failed"):
         await hass.services.async_call(DOMAIN, "hangup_calls", {}, blocking=True)
+
+
+# ─── Persistent access log ───────────────────────────────────────────────────
+
+
+def _stored_log(entry_id: str, events: list[dict]) -> tuple[str, dict]:
+    """Return the (storage key, payload) pair for a pre-existing access log."""
+    key = f"{LOG_STORAGE_KEY}.{entry_id}"
+    return key, {"version": LOG_STORAGE_VERSION, "minor_version": 1, "key": key,
+                 "data": {"events": events}}
+
+
+@pytest.mark.asyncio
+async def test_access_log_from_previous_run_is_available_to_the_panel(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    hass_storage,
+) -> None:
+    """Events stored before a restart are served to the panel immediately."""
+    from custom_components.doorman.websocket import ws_get_access_log
+
+    old_event = {
+        "id": 1,
+        "event": "UserAuthenticated",
+        "utcTime": 1743000000,
+        "params": {"name": "Jane", "uuid": "uuid-jane"},
+    }
+    key, payload = _stored_log(doorman_config_entry.entry_id, [old_event])
+    hass_storage[key] = payload
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    conn = MagicMock()
+    conn.user = MagicMock(is_admin=True)
+    ws_get_access_log(hass, conn, {"id": 1, "entry_id": doorman_config_entry.entry_id})
+
+    events = conn.send_result.call_args[0][1]["events"]
+    assert 1 in [e["id"] for e in events]
+
+
+@pytest.mark.asyncio
+async def test_setup_backfills_history_without_notifying(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """On-box history is merged in at setup but fires no doorman_access events."""
+    historical = [
+        {
+            "id": 5,
+            "event": "UserAuthenticated",
+            "utcTime": 1743100000,
+            "params": {"name": "Jane", "uuid": "uuid-jane"},
+        },
+    ]
+    mock_2n_client.fetch_log_history = AsyncMock(return_value=historical)
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    stored_ids = [e["id"] for e in coordinator.log_store.events]
+    assert 5 in stored_ids
+    # The live listener still delivered (and fired for) the fixture's event
+    assert [e.data["params"].get("uuid") for e in fired] == ["uuid-jane"]
+    assert len(fired) == 1
+    assert "evt-001" in stored_ids
+
+
+@pytest.mark.asyncio
+async def test_setup_survives_a_device_without_history_support(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device that cannot serve history still sets up and logs live events."""
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.fetch_log_history = AsyncMock(
+        side_effect=DoormanApiError("API error 18: invalid parameter", code=18)
+    )
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    assert [e["id"] for e in coordinator.log_store.events] == ["evt-001"]
+
+
+@pytest.mark.asyncio
+async def test_removing_an_entry_deletes_its_access_log(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_storage,
+) -> None:
+    """The per-entry log file is cleaned up when the device is removed."""
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
+    await coordinator.log_store.async_flush()
+    key = f"{LOG_STORAGE_KEY}.{setup_doorman.entry_id}"
+    assert key in hass_storage
+
+    await hass.config_entries.async_remove(setup_doorman.entry_id)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage
