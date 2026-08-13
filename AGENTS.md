@@ -15,12 +15,15 @@ repo was built to cover that gap.
 ```
 custom_components/doorman/
   __init__.py          — entry setup, static file serving, panel registration, services
+                         (incl. doorman.hangup_calls and doorman.resync_log_history)
   api_client.py        — TwoNApiClient: async HTTP wrapper around the 2N local REST API
-                         (directory, switches, log, and call control)
+                         (directory, switches, log, log history, and call control)
   config_flow.py       — UI config flow (host / username / password / SSL options)
-  coordinator.py       — DataUpdateCoordinator: polls users, switches, log; fires bus events
+  coordinator.py       — DataUpdateCoordinator: polls users, switches, log; fires bus
+                         events (incl. the doorbell); runs the access-log backfill
   storage.py           — DoormanStore: persists UUID↔HA-user links, notify targets,
                          and per-entry notification settings
+                         AccessLogStore: durable per-entry access-log history
   notifications.py     — Listens for doorman_access bus events, dispatches notify.* calls
   ios_sounds.py        — Static catalog of iOS Companion notification sounds for the panel
   websocket.py         — 12 WebSocket commands exposed to the frontend panel
@@ -59,14 +62,77 @@ written. All Doorman entities also set `_attr_has_entity_name = False` and pin
 ### Log events via long-poll subscription
 `DoormanCoordinator` runs a background listener that subscribes to the device
 log (`/api/log/subscribe`) and long-polls `/api/log/pull` with a 20 s
-server-side timeout. The device keeps an unread queue per subscription, so only
-new events are delivered — there is deliberately no client-side watermark, and
-a fresh subscription after an HA restart starts empty, which prevents a flood
-of stale notifications. The trade-off: events that occur while no subscription
-is active (between a subscription expiry and re-subscribe, or while HA is
-down) are never delivered. `doorman_access` bus events carry the originating
-`entry_id`, and `utcTime` is passed through as epoch seconds (the panel
-converts for display).
+server-side timeout. The live subscription deliberately sends **no `include`
+parameter**, so the device default (`include=new`) applies: its queue starts
+empty and only events that occur while the subscription is alive are
+delivered. There is deliberately no client-side watermark on this path.
+`doorman_access` bus events carry the originating `entry_id`, and `utcTime` is
+passed through as epoch seconds (the panel converts for display).
+
+### The access log is persisted, and backfill must never notify
+The access log is a durable historical record, not a view of the current
+session. Two mechanisms keep it complete:
+
+1. **Persistence** — `AccessLogStore` (in `storage.py`) writes each entry's
+   history to its own `Store` file, `doorman.access_log.<entry_id>`. It is
+   separate from `DoormanStore` (`doorman.storage`) on purpose: that file
+   holds small config-ish maps and is rewritten in full on every save, so
+   appending log events to it would rewrite user links and notification
+   targets on every door open. Events are stored oldest-first (the order
+   `panel.js` expects), deduplicated, capped at `MAX_STORED_LOG_EVENTS`
+   (oldest trimmed first) and written through `Store.async_delay_save`, so a
+   burst of events from one `pull_log` costs a single disk write.
+   `async_shutdown` flushes any pending write, because HA only auto-flushes
+   delayed saves on a clean stop, not on a config entry reload.
+2. **Backfill** — `DoormanCoordinator._async_run_backfill` calls
+   `TwoNApiClient.fetch_log_history`, which creates its **own throwaway
+   subscription** with `include=-<seconds>` (falling back to `include=all`),
+   drains it, and unsubscribes. It never touches
+   `_log_subscription_id`: pulling from the live listener's subscription would
+   consume events the listener must deliver. Any device error returns an empty
+   list, so firmware that doesn't support the parameter behaves exactly as it
+   did before backfill existed.
+
+**Backfill runs as a background task, never on the setup path.**
+`async_setup_entry` awaits `async_load_access_log()` (a local disk read — the
+panel needs the persisted history immediately) but only *starts*
+`coordinator.start_backfill()`, right after `start_log_listener()`, via
+`hass.async_create_background_task`. Awaiting it inline could stall
+config-entry setup for minutes against an unresponsive intercom: HA logs
+slow-setup warnings and the integration sits unavailable the whole time.
+Starting the live listener first means no event that happens during the
+backfill can slip through the gap; overlap is collapsed by the store's dedupe.
+
+The request budget is deliberately tight: `request_timeout=10` per pull and
+`LOG_BACKFILL_MAX_PULLS = 5`, so a worst-case run is ~50 s. **Consequence:** at
+128 events per pull a single backfill can retrieve at most 640 events (it was
+1280 under the old 10-pull budget). The 7-day `LOG_BACKFILL_SECONDS` window is
+unchanged; a device holding more than 640 events inside that window is only
+partially backfilled.
+
+`async_shutdown` cancels the backfill task **before** flushing `log_store`, and
+sets `_closed`, which `_async_run_backfill` checks immediately before
+`add_events`. Both are needed: the cancel stops the run, and the flag
+guarantees that a run which somehow returns late cannot re-dirty a store that
+has already been flushed — whose debounced write would otherwise re-create the
+history file `async_remove_entry` just deleted.
+
+`doorman.resync_log_history` re-runs the same code path on demand (see
+"Services" below), so everything above applies to it too.
+
+**Backfilled events must never fire `doorman_access` bus events or update
+`_last_access`.** Only the live listener calls `_fire_new_access_events`;
+backfill writes straight to the store. This is the same guarantee the old
+no-watermark design provided — replaying history through the notification path
+would spam every notify target with stale door events after each restart. It
+covers the synthetic `DoorbellPressed` event too: that is fired from inside
+`_fire_new_access_events`, so it is on the live path only and a backfilled
+`KeyPressed` can never ring anyone's phone.
+
+Dedupe key is `id@utcTime`, not `id` alone: the 2N event `id` is a uint32 that
+restarts at 1 after a device reboot, so a post-reboot event reusing an old id
+is still recorded, while a repeated backfill (or backfill overlapping the live
+feed) collapses to one row.
 
 ### Notification targets stored per 2N UUID
 `DoormanStore` persists `notification_targets: {two_n_uuid: ["notify.service", …]}`.
@@ -113,6 +179,31 @@ schema validation entirely. Tests that need `hass_ws_client` must be marked
 `@pytest.mark.real_http` so the conftest sets up the genuine `http`
 component instead of the MagicMock.
 
+### `doorman.resync_log_history`
+A service (not a WS command — a manual resync is legitimately automatable)
+that re-runs the access-log backfill on demand. It exists for two reasons:
+the `include=-N` / `include=all` parameters come from the 2N HTTP API docs and
+have **never been confirmed against real firmware**, so the maintainer needs a
+way to exercise them without restarting HA; and users whose first backfill came
+up empty need a retry.
+
+It logs its outcome at INFO, deliberately distinguishing three cases so a bug
+report is unambiguous:
+- `fetched == 0` — the device served *no* history at all. Most likely the
+  firmware rejects the `include` parameter, i.e. the unverified assumption is
+  wrong on that device.
+- `fetched > 0, added == 0` — history retrieval works, there was just nothing
+  new. Before this service existed these two looked identical from the log.
+- `added > 0` — how many rows were actually merged.
+
+Concurrency: `_ensure_backfill_task` reuses the in-flight
+`_backfill_task` and `async_resync_access_log` awaits it under
+`asyncio.shield`, so hammering the service — or resyncing while the startup
+backfill is still running — joins one run instead of opening a second history
+subscription on the device. It targets a single entry via the standard optional
+`device` (config entry ID) field, so only that entry's `AccessLogStore` is
+touched.
+
 ### Dependency mocking in unit tests
 HA's `frontend`, `panel_custom`, and `http` components require heavy optional
 dependencies (`hass-frontend`, a live HTTP server). Unit tests use
@@ -148,9 +239,10 @@ footers to commit messages. Keep commit messages focused on technical changes.
 - **Frontend changes**: edit `frontend/panel.js` directly; no build step.
   `panel.js` is cache-busted automatically with `?v={manifest version}` in
   `__init__.py`, so a release is enough — no manual busting needed.
-- **Storage keys**: `STORAGE_KEY` and `STORAGE_VERSION` are defined in
-  `const.py`. Bump `STORAGE_VERSION` when the stored schema changes
-  in a breaking way.
+- **Storage keys**: `STORAGE_KEY`/`STORAGE_VERSION` (shared config store) and
+  `LOG_STORAGE_KEY`/`LOG_STORAGE_VERSION` (per-entry access log) are defined
+  in `const.py`. Bump the matching version when a stored schema changes in a
+  breaking way.
 
 ## Common tasks
 

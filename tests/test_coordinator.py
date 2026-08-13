@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import contextlib
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -17,6 +17,7 @@ from custom_components.doorman.const import (
     CONF_PASSWORD,
     CONF_USERNAME,
     DOMAIN,
+    MAX_STORED_LOG_EVENTS,
 )
 from custom_components.doorman.coordinator import DoormanCoordinator
 from custom_components.doorman.storage import DoormanStore
@@ -25,14 +26,14 @@ from .conftest import MOCK_DEVICE_INFO, MOCK_SWITCHES, MOCK_USERS
 
 
 def _make_coordinator(
-    hass: HomeAssistant, client, *, options: dict | None = None
+    hass: HomeAssistant, client, entry: MockConfigEntry | None = None
 ) -> DoormanCoordinator:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
-        options=options or {},
-    )
-    entry.add_to_hass(hass)
+    if entry is None:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+        )
+        entry.add_to_hass(hass)
     return DoormanCoordinator(hass, entry, client)
 
 
@@ -367,41 +368,40 @@ async def test_empty_doorbell_key_disables_the_doorbell(
 
 
 @pytest.mark.asyncio
-async def test_log_buffer_accumulates_via_fire_new_access_events(
+async def test_log_events_accumulate_in_the_persistent_store(
     hass: HomeAssistant,
 ) -> None:
-    """_fire_new_access_events prepends events to _log_buffer (newest first)."""
+    """Events pulled by the listener accumulate in the durable access-log store."""
     client = MagicMock()
     coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
 
-    first_batch = [
-        {"id": "e1", "event": "CardEntered", "utcTime": 1743242400, "params": {}},
-    ]
-    second_batch = [
-        {"id": "e2", "event": "UserRejected", "utcTime": 1743242460, "params": {}},
-    ]
+    coordinator.log_store.add_events(
+        [{"id": 1, "event": "CardEntered", "utcTime": 1743242400, "params": {}}]
+    )
+    coordinator.log_store.add_events(
+        [{"id": 2, "event": "UserRejected", "utcTime": 1743242460, "params": {}}]
+    )
 
-    # Manually simulate what the background task does when it gets events
-    coordinator._log_buffer = (first_batch + coordinator._log_buffer)[:coordinator._log_buffer_max]
-    coordinator._log_buffer = (second_batch + coordinator._log_buffer)[:coordinator._log_buffer_max]
-
-    assert len(coordinator._log_buffer) == 2
-    assert coordinator._log_buffer[0]["id"] == "e2"  # newest first
+    assert [e["id"] for e in coordinator.log_store.events] == [1, 2]
 
 
 @pytest.mark.asyncio
-async def test_log_buffer_capped_at_max(
-    hass: HomeAssistant,
-) -> None:
-    """_log_buffer never exceeds _log_buffer_max entries."""
+async def test_stored_log_is_capped(hass: HomeAssistant) -> None:
+    """The stored history never exceeds MAX_STORED_LOG_EVENTS entries."""
     client = MagicMock()
     coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
 
-    # Fill beyond max
-    overflow = [{"id": str(i), "event": "CardEntered", "utcTime": "", "params": {}} for i in range(250)]
-    coordinator._log_buffer = overflow[:coordinator._log_buffer_max]
+    overflow = [
+        {"id": i, "event": "CardEntered", "utcTime": 1743242400 + i, "params": {}}
+        for i in range(MAX_STORED_LOG_EVENTS + 50)
+    ]
+    coordinator.log_store.add_events(overflow)
 
-    assert len(coordinator._log_buffer) == coordinator._log_buffer_max
+    assert len(coordinator.log_store.events) == MAX_STORED_LOG_EVENTS
+    # Oldest trimmed first — the newest event is still present
+    assert coordinator.log_store.events[-1]["id"] == MAX_STORED_LOG_EVENTS + 49
 
 
 @pytest.mark.asyncio
@@ -548,3 +548,568 @@ async def test_log_listener_survives_store_save_failure(
     # jobs are scheduled across a mocked sleep, so compare unordered.
     assert sorted(e.data["params"]["uuid"] for e in fired_events) == ["uuid-a", "uuid-b"]
     assert store.update_last_access_batch.await_count == 2
+
+
+# ─── Persistent access log ───────────────────────────────────────────────────
+
+
+def _log_event(event_id: int, utc_time: int, name: str = "UserAuthenticated") -> dict:
+    return {
+        "id": event_id,
+        "event": name,
+        "utcTime": utc_time,
+        "params": {"ap": 0, "name": "Jane", "uuid": "uuid-jane"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_access_log_survives_a_coordinator_restart(hass: HomeAssistant) -> None:
+    """Events delivered before a restart are still there afterwards."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+    )
+    entry.add_to_hass(hass)
+
+    client = MagicMock()
+    client.query_users = AsyncMock(return_value=MOCK_USERS)
+    client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+
+    coordinator = _make_coordinator(hass, client, entry)
+    await coordinator.async_load_access_log()
+    coordinator.log_store.add_events([_log_event(1, 1743242400), _log_event(2, 1743242460)])
+    await coordinator.async_shutdown()
+
+    # "Restart": a brand new coordinator for the same config entry
+    restarted = _make_coordinator(hass, client, entry)
+    await restarted.async_load_access_log()
+    data = await restarted._async_update_data()
+
+    assert [e["id"] for e in data["log_events"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_backfill_populates_log_without_firing_bus_events(
+    hass: HomeAssistant,
+) -> None:
+    """Historical events are recorded but must never notify."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(
+        return_value=[_log_event(1, 1743242400), _log_event(2, 1743242460)]
+    )
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    fired_events = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired_events.append(e))
+
+    added = await coordinator.async_backfill_access_log()
+    await hass.async_block_till_done()
+
+    assert added == 2
+    assert [e["id"] for e in coordinator.log_store.events] == [1, 2]
+    assert fired_events == []
+    # Backfill must not rewrite "last access" state either — that is derived
+    # from live events only.
+    assert coordinator._last_access == {}
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_ring_the_doorbell(hass: HomeAssistant) -> None:
+    """A historical KeyPressed on the doorbell key must not fire DoorbellPressed.
+
+    The doorbell is emitted from inside _fire_new_access_events, which only the
+    live listener calls — so replaying a week of history at startup can never
+    ring anyone's phone.
+    """
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(
+        return_value=[
+            {
+                "id": 7,
+                "event": "KeyPressed",
+                "utcTime": 1743242400,
+                "params": {"key": "%1"},
+            }
+        ]
+    )
+
+    coordinator = _make_coordinator(hass, client)
+    _install_store(hass)
+    await coordinator.async_load_access_log()
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    added = await coordinator.async_backfill_access_log()
+    await hass.async_block_till_done()
+
+    assert added == 1
+    assert [e["id"] for e in coordinator.log_store.events] == [7]
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_backfill_is_idempotent(hass: HomeAssistant) -> None:
+    """Running backfill twice does not duplicate rows."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(
+        return_value=[_log_event(1, 1743242400), _log_event(2, 1743242460)]
+    )
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    assert await coordinator.async_backfill_access_log() == 2
+    assert await coordinator.async_backfill_access_log() == 0
+    assert len(coordinator.log_store.events) == 2
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_duplicate_already_persisted_events(
+    hass: HomeAssistant,
+) -> None:
+    """After a restart, backfill merges with what is already on disk."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+    )
+    entry.add_to_hass(hass)
+
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(
+        return_value=[_log_event(1, 1743242400), _log_event(2, 1743242460)]
+    )
+
+    coordinator = _make_coordinator(hass, client, entry)
+    await coordinator.async_load_access_log()
+    coordinator.log_store.add_events([_log_event(1, 1743242400)])
+    await coordinator.async_shutdown()
+
+    restarted = _make_coordinator(hass, client, entry)
+    await restarted.async_load_access_log()
+    added = await restarted.async_backfill_access_log()
+
+    assert added == 1
+    assert [e["id"] for e in restarted.log_store.events] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_backfill_degrades_gracefully_when_unsupported(
+    hass: HomeAssistant,
+) -> None:
+    """A device that rejects the history request leaves the log untouched."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(side_effect=DoormanApiError("API error 12", code=12))
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    assert await coordinator.async_backfill_access_log() == 0
+    assert coordinator.log_store.events == []
+
+
+@pytest.mark.asyncio
+async def test_live_events_still_fire_and_are_persisted(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    """The live path keeps firing bus events and now also stores them."""
+    import asyncio
+
+    import custom_components.doorman.coordinator as coord_mod
+
+    pull_calls = 0
+
+    async def fake_pull_log(server_timeout: int = 0) -> list[dict]:
+        nonlocal pull_calls
+        pull_calls += 1
+        if pull_calls == 1:
+            return [_log_event(7, 1743242400, "CardEntered")]
+        raise asyncio.CancelledError
+
+    client = MagicMock()
+    client.pull_log = fake_pull_log
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.data = {"users": [], "switches": []}
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", AsyncMock())
+
+    fired_events = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired_events.append(e))
+
+    await coordinator._log_listener_loop()
+    await hass.async_block_till_done()
+
+    assert [e.data["event_type"] for e in fired_events] == ["CardEntered"]
+    assert [e["id"] for e in coordinator.log_store.events] == [7]
+    assert coordinator.data["log_events"] == coordinator.log_store.events
+
+
+@pytest.mark.asyncio
+async def test_burst_of_events_triggers_one_save(
+    hass: HomeAssistant, monkeypatch
+) -> None:
+    """A pull carrying many events coalesces into a single delayed disk write."""
+    import asyncio
+
+    import custom_components.doorman.coordinator as coord_mod
+
+    burst = [_log_event(i, 1743242400 + i, "CardEntered") for i in range(10)]
+    pull_calls = 0
+
+    async def fake_pull_log(server_timeout: int = 0) -> list[dict]:
+        nonlocal pull_calls
+        pull_calls += 1
+        if pull_calls == 1:
+            return burst
+        raise asyncio.CancelledError
+
+    client = MagicMock()
+    client.pull_log = fake_pull_log
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", AsyncMock())
+
+    with (
+        patch.object(coordinator.log_store._store, "async_delay_save") as delay_save,
+        patch.object(
+            coordinator.log_store._store, "async_save", new=AsyncMock()
+        ) as save_now,
+    ):
+        await coordinator._log_listener_loop()
+        await hass.async_block_till_done()
+
+        assert delay_save.call_count == 1
+        save_now.assert_not_called()
+
+    assert len(coordinator.log_store.events) == 10
+
+
+@pytest.mark.asyncio
+async def test_shutdown_flushes_pending_access_log_writes(
+    hass: HomeAssistant,
+) -> None:
+    """Unloading the entry persists events still sitting in the debounce window."""
+    client = MagicMock()
+    client.async_close = AsyncMock()
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.log_store.add_events([_log_event(1, 1743242400)])
+
+    with patch.object(
+        coordinator.log_store._store, "async_save", new=AsyncMock()
+    ) as save_now:
+        await coordinator.async_shutdown()
+        assert save_now.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_two_entries_keep_separate_access_logs(hass: HomeAssistant) -> None:
+    """Histories are keyed by entry_id and never merged across devices."""
+    entry_a = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "192.168.1.100", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+    )
+    entry_b = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "192.168.1.200", CONF_USERNAME: "admin", CONF_PASSWORD: "secret"},
+    )
+    entry_a.add_to_hass(hass)
+    entry_b.add_to_hass(hass)
+
+    client = MagicMock()
+    coord_a = _make_coordinator(hass, client, entry_a)
+    coord_b = _make_coordinator(hass, client, entry_b)
+    await coord_a.async_load_access_log()
+    await coord_b.async_load_access_log()
+
+    coord_a.log_store.add_events([_log_event(1, 1743242400)])
+    coord_b.log_store.add_events([_log_event(1, 1743242400), _log_event(2, 1743242460)])
+
+    assert len(coord_a.log_store.events) == 1
+    assert len(coord_b.log_store.events) == 2
+
+
+# ─── Backfill as a background task ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_backfill_runs_off_the_calling_path(hass: HomeAssistant) -> None:
+    """start_backfill returns immediately; the work happens in a background task."""
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def slow_history(**_kwargs) -> list[dict]:
+        await release.wait()
+        return [_log_event(1, 1743242400)]
+
+    client = MagicMock()
+    client.fetch_log_history = slow_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    coordinator.start_backfill()
+    # Still in flight — nothing stored yet, but the caller was not blocked.
+    assert coordinator.log_store.events == []
+    assert coordinator._backfill_task is not None
+    assert not coordinator._backfill_task.done()
+    assert coordinator.config_entry.entry_id in coordinator._backfill_task.get_name()
+
+    release.set()
+    await coordinator._backfill_task
+
+    assert [e["id"] for e in coordinator.log_store.events] == [1]
+
+
+@pytest.mark.asyncio
+async def test_start_backfill_is_not_started_twice(hass: HomeAssistant) -> None:
+    """A second start_backfill while one is in flight reuses the running task."""
+    import asyncio
+
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_history(**_kwargs) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return []
+
+    client = MagicMock()
+    client.fetch_log_history = slow_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    coordinator.start_backfill()
+    first = coordinator._backfill_task
+    coordinator.start_backfill()
+
+    assert coordinator._backfill_task is first
+    release.set()
+    await first
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_an_in_flight_backfill(hass: HomeAssistant) -> None:
+    """Unloading mid-backfill cancels the task cleanly and stores nothing."""
+    import asyncio
+
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def hanging_history(**_kwargs) -> list[dict]:
+        started.set()
+        await never.wait()
+        return [_log_event(1, 1743242400)]
+
+    client = MagicMock()
+    client.fetch_log_history = hanging_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.start_backfill()
+    await started.wait()
+
+    task = coordinator._backfill_task
+    # Must not raise, and must not leave the task running.
+    await coordinator.async_shutdown()
+
+    assert task.done()
+    assert task.cancelled()
+    assert coordinator.log_store.events == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_backfill_before_flushing(hass: HomeAssistant) -> None:
+    """The flush is the last write: a cancelled backfill cannot dirty the store after it."""
+    import asyncio
+
+    order: list[str] = []
+    release = asyncio.Event()
+
+    async def slow_history(**_kwargs) -> list[dict]:
+        await release.wait()
+        order.append("backfill_add")
+        return [_log_event(1, 1743242400)]
+
+    client = MagicMock()
+    client.fetch_log_history = slow_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.log_store.add_events([_log_event(9, 1743200000)])
+    coordinator.start_backfill()
+    await asyncio.sleep(0)
+
+    original_flush = coordinator.log_store.async_flush
+
+    async def tracked_flush() -> None:
+        order.append("flush")
+        await original_flush()
+
+    with patch.object(coordinator.log_store, "async_flush", tracked_flush):
+        await coordinator.async_shutdown()
+
+    # The backfill never reached its store write, so the flush is final.
+    assert order == ["flush"]
+    release.set()
+    await asyncio.sleep(0)
+    assert order == ["flush"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_after_shutdown_does_not_write_to_the_store(
+    hass: HomeAssistant,
+) -> None:
+    """A late-returning backfill must not resurrect a flushed/removed store."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(return_value=[_log_event(1, 1743242400)])
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    await coordinator.async_shutdown()
+
+    with patch.object(coordinator.log_store._store, "async_delay_save") as delay_save:
+        assert await coordinator.async_backfill_access_log() == 0
+
+    delay_save.assert_not_called()
+    assert coordinator.log_store.events == []
+
+
+@pytest.mark.asyncio
+async def test_start_backfill_after_shutdown_is_a_no_op(hass: HomeAssistant) -> None:
+    """No new background task is created once the entry has been shut down."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(return_value=[_log_event(1, 1743242400)])
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    await coordinator.async_shutdown()
+
+    coordinator.start_backfill()
+
+    assert coordinator._backfill_task is None
+    client.fetch_log_history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resyncs_share_a_single_run(hass: HomeAssistant) -> None:
+    """Overlapping resyncs join one run instead of opening two subscriptions."""
+    import asyncio
+
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_history(**_kwargs) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return [_log_event(1, 1743242400), _log_event(2, 1743242460)]
+
+    client = MagicMock()
+    client.fetch_log_history = slow_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    first = asyncio.ensure_future(coordinator.async_resync_access_log())
+    second = asyncio.ensure_future(coordinator.async_resync_access_log())
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(first, second)
+
+    assert calls == 1
+    # Both callers see the same outcome from the shared run.
+    assert results[0] == results[1] == (2, 2)
+    assert len(coordinator.log_store.events) == 2
+
+
+@pytest.mark.asyncio
+async def test_resync_joins_a_running_startup_backfill(hass: HomeAssistant) -> None:
+    """A resync issued while the startup backfill runs waits for it, not a second run."""
+    import asyncio
+
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_history(**_kwargs) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return [_log_event(1, 1743242400)]
+
+    client = MagicMock()
+    client.fetch_log_history = slow_history
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.start_backfill()
+    await asyncio.sleep(0)
+
+    resync = asyncio.ensure_future(coordinator.async_resync_access_log())
+    await asyncio.sleep(0)
+    release.set()
+    result = await resync
+
+    assert calls == 1
+    assert result == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_resync_reports_fetched_and_added_separately(hass: HomeAssistant) -> None:
+    """A device returning known history is distinguishable from one returning none."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(return_value=[_log_event(1, 1743242400)])
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    assert await coordinator.async_resync_access_log() == (1, 1)
+    # Second run: the device still serves history, but none of it is new.
+    assert await coordinator.async_resync_access_log() == (1, 0)
+
+    # A device that serves nothing at all reports zero fetched.
+    client.fetch_log_history = AsyncMock(return_value=[])
+    assert await coordinator.async_resync_access_log() == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_resync_fires_no_bus_events(hass: HomeAssistant) -> None:
+    """The no-notify guarantee applies to the on-demand resync too."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(
+        return_value=[_log_event(1, 1743242400), _log_event(2, 1743242460)]
+    )
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    await coordinator.async_resync_access_log()
+    await hass.async_block_till_done()
+
+    assert fired == []
+    assert coordinator._last_access == {}
+
+
+@pytest.mark.asyncio
+async def test_backfill_pushes_new_events_to_listeners(hass: HomeAssistant) -> None:
+    """Backfilled rows reach the panel without waiting for the next poll."""
+    client = MagicMock()
+    client.fetch_log_history = AsyncMock(return_value=[_log_event(1, 1743242400)])
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.data = {"users": [], "switches": [], "log_events": [], "last_access": {}}
+
+    await coordinator.async_resync_access_log()
+
+    assert [e["id"] for e in coordinator.data["log_events"]] == [1]
+    assert coordinator.data["users"] == []

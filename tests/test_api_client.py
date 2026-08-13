@@ -1405,3 +1405,231 @@ async def test_hangup_all_calls_skips_sessions_without_id():
     client._request = fake_request
     assert await client.hangup_all_calls() == 1
     assert hangups == [{"session": 5}]
+
+
+# ─── fetch_log_history (startup backfill) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_uses_its_own_subscription() -> None:
+    """History is pulled from a throwaway subscription, not the live listener's."""
+    client = _make_client()
+    client._log_subscription_id = 42
+    calls: list[tuple[str, dict | None]] = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append((endpoint, params))
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 77}}
+        if endpoint == "log/pull":
+            if len([c for c in calls if c[0] == "log/pull"]) == 1:
+                return {"success": True, "result": {"events": [{"id": 1}, {"id": 2}]}}
+            return {"success": True, "result": {"events": []}}
+        return {"success": True}
+
+    client._request = fake_request
+    events = await client.fetch_log_history(seconds=604800)
+
+    assert [e["id"] for e in events] == [1, 2]
+    # The live subscription id is untouched, and no pull used it
+    assert client._log_subscription_id == 42
+    assert all(params.get("id") != 42 for endpoint, params in calls if endpoint == "log/pull")
+    # Subscribed with the history window, and cleaned up afterwards
+    assert calls[0] == ("log/subscribe", {"include": "-604800"})
+    assert ("log/unsubscribe", {"id": 77}) in calls
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_drains_batches_until_empty() -> None:
+    """The device returns history in batches; keep pulling until it runs dry."""
+    client = _make_client()
+    batches = [[{"id": i} for i in range(3)], [{"id": i} for i in range(3, 5)], []]
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            return {"success": True, "result": {"events": batches.pop(0)}}
+        return {"success": True}
+
+    client._request = fake_request
+    events = await client.fetch_log_history()
+
+    assert [e["id"] for e in events] == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_stops_at_max_pulls() -> None:
+    """A device with a huge history cannot stall setup forever."""
+    client = _make_client()
+    pulls = 0
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        nonlocal pulls
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            pulls += 1
+            return {"success": True, "result": {"events": [{"id": pulls}]}}
+        return {"success": True}
+
+    client._request = fake_request
+    events = await client.fetch_log_history(max_pulls=3)
+
+    assert pulls == 3
+    assert len(events) == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_defaults_to_the_configured_pull_budget() -> None:
+    """The default pull budget matches LOG_BACKFILL_MAX_PULLS (5)."""
+    from custom_components.doorman.const import LOG_BACKFILL_MAX_PULLS
+
+    client = _make_client()
+    pulls = 0
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        nonlocal pulls
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            pulls += 1
+            return {"success": True, "result": {"events": [{"id": pulls}]}}
+        return {"success": True}
+
+    client._request = fake_request
+    await client.fetch_log_history()
+
+    assert LOG_BACKFILL_MAX_PULLS == 5
+    assert pulls == LOG_BACKFILL_MAX_PULLS
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_uses_a_ten_second_request_timeout() -> None:
+    """History pulls use a tight timeout so a dead device cannot stall for minutes."""
+    client = _make_client()
+    timeouts: list[int] = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            timeouts.append(request_timeout)
+            return {"success": True, "result": {"events": []}}
+        return {"success": True}
+
+    client._request = fake_request
+    await client.fetch_log_history()
+
+    assert timeouts == [10]
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_falls_back_to_include_all() -> None:
+    """Firmware that rejects the -seconds window still gets a plain include=all."""
+    client = _make_client()
+    includes: list[str] = []
+    batches = [[{"id": 1}], []]
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "log/subscribe":
+            includes.append(params["include"])
+            if params["include"] != "all":
+                raise DoormanApiError("API error 18: invalid parameter value", code=18)
+            return {"success": True, "result": {"id": 9}}
+        if endpoint == "log/pull":
+            return {"success": True, "result": {"events": batches.pop(0)}}
+        return {"success": True}
+
+    client._request = fake_request
+    events = await client.fetch_log_history(seconds=3600)
+
+    assert includes == ["-3600", "all"]
+    assert [e["id"] for e in events] == [1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_returns_empty_when_unsupported() -> None:
+    """If the device refuses to subscribe for history, backfill is simply skipped."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        raise DoormanApiError("API error 18: invalid parameter", code=18)
+
+    client._request = fake_request
+
+    assert await client.fetch_log_history() == []
+    assert client._log_subscription_id is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_returns_empty_on_malformed_subscribe() -> None:
+    """A subscribe reply without an id yields no history rather than raising."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        return {"success": True, "result": {}}
+
+    client._request = fake_request
+
+    assert await client.fetch_log_history() == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_keeps_partial_results_on_pull_error() -> None:
+    """A mid-drain failure returns what was already fetched and unsubscribes."""
+    client = _make_client()
+    calls: list[str] = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append(endpoint)
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            if calls.count("log/pull") == 1:
+                return {"success": True, "result": {"events": [{"id": 1}]}}
+            raise TimeoutError("device busy")
+        return {"success": True}
+
+    client._request = fake_request
+    events = await client.fetch_log_history()
+
+    assert [e["id"] for e in events] == [1]
+    assert "log/unsubscribe" in calls
+
+
+@pytest.mark.asyncio
+async def test_fetch_log_history_survives_unsubscribe_failure() -> None:
+    """A failing cleanup call must not lose the fetched history."""
+    client = _make_client()
+    batches = [[{"id": 1}], []]
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 5}}
+        if endpoint == "log/pull":
+            return {"success": True, "result": {"events": batches.pop(0)}}
+        raise DoormanApiError("API error 12: invalid subscription", code=12)
+
+    client._request = fake_request
+
+    assert [e["id"] for e in await client.fetch_log_history()] == [1]
+
+
+@pytest.mark.asyncio
+async def test_live_subscribe_does_not_request_history() -> None:
+    """The listener's subscription must stay at the default include=new.
+
+    Subscribing the live listener with history would replay old events as if
+    they had just happened, flooding notifications after every restart.
+    """
+    client = _make_client()
+    captured: dict = {}
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        captured["params"] = params
+        return {"success": True, "result": {"id": 3}}
+
+    client._request = fake_request
+    await client._subscribe_log()
+
+    assert captured["params"] is None or "include" not in captured["params"]

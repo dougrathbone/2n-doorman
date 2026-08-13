@@ -137,6 +137,9 @@ if _PAHCC_AVAILABLE:
             return []
 
         mock.pull_log = _pull_log_side_effect
+        # Startup backfill: no on-box history by default. Tests that care
+        # override this with their own historical events.
+        mock.fetch_log_history = AsyncMock(return_value=[])
         mock.set_switch = AsyncMock(return_value=None)
         mock.get_switch_caps = AsyncMock(return_value=MOCK_SWITCHES)
         mock.create_user = AsyncMock(return_value={"uuid": "uuid-new", "name": "New User"})

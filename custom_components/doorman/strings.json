@@ -68,6 +68,10 @@
     "hangup_calls": {
       "name": "Hang up calls",
       "description": "Hang up all active call sessions on the 2N device."
+    },
+    "resync_log_history": {
+      "name": "Resync log history",
+      "description": "Re-read the access log history stored on the 2N device and merge anything missing into Doorman's log. Adds no duplicates and sends no notifications."
     }
   }
 }
