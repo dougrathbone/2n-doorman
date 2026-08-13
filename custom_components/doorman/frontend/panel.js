@@ -21,7 +21,11 @@ const svc = (hass, service, data = {}, entryId = null) => {
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+    // Every interpolation in this file uses double-quoted attributes, so
+    // single quotes are not currently an escape, but escaping them keeps
+    // esc() safe if a single-quoted attribute is ever introduced.
+    .replace(/'/g, "&#39;");
 }
 
 function formatDate(ts) {
@@ -1015,8 +1019,11 @@ class DoormanNotificationsTab extends HTMLElement {
     this._catalog = [];
     this._notifyServices = [];
     // Dirty-tracking so the "Save" button reflects unsaved edits without
-    // demanding the whole form on every keystroke.
+    // demanding the whole form on every keystroke. _dirtyGen is bumped by
+    // every edit; _save() captures it at send time and only clears the dirty
+    // flag if no further edit landed while the request was in flight.
     this._dirty = false;
+    this._dirtyGen = 0;
     this._saving = false;
     // Auto-dismiss handle for the floating toast so back-to-back toasts
     // don't leave stale text on-screen after the first one's timer fires.
@@ -1035,11 +1042,16 @@ class DoormanNotificationsTab extends HTMLElement {
       const res = await ws(
         this._hass, "doorman/get_notification_settings", {}, this._entryId,
       );
+      // Kept unescaped on purpose: the only consumers are the notify
+      // `message` strings in _sendPreview, which are plain text on the
+      // phone — esc()-ing here would push "Bob&#39;s Door" to the user.
+      // It is device-controlled, so esc() it at any future HTML sink.
       this._deviceName = res.device_name || "";
       this._settings = res.settings || {};
       this._catalog = res.ios_sound_catalog || [];
       this._notifyServices = res.notify_services || [];
       this._dirty = false;
+      this._dirtyGen = 0;
     } catch (e) {
       this._error = e.message || "Failed to load notification settings";
     } finally {
@@ -1255,7 +1267,9 @@ class DoormanNotificationsTab extends HTMLElement {
               2N reports this value in <code>KeyPressed.params.key</code>
               when the quick-dial / call button is pressed. Defaults to
               <code>%1</code> for the Verso; use <code>%2</code>, <code>%3</code>,
-              &hellip; for additional buttons.
+              &hellip; for additional buttons. Leave it empty if this device has
+              no doorbell button — plain keypad digits are rejected, because
+              accepting one would ring the doorbell on every PIN keystroke.
             </p>
           </div>
 
@@ -1400,6 +1414,10 @@ class DoormanNotificationsTab extends HTMLElement {
   }
 
   _markDirty() {
+    // Bump the generation on *every* edit, even when already dirty: _save()
+    // compares against it to tell "the user edited during the round-trip"
+    // from "nothing changed since we sent".
+    this._dirtyGen++;
     if (this._dirty) return;
     this._dirty = true;
     const status = this.shadowRoot.querySelector(".status");
@@ -1505,9 +1523,16 @@ class DoormanNotificationsTab extends HTMLElement {
     if (this._saving) return;
     this._saving = true;
     this._refreshSaveBar();
+    // Snapshot the edit generation that this request covers. The form inputs
+    // stay enabled during the round-trip (disabling them mid-save would be
+    // worse UX), so the user can change a value after we've read it — those
+    // edits are NOT in this payload and must stay marked unsaved.
+    const sentGen = this._dirtyGen;
     try {
       const settings = {
-        doorbell_key_code: this.shadowRoot.getElementById("db-key")?.value.trim() || "%1",
+        // Sent verbatim: "" is a meaningful value (no doorbell button on this
+        // device), so don't silently substitute the default for an empty field.
+        doorbell_key_code: this.shadowRoot.getElementById("db-key")?.value.trim() ?? "",
         doorbell_targets: this._readCheckedTargets(),
         doorbell_sound_ios: this._readSoundValue("db"),
         doorbell_channel_android: this._readChannelValue("db"),
@@ -1524,8 +1549,14 @@ class DoormanNotificationsTab extends HTMLElement {
       // edits and (per the reported bug) revert selects if the response
       // happened to be missing a field.
       this._settings = res.settings || settings;
-      this._dirty = false;
-      this._showToast("Saved");
+      // Only the edits we actually sent are clean. If the user changed
+      // something while the request was in flight, stay dirty — otherwise the
+      // bar would claim "All changes saved" for a value that was never
+      // transmitted.
+      if (this._dirtyGen === sentGen) this._dirty = false;
+      this._showToast(
+        this._dirty ? "Saved — you have newer unsaved changes" : "Saved",
+      );
     } catch (e) {
       this._showToast(`Save failed: ${e.message || e}`, true);
     } finally {
@@ -1569,6 +1600,20 @@ class DoormanPanel extends HTMLElement {
     this._tab = "users";
     this._devices = [];
     this._selectedEntryId = null;
+
+    // Cross-tab jump event from within a tab (e.g. "go to Users tab" link).
+    // Bound here, not in _renderShell(): the listener target is the host
+    // element, which is never recreated, while _renderShell() runs on every
+    // tab click — so wiring it there added a duplicate handler each time.
+    // Every other listener in _renderShell attaches to freshly built shadow
+    // nodes and is discarded with them.
+    this.addEventListener("doorman-switch-tab", (ev) => {
+      const target = ev.detail?.tab;
+      if (target && this._tab !== target) {
+        this._tab = target;
+        this._renderShell();
+      }
+    });
   }
 
   set hass(h) {
@@ -1709,14 +1754,6 @@ class DoormanPanel extends HTMLElement {
         this._tab = el.dataset.tab;
         this._renderShell();
       });
-    });
-    // Cross-tab jump event from within a tab (e.g. "go to Users tab" link)
-    this.addEventListener("doorman-switch-tab", (ev) => {
-      const target = ev.detail?.tab;
-      if (target && this._tab !== target) {
-        this._tab = target;
-        this._renderShell();
-      }
     });
 
     // Populate device selector safely (device names/serials are untrusted)
