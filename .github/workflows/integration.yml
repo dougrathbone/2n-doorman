@@ -11,7 +11,10 @@ jobs:
   integration:
     name: Run against real HA instance
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Backstop only. Every long step below has its own, tighter timeout-minutes
+    # so a hang is reported as "step X timed out" rather than an opaque
+    # whole-job cancellation with no logs.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v5
@@ -21,15 +24,26 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # Pinned — see tests/integration/requirements.txt. This step used to be an
+      # unpinned `pip install ... podman-compose`, which is how CI changed under
+      # the project's feet and hung the job for days.
       - name: Install test runner dependencies
-        run: pip install aiohttp pytest pytest-asyncio websockets podman-compose
+        run: pip install -r tests/integration/requirements.txt
 
+      # CI uses Docker Compose v2 (pre-installed on ubuntu-latest) rather than
+      # podman-compose: the Docker daemon runs container healthchecks natively,
+      # whereas rootless Podman on the runners implements them via systemd
+      # transient timers that never fire without a user systemd session.
+      # The compose file stays portable — `podman compose` still works locally.
       - name: Build and start services
+        timeout-minutes: 8
         run: |
-          podman-compose -f tests/integration/docker-compose.yml up -d --build
-          echo "Services started — waiting for health checks..."
+          docker compose -f tests/integration/docker-compose.yml up -d --build
+          docker compose -f tests/integration/docker-compose.yml ps
+          echo "Services started — polling for readiness..."
 
       - name: Wait for Home Assistant to be ready
+        timeout-minutes: 6
         run: |
           echo "Polling HA onboarding endpoint..."
           timeout 300 bash -c \
@@ -37,28 +51,37 @@ jobs:
           echo "HA is ready."
 
       - name: Wait for mock 2N server to be ready
+        timeout-minutes: 2
         run: |
           timeout 30 bash -c \
             'until curl -sf http://localhost:8888/api/system/info > /dev/null; do sleep 2; done'
           echo "Mock 2N server is ready."
 
       - name: Run integration tests
+        timeout-minutes: 8
         env:
           HA_URL: http://localhost:8123
           MOCK_2N_URL: http://localhost:8888
-          # HA inside the container reaches the mock server via the pod network
+          # HA inside the container reaches the mock server via the compose network
           MOCK_2N_HOST: mock-2n
           MOCK_2N_PORT: "8888"
         run: pytest tests/integration/ -v --tb=short --asyncio-mode=auto
 
-      - name: Dump HA logs on failure
-        if: failure()
-        run: podman-compose -f tests/integration/docker-compose.yml logs homeassistant
+      # The diagnostics below use `always()`, not `failure()`: a job cancelled by
+      # a timeout does not run `failure()` steps, which is exactly why two hung
+      # runs produced no container logs at all.
+      - name: Container state
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml ps --all
 
-      - name: Dump mock 2N logs on failure
-        if: failure()
-        run: podman-compose -f tests/integration/docker-compose.yml logs mock-2n
+      - name: Dump HA logs
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml logs homeassistant
+
+      - name: Dump mock 2N logs
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml logs mock-2n
 
       - name: Tear down services
         if: always()
-        run: podman-compose -f tests/integration/docker-compose.yml down -v
+        run: docker compose -f tests/integration/docker-compose.yml down -v

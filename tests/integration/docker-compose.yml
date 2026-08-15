@@ -20,9 +20,16 @@ services:
       - "8123:8123"
     environment:
       - TZ=UTC
+    # Start ordering only — deliberately NOT `condition: service_healthy`.
+    # Readiness of both services is gated explicitly, with its own timeouts, by
+    # the CI workflow (curl polling) and by the session fixtures in conftest.py,
+    # so the compose-level gate added nothing but a wait that blocks forever
+    # wherever container healthchecks do not actually execute (e.g. rootless
+    # Podman without a systemd user session). Nothing in HA's startup needs the
+    # mock server up: the config entry is created by the tests over the API.
+    # The healthchecks below are kept — they make `compose ps` show real health.
     depends_on:
-      mock-2n:
-        condition: service_healthy
+      - mock-2n
     healthcheck:
       # HA is ready when the onboarding endpoint responds
       test: >

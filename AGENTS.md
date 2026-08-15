@@ -218,11 +218,41 @@ conftest.py injects our `custom_components/` directory into
 `custom_components.__path__` at import time so HA's loader finds doorman.
 Don't remove this or HA will silently fail to load the integration in tests.
 
-### Integration test infrastructure uses Podman (not Docker)
-The Docker Compose integration tests in `tests/integration/` are designed to
-run with `podman compose` (or `docker compose`). On the developer's Mac,
-Podman is used. CI uses whatever is available. The mock 2N server is a
-lightweight aiohttp server that mimics the real device's REST API.
+### Integration test infrastructure: Podman locally, Docker Compose in CI
+The Compose integration tests in `tests/integration/` run with `podman compose`
+/ `podman-compose` on the developer's Mac and with **Docker Compose v2** in
+`.github/workflows/integration.yml` (`docker compose`, pre-installed on
+`ubuntu-latest`). The mock 2N server is a lightweight aiohttp server that mimics
+the real device's REST API.
+
+Keep `docker-compose.yml` portable — no runtime-specific keys — so the same file
+serves both. Three rules exist because breaking them cost a multi-day CI outage
+in August 2026, when the job hung for ~19.5 minutes and was killed by its own
+`timeout-minutes` with no logs:
+
+1. **No `depends_on: condition: service_healthy`.** Container healthchecks are
+   run by the container runtime, and under rootless Podman on CI runners they
+   are implemented as systemd transient timers that never fire without a user
+   systemd session — so the dependent service waits forever. Readiness is gated
+   explicitly instead: `curl` polling in the workflow (with `timeout`) and the
+   session fixtures in `tests/integration/conftest.py`. Both have their own
+   deadlines; the compose-level gate was pure redundancy with an unbounded wait.
+   The `healthcheck:` blocks themselves stay — they make `compose ps` informative.
+2. **Pin the runner dependencies.** `tests/integration/requirements.txt` pins
+   `aiohttp`, `pytest`, `pytest-asyncio` and `websockets` exactly. The unpinned
+   `pip install` that preceded it is what let CI change under the project's feet
+   on an unchanged tree. (Unit tests keep their own `requirements_test.txt`;
+   don't merge the two — that stack pins its own pytest via
+   `pytest-homeassistant-custom-component`.)
+3. **Every long workflow step carries `timeout-minutes`, and the log-dump steps
+   use `if: always()`, not `if: failure()`.** A job cancelled by its timeout
+   does not run `failure()` steps, which is why the hung runs produced no
+   container logs whatsoever.
+
+Nothing in the tests or helpers depends on container *names*, so the
+`integration_mock-2n_1` (podman-compose) vs `integration-mock-2n-1`
+(Compose v2) difference is immaterial. `MOCK_2N_HOST=mock-2n` is the compose
+*service* name, which both runtimes publish as a network alias. Keep it that way.
 
 ### No Claude attribution in commits
 Per the project's `CLAUDE.md`: never add "Co-Authored-By: Claude" or similar
