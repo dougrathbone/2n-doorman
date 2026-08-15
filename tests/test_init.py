@@ -694,7 +694,7 @@ async def test_unload_and_reload_entry_succeeds(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """setup → unload → setup again works despite the sticky aiohttp route."""
+    """setup → unload → setup again works, and the panel is untouched throughout."""
     await hass.config_entries.async_unload(setup_doorman.entry_id)
     await hass.async_block_till_done()
     assert setup_doorman.state is ConfigEntryState.NOT_LOADED
@@ -707,20 +707,201 @@ async def test_unload_and_reload_entry_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_setup_tolerates_duplicate_static_path_registration(
+async def test_static_path_and_panel_are_registered_once_per_run(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,
     mock_2n_client,
 ) -> None:
-    """aiohttp refuses duplicate static paths on reload; setup must still succeed."""
-    hass.http.async_register_static_paths.side_effect = ValueError("Duplicate")
+    """The frontend route and panel are registered in async_setup, once.
+
+    Replaces test_setup_tolerates_duplicate_static_path_registration, which
+    forced ``async_register_static_paths`` to raise ``ValueError("Duplicate")``
+    and asserted setup survived it. aiohttp does not behave that way: on 3.13.3
+    (shipped with current HA) ``HomeAssistantHTTP._async_register_static_paths``
+    has no dedupe and static resources are unnamed, so a repeat registration
+    silently appends a second router resource. The old ``suppress(ValueError)``
+    was dead code guarding an exception that is never raised. Registration now
+    happens once per HA run, so re-registration cannot happen at all — which is
+    what this asserts instead.
+    """
+    from unittest.mock import patch
+
+    register_panel = AsyncMock()
+    with patch(
+        "custom_components.doorman.panel_custom.async_register_panel", new=register_panel
+    ):
+        entry1, _entry2 = await setup_two_entries(hass, doorman_config_entry)
+        await hass.config_entries.async_reload(entry1.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.http.async_register_static_paths.await_count == 1
+    register_panel.assert_called_once()
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+
+
+# ------------------------------------------------------------------ #
+# Domain-level registration is independent of the device being up      #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_unreachable_intercom_still_gets_a_panel_and_services(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """An intercom that is offline at startup must not cost the user the panel.
+
+    async_setup_entry raises ConfigEntryNotReady when the device cannot be
+    reached and HA retries with backoff, indefinitely. Everything registered
+    after that point used to be unreachable for as long as the device stayed
+    down, so a restart with the intercom unplugged produced no Doorman sidebar
+    entry at all — the "I restarted and it still didn't work" report. The panel
+    is meant to be what tells the user the device is unreachable.
+    """
+    from unittest.mock import patch
+
+    from custom_components.doorman.api_client import DoormanConnectionError
+
+    mock_2n_client.get_system_info.side_effect = DoormanConnectionError("offline")
+    register_panel = AsyncMock()
 
     doorman_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
-    await hass.async_block_till_done()
+    with patch(
+        "custom_components.doorman.panel_custom.async_register_panel", new=register_panel
+    ):
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
 
-    assert doorman_config_entry.state is ConfigEntryState.LOADED
-    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_RETRY
+    assert hass.data[DOMAIN] == {}
+
+    # The sidebar panel and its assets are registered anyway…
+    register_panel.assert_called_once()
+    assert register_panel.call_args.kwargs["frontend_url_path"] == DOMAIN
+    # (this test runs against the real http component, so the static route was
+    # registered for real — the once-per-run assertion is in
+    # test_static_path_and_panel_are_registered_once_per_run)
+    # …as is the shared store several WS handlers and notifications.py read.
+    assert hass.data.get(f"{DOMAIN}_store") is not None
+    # …and every service action.
+    for service in (
+        "create_user",
+        "update_user",
+        "delete_user",
+        "grant_access",
+        "hangup_calls",
+        "resync_log_history",
+    ):
+        assert hass.services.has_service(DOMAIN, service)
+
+    # The WS commands answer, and answer sanely with zero loaded entries.
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "doorman/list_devices"})
+    res = await client.receive_json()
+    assert res["success"]
+    assert res["result"] == {"devices": []}
+
+    for command in (
+        "doorman/list_users",
+        "doorman/get_device_info",
+        "doorman/get_access_log",
+        "doorman/get_notification_settings",
+    ):
+        await client.send_json_auto_id({"type": command})
+        res = await client.receive_json()
+        assert not res["success"], command
+        assert res["error"]["code"] == "not_configured", command
+
+    # Store-only commands work without any device configured.
+    await client.send_json_auto_id(
+        {"type": "doorman/link_user", "two_n_uuid": "uuid-jane", "ha_user_id": "ha-1"}
+    )
+    assert (await client.receive_json())["success"]
+
+    # And a service call explains itself instead of the service being missing.
+    with pytest.raises(ServiceValidationError, match="No Doorman devices"):
+        await hass.services.async_call(
+            DOMAIN, "create_user", {"name": "Test"}, blocking=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_reloading_the_only_entry_does_not_remove_the_panel(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """A reload must not take the sidebar entry away and put it back.
+
+    Reloading the only entry went through the last-entry teardown, which called
+    frontend.async_remove_panel() and then re-registered — flickering the
+    sidebar and briefly removing every doorman.* service. Options changes and
+    reauth both reload, so this was the common case, not a corner one.
+
+    The teardown only shows up *inside* the reload window, so the panel flag
+    and a service are sampled at the moment the entry is set up again — after
+    the unload half of the reload has finished. Asserting afterwards would see
+    everything freshly re-registered and pass either way.
+    """
+    from unittest.mock import patch
+
+    import custom_components.doorman as module
+
+    real_setup = module.async_setup_entry
+    samples: list[dict] = []
+
+    async def sampling_setup(hass, entry):
+        samples.append({
+            "panel": hass.data.get(f"{DOMAIN}_panel_registered"),
+            "service": hass.services.has_service(DOMAIN, "create_user"),
+            "store": hass.data.get(f"{DOMAIN}_store") is not None,
+        })
+        return await real_setup(hass, entry)
+
+    with (
+        patch.object(module, "async_setup_entry", sampling_setup),
+        patch("homeassistant.components.frontend.async_remove_panel") as remove_panel,
+    ):
+        await hass.config_entries.async_reload(setup_doorman.entry_id)
+        await hass.async_block_till_done()
+
+    remove_panel.assert_not_called()
+    assert samples == [{"panel": True, "service": True, "store": True}]
+    assert setup_doorman.state is ConfigEntryState.LOADED
+
+
+@pytest.mark.asyncio
+async def test_failed_platform_setup_leaves_no_phantom_coordinator(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A platform failure must not leave the coordinator behind in hass.data.
+
+    HA marks the entry SETUP_ERROR and never calls async_unload_entry for an
+    entry that did not finish setting up, so a coordinator left in hass.data
+    would be resolved by WS commands and services as a phantom device — and
+    would keep hass.data[DOMAIN] non-empty forever.
+    """
+    from unittest.mock import patch
+
+    doorman_config_entry.add_to_hass(hass)
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        side_effect=RuntimeError("platform boom"),
+    ):
+        await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass.data[DOMAIN] == {}
+    with pytest.raises(ServiceValidationError, match="No Doorman devices"):
+        await hass.services.async_call(
+            DOMAIN, "create_user", {"name": "Test"}, blocking=True
+        )
 
 
 @pytest.mark.asyncio
@@ -779,7 +960,59 @@ async def test_panel_module_url_is_cache_busted(
     register_panel.assert_called_once()
     module_url = register_panel.call_args.kwargs["module_url"]
     assert module_url.startswith("/api/doorman/panel.js?v=")
-    assert len(module_url.removeprefix("/api/doorman/panel.js?v=")) > 0
+    version = module_url.removeprefix("/api/doorman/panel.js?v=")
+    assert len(version) > 0
+    # The same version reaches the panel element as panel.config.version, which
+    # panel.js compares against its own PANEL_VERSION to detect a browser tab
+    # still running pre-update frontend code.
+    assert register_panel.call_args.kwargs["config"] == {"version": version}
+
+
+@pytest.mark.asyncio
+async def test_panel_js_version_matches_the_manifest() -> None:
+    """panel.js's PANEL_VERSION must track manifest.json.
+
+    The backend passes its version to the panel and panel.js shows a "reload
+    this page" banner when it differs from PANEL_VERSION. A PANEL_VERSION left
+    behind at release time would show that banner to everyone, permanently.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent / "custom_components" / "doorman"
+    manifest = json.loads((root / "manifest.json").read_text())
+    source = (root / "frontend" / "panel.js").read_text()
+
+    match = re.search(r'^const PANEL_VERSION = "([^"]+)";', source, re.MULTILINE)
+    assert match, "PANEL_VERSION constant not found in panel.js"
+    assert match.group(1) == manifest["version"]
+
+
+@pytest.mark.asyncio
+async def test_panel_js_guards_every_custom_element_definition() -> None:
+    """Every customElements.define() must be guarded against a re-import.
+
+    panel.js is served with a ?v=<version> cache-buster and HA re-imports module
+    panels per URL, so after a HACS update the module re-executes in a document
+    that already has the previous version's elements defined. An unguarded
+    define() throws NotSupportedError and the whole panel fails to render.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parent.parent
+        / "custom_components" / "doorman" / "frontend" / "panel.js"
+    ).read_text()
+
+    # The only permitted call site is the guarded define() helper.
+    calls = [
+        line for line in source.splitlines()
+        if "customElements.define(" in line and not line.lstrip().startswith(("//", "*"))
+    ]
+    assert calls == ["  if (!customElements.get(name)) customElements.define(name, cls);"], (
+        f"Unguarded customElements.define() call(s): {calls}"
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -864,24 +1097,38 @@ async def test_grant_access_service_api_error_raises_ha_error(
 
 
 @pytest.mark.asyncio
-async def test_services_removed_when_last_entry_unloads(
+async def test_services_and_panel_survive_the_last_entry_unloading(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """Unloading the sole entry removes all doorman.* service actions."""
+    """Unloading the sole entry keeps the domain-level registrations in place.
+
+    Replaces test_services_removed_when_last_entry_unloads. The services, the
+    panel and the shared store are registered in async_setup — once per HA run
+    — and are no longer torn down per entry: an ordinary reload of a
+    single-entry install went through this path, so removing them made the
+    sidebar entry flicker away and every doorman.* service disappear mid-reload
+    (and, if the device was unreachable on the way back up, never return).
+    A service call with nothing loaded raises a clean validation error instead,
+    which is asserted by test_service_with_no_devices_raises.
+    """
     await hass.config_entries.async_unload(setup_doorman.entry_id)
     await hass.async_block_till_done()
 
+    assert hass.data[DOMAIN] == {}
     for service in (
         "create_user",
         "update_user",
         "delete_user",
         "grant_access",
+        "hangup_calls",
         "resync_log_history",
     ):
-        assert not hass.services.has_service(DOMAIN, service), (
-            f"Service {DOMAIN}.{service} should have been removed"
+        assert hass.services.has_service(DOMAIN, service), (
+            f"Service {DOMAIN}.{service} should have survived the unload"
         )
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is True
+    assert hass.data.get(f"{DOMAIN}_store") is not None
 
 
 @pytest.mark.asyncio

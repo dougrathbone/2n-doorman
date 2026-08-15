@@ -548,9 +548,10 @@ async def test_ws_set_notification_settings_does_not_reload_the_entry(
     """Saving must not reload the entry.
 
     A reload tears down the 2N log subscription; a fresh subscription starts
-    empty with no watermark, so every event in the reload window is lost. On a
-    single-entry install it also unregisters the sidebar panel, drops the
-    store, and removes the doorman.* services out from under the user.
+    empty with no watermark, so every event in the reload window is lost — while
+    the user is standing on the panel that triggered the save. (The panel, store
+    and services survive a reload since they moved to async_setup, but the
+    dropped events do not.)
     """
     coordinator_before = hass.data[DOMAIN][setup_doorman.entry_id]
     log_task_before = coordinator_before._log_task

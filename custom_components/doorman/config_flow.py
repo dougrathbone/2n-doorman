@@ -114,11 +114,35 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:  # noqa: BLE001
                 errors["base"] = "unknown"
             else:
-                self.hass.config_entries.async_update_entry(
+                # Read before the update: HA runs update listeners eagerly, so
+                # by the time async_update_entry returns the reload it
+                # triggered has already moved the entry to UNLOAD_IN_PROGRESS.
+                was_loaded = entry.state is config_entries.ConfigEntryState.LOADED
+                changed = self.hass.config_entries.async_update_entry(
                     entry,
                     data={**entry.data, **user_input},
                 )
-                await self.hass.config_entries.async_reload(entry.entry_id)
+                # async_update_entry fires the entry's update listeners on *any*
+                # change, not just an options change, and __init__.py registers
+                # one that reloads the entry — so a changed, loaded entry is
+                # already being reloaded and calling async_reload here too gave
+                # one reauth two full teardown/rebuild cycles (two rounds of
+                # device calls, two backfill subscriptions, two windows with no
+                # doorman.* services).
+                #
+                # Reload explicitly only when that listener cannot have run:
+                # nothing changed (the user re-entered the same credentials), or
+                # the entry is not loaded — the usual case, since credentials
+                # rejected at startup raise ConfigEntryAuthFailed before the
+                # listener is registered. Dropping this call outright would then
+                # leave the entry sitting in SETUP_ERROR after a successful
+                # reauth.
+                #
+                # config_entries.OptionsFlowWithReload and
+                # async_update_reload_and_abort would express this natively but
+                # postdate the 2024.1.0 minimum pinned in hacs.json.
+                if not (changed and was_loaded):
+                    await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
 
         return self.async_show_form(

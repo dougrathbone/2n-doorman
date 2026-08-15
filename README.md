@@ -56,6 +56,21 @@ A Home Assistant integration for managing users and access credentials on **2N I
 
 ---
 
+## Updating
+
+**A Doorman update needs a Home Assistant restart. This is not a workaround — there is no other way.**
+
+Home Assistant imports every custom integration once, when it starts. Python cannot replace a module that is already loaded, and Home Assistant has no mechanism to unload one: the entities, event listeners and services that are already running hold references to the old classes. So when HACS downloads a new version of Doorman it writes the new files to disk, but the code Home Assistant is running is still the code it imported at boot. Reloading the integration entry (Settings → Devices & Services → Doorman → Reload) re-runs the *old* code — it does not pick up the new files.
+
+After updating Doorman in HACS:
+
+1. **Restart Home Assistant.** HACS raises a repair issue in **Settings → System** ("Restart required") right after the download, and it can perform the restart for you — click through that and you are done. Otherwise use **Settings → System → Restart Home Assistant**.
+2. **Reload the browser tab** once Home Assistant is back. The panel is a JavaScript module that your browser has already loaded; restarting Home Assistant from the UI does not reload the page, so the tab keeps running the previous version's frontend code. Doorman detects this and shows a *"Doorman was updated to X — reload this page to finish updating"* banner at the top of the panel; a single page refresh (or Ctrl/Cmd-Shift-R) clears it.
+
+Nothing is lost by waiting to restart: the new version simply is not active until you do.
+
+---
+
 ## Configuration
 
 1. Go to **Settings → Integrations → Add integration** and search for **Doorman**

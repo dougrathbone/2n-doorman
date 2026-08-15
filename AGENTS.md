@@ -14,8 +14,10 @@ repo was built to cover that gap.
 
 ```
 custom_components/doorman/
-  __init__.py          — entry setup, static file serving, panel registration, services
-                         (incl. doorman.hangup_calls and doorman.resync_log_history)
+  __init__.py          — async_setup: domain-level registration (store, WS, services,
+                         static path, panel — see "Domain-level registration" below);
+                         async_setup_entry: per-device coordinator, platforms, tasks
+                         (services incl. doorman.hangup_calls and doorman.resync_log_history)
   api_client.py        — TwoNApiClient: async HTTP wrapper around the 2N local REST API
                          (directory, switches, log, log history, and call control)
   config_flow.py       — UI config flow (host / username / password / SSL options)
@@ -35,6 +37,72 @@ custom_components/doorman/
 ```
 
 ## Key design decisions
+
+### Domain-level registration happens in `async_setup`, before any network I/O
+The shared `DoormanStore`, the WebSocket commands, the `doorman.*` services,
+the frontend static route and the sidebar panel are all registered in
+`async_setup` — once per HA run — and are **never** torn down. Only per-entry
+resources (coordinator, platforms, background tasks, repair issue) live in
+`async_setup_entry` / `async_unload_entry`.
+
+They used to be registered at the end of `async_setup_entry`, which is reached
+only *after* `coordinator.async_init_device_info()`. That call raises
+`ConfigEntryNotReady` when the intercom is unreachable, so an intercom that was
+unplugged, rebooting or on a flapping network at HA startup produced **no
+Doorman sidebar entry at all**, indefinitely (HA retries with backoff up to
+~80 s per attempt) — exactly when the user needs the panel to tell them the
+device cannot be reached. The panel already degrades gracefully on its own:
+`ws_list_devices` returns `{"devices": []}` and `panel.js`'s `_loadDevices`
+renders an "unavailable" state.
+
+The old domain-level teardown in `async_unload_entry` (`if not
+hass.data[DOMAIN]: …`) is gone for the same reason. Reloading the only entry —
+what an options change and a reauth both do — ran it, so mid-reload the sidebar
+entry, the store and every `doorman.*` service disappeared and came back.
+
+Consequences to keep in mind when adding code:
+- **WS handlers and service handlers can run with zero loaded entries.**
+  `_coordinator()` returns `None` and handlers must answer
+  `not_configured`; `_resolve_coordinator()` raises the
+  `no_devices_configured` `ServiceValidationError`. Never assume at least one
+  entry exists.
+- **The store outlives every entry**, so it is created and loaded in
+  `async_setup`. Anything reading `hass.data[f"{DOMAIN}_store"]` (WS handlers,
+  `notifications.py`, `delete_user`) can rely on it existing whenever the
+  component is loaded.
+- Panel registration failure is caught and logged: a missing sidebar entry must
+  never stop entities, events and services from working.
+
+Note on the static route: re-registering it is *not* an error. On aiohttp 3.13.3
+(current HA) `HomeAssistantHTTP._async_register_static_paths` has no dedupe and
+static resources are unnamed, so a repeat registration silently appends another
+router resource — it does **not** raise `ValueError("Duplicate")`, which an
+earlier comment here and a `contextlib.suppress(ValueError)` both claimed. Both
+are gone; registering once per run makes the question moot.
+
+### Updating the integration requires an HA restart
+This is intrinsic, not a bug to fix: HA imports `custom_components` once via
+`importlib.import_module` and has no module-unloading path, and live entity
+instances and registered handlers hold references to the old classes. Reloading
+the config entry re-runs the *old* code. README's "Updating" section is the
+user-facing statement of this; don't "fix" it with reload tricks.
+
+The frontend has a matching constraint. `panel.js` is served with a
+`?v={manifest version}` cache-buster and HA re-imports module panels per URL, so
+after an update the module re-executes **in the same document**, where the
+previous version's custom elements are already defined. Therefore:
+- Every `customElements.define()` goes through the guarded `define()` helper in
+  `panel.js`. An unguarded call throws `NotSupportedError` and the panel then
+  fails to render at all — a hard failure instead of a soft one. A unit test
+  asserts there are no unguarded call sites.
+- `async_register_panel` passes `config={"version": …}`, which arrives as
+  `panel.config` in the panel element. `panel.js` compares it against its
+  hardcoded `PANEL_VERSION` and shows a "reload this page to finish updating"
+  banner on mismatch. **Bump `PANEL_VERSION` together with
+  `manifest.json`'s version** — a unit test asserts the two match, otherwise
+  every user would see the banner permanently.
+- Version-namespaced element names would make an update take effect without a
+  page reload. That is a larger, riskier change; deliberately not done.
 
 ### No build step for the frontend
 `panel.js` uses plain vanilla JS custom elements and Shadow DOM. There is
@@ -154,9 +222,8 @@ load-bearing:
 2. **Writing options reloads the entry.** `add_update_listener` →
    `async_reload` tears down the 2N log subscription, and per the section
    above a fresh subscription starts empty with no watermark, so events in
-   the reload window are lost. On a single-entry install the unload path also
-   removes the sidebar panel, the store and every `doorman.*` service —
-   while the user is standing on the panel that triggered the save.
+   the reload window are lost. (The panel, store and services survive a
+   reload now — see "Domain-level registration" — but the lost events do not.)
 
 Because nothing reloads, readers must not cache: `coordinator.py` re-reads
 the doorbell key from the store on every log batch and `notifications.py`
@@ -168,6 +235,21 @@ An empty `doorbell_key_code` means "this device has no doorbell button" and
 disables the flow; to restore the default, send `"%1"` explicitly. Only the
 2N `%N` quick-dial form is accepted — a bare digit would make every PIN
 keystroke ring the doorbell.
+
+### The reauth flow reloads the entry exactly once
+`async_update_entry` fires the entry's update listeners on **any** change, not
+just an options change, and `__init__.py` registers
+`_async_reload_on_options_update`. HA runs those listeners eagerly, so by the
+time `async_update_entry` returns, the reload it triggered has already moved the
+entry to `UNLOAD_IN_PROGRESS`. `async_step_reauth_confirm` therefore captures
+`entry.state` *before* the update and calls `async_reload` itself only when the
+listener cannot have run: nothing changed (same credentials re-entered), or the
+entry was not loaded — the usual case, since credentials rejected at startup
+raise `ConfigEntryAuthFailed` before `add_update_listener` is reached. Calling
+both unconditionally gave one reauth two full teardown/rebuild cycles; dropping
+the explicit call entirely would leave a `SETUP_ERROR` entry unrecovered.
+`OptionsFlowWithReload` / `async_update_reload_and_abort` express this natively
+but postdate the `homeassistant: 2024.1.0` minimum pinned in `hacs.json`.
 
 ### WebSocket API surface
 All frontend↔backend communication goes through the 12 WS commands in
@@ -268,7 +350,9 @@ footers to commit messages. Keep commit messages focused on technical changes.
   and creates a GitHub Release. HACS installs from the release zip.
 - **Frontend changes**: edit `frontend/panel.js` directly; no build step.
   `panel.js` is cache-busted automatically with `?v={manifest version}` in
-  `__init__.py`, so a release is enough — no manual busting needed.
+  `__init__.py`, so a release is enough — no manual busting needed. Do bump
+  `PANEL_VERSION` in `panel.js` in the same commit as `manifest.json`'s
+  version (see "Updating the integration requires an HA restart").
 - **Storage keys**: `STORAGE_KEY`/`STORAGE_VERSION` (shared config store) and
   `LOG_STORAGE_KEY`/`LOG_STORAGE_VERSION` (per-entry access log) are defined
   in `const.py`. Bump the matching version when a stored schema changes in a
