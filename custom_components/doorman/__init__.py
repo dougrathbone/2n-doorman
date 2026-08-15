@@ -1,13 +1,11 @@
 """Doorman — 2N intercom access control for Home Assistant."""
 from __future__ import annotations
 
-import contextlib
 import logging
 from pathlib import Path
 
 import voluptuous as vol
 from homeassistant.components import panel_custom
-from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -59,8 +57,90 @@ async def _async_reload_on_options_update(
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:  # noqa: ARG001
+    """Set up everything that belongs to the domain rather than to one device.
+
+    The shared store, the WebSocket commands, the services, the frontend static
+    route and the sidebar panel are all registered here — once per HA run,
+    before any network I/O, and never torn down.
+
+    They used to be registered at the end of ``async_setup_entry``, after
+    ``async_init_device_info()``. That call raises ``ConfigEntryNotReady`` when
+    the intercom is unreachable, so an intercom that was unplugged, rebooting
+    or on a flapping network at HA startup left the user with no Doorman entry
+    in the sidebar at all — precisely when they need the panel to tell them the
+    device cannot be reached. (The panel degrades gracefully on its own:
+    ``ws_list_devices`` returns an empty list and the panel renders an error
+    state.) Registering per entry also meant reloading the only entry removed
+    and re-added the panel, flickering the sidebar and briefly dropping every
+    ``doorman.*`` service.
+
+    Nothing here is undone by ``async_unload_entry``: the aiohttp static route
+    cannot be unregistered anyway, and every WS command and service reports a
+    clean "not configured" error when no entry is loaded.
+    """
     hass.data.setdefault(DOMAIN, {})
+
+    # The store is shared across all config entries (single STORAGE_KEY) and is
+    # read by WS handlers and notifications.py, both of which can run while no
+    # entry is loaded — so it is created and loaded here, not per entry.
+    if hass.data.get(f"{DOMAIN}_store") is None:
+        store = DoormanStore(hass)
+        await store.async_load()
+        hass.data[f"{DOMAIN}_store"] = store
+
+    async_setup_websocket(hass)
+    async_setup_notifications(hass)
+    _register_services(hass)
+
+    try:
+        await _async_register_panel(hass)
+    except Exception:  # noqa: BLE001
+        # A missing sidebar entry must never be the reason entities, services
+        # and events stop working — that is the same failure mode this move
+        # exists to fix, just in the other direction.
+        _LOGGER.exception(
+            "Doorman: could not register the sidebar panel. The integration will "
+            "still load — entities, events and services are unaffected — but the "
+            "Doorman page will be missing from the sidebar"
+        )
+
     return True
+
+
+async def _async_register_panel(hass: HomeAssistant) -> None:
+    """Serve the frontend assets and add the Doorman sidebar panel."""
+    if hass.data.get(f"{DOMAIN}_panel_registered"):
+        return
+
+    frontend_dir = Path(__file__).parent / "frontend"
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
+    )
+    # Cache-bust panel.js with the integration version so browsers pick up
+    # new frontend code after a HACS update instead of serving a cached copy.
+    integration = await async_get_integration(hass, DOMAIN)
+    await panel_custom.async_register_panel(
+        hass,
+        webcomponent_name="doorman-panel",
+        frontend_url_path=DOMAIN,
+        sidebar_title=PANEL_TITLE,
+        sidebar_icon=PANEL_ICON,
+        module_url=f"{PANEL_URL}/panel.js?v={integration.version}",
+        embed_iframe=False,
+        # Reaches the panel element as ``panel.config``. panel.js compares the
+        # version against its own PANEL_VERSION constant and shows a "reload
+        # this page" banner when they differ: after a HACS update the browser
+        # re-imports the new module URL into a document that still holds the
+        # old custom-element definitions, so the running code is the old code
+        # until the tab is reloaded.
+        config={"version": integration.version},
+        # Admin-only: the panel manages door credentials (PINs, cards,
+        # codes) and access linking. The WebSocket commands enforce this
+        # independently, but gating the sidebar entry too avoids exposing
+        # the tool to non-admin users.
+        require_admin=True,
+    )
+    hass.data[f"{DOMAIN}_panel_registered"] = True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -114,19 +194,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
 
-    # The store is shared across all config entries (single STORAGE_KEY), so
-    # create and load it exactly once — recreating it per entry would clobber
-    # the in-memory state of other already-loaded devices.
+    # Created and loaded once per HA run in async_setup — shared by every entry.
     store: DoormanStore | None = hass.data.get(f"{DOMAIN}_store")
-    if store is None:
-        store = DoormanStore(hass)
-        await store.async_load()
-        hass.data[f"{DOMAIN}_store"] = store
-    coordinator._last_access = dict(store.last_access)
+    if store is not None:
+        coordinator._last_access = dict(store.last_access)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        # A platform that fails to set up marks the entry SETUP_ERROR, and HA
+        # never calls async_unload_entry for an entry that did not finish
+        # setting up. Without this the coordinator would stay in hass.data as a
+        # phantom device that WS commands and services still resolve to — and
+        # would keep hass.data[DOMAIN] non-empty for the rest of the run.
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await coordinator.async_shutdown()
+        await coordinator.client.async_close()
+        raise
+
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options_update))
 
     # Start the background tasks only after the coordinator is registered in
@@ -141,63 +228,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # doorman_access events — see DoormanCoordinator.async_backfill_access_log.
     coordinator.start_backfill()
 
-    async_setup_websocket(hass)
-    async_setup_notifications(hass)
-    _register_services(hass)
-
-    # Serve frontend assets and register the sidebar panel (once across all entries)
-    if not hass.data.get(f"{DOMAIN}_panel_registered"):
-        frontend_dir = Path(__file__).parent / "frontend"
-        # aiohttp routes cannot be unregistered, so after an entry reload the
-        # static path is still registered — re-registering raises
-        # ValueError("Duplicate"). That is harmless: the route keeps serving.
-        with contextlib.suppress(ValueError):
-            await hass.http.async_register_static_paths(
-                [StaticPathConfig(PANEL_URL, str(frontend_dir), cache_headers=False)]
-            )
-        # Cache-bust panel.js with the integration version so browsers pick up
-        # new frontend code after a HACS update instead of serving a cached copy.
-        integration = await async_get_integration(hass, DOMAIN)
-        with contextlib.suppress(ValueError):
-            await panel_custom.async_register_panel(
-                hass,
-                webcomponent_name="doorman-panel",
-                frontend_url_path=DOMAIN,
-                sidebar_title=PANEL_TITLE,
-                sidebar_icon=PANEL_ICON,
-                module_url=f"{PANEL_URL}/panel.js?v={integration.version}",
-                embed_iframe=False,
-                # Admin-only: the panel manages door credentials (PINs, cards,
-                # codes) and access linking. The WebSocket commands enforce this
-                # independently, but gating the sidebar entry too avoids exposing
-                # the tool to non-admin users.
-                require_admin=True,
-            )
-        hass.data[f"{DOMAIN}_panel_registered"] = True
-
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry.
+
+    Only this entry's own resources are torn down. The panel, static route,
+    WebSocket commands, services and shared store belong to the domain (see
+    ``async_setup``) and deliberately survive: removing them on the last unload
+    made an ordinary reload flicker the sidebar away and briefly delete every
+    ``doorman.*`` service, and the static route could not be removed anyway.
+    """
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         coordinator: DoormanCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_shutdown()
         await coordinator.client.async_close()
         async_delete_issue(hass, DOMAIN, f"no_write_permission_{entry.entry_id}")
-        if not hass.data[DOMAIN]:
-            if hass.data.pop(f"{DOMAIN}_panel_registered", None):
-                with contextlib.suppress(ValueError, KeyError):
-                    async_remove_panel(hass, DOMAIN)
-            hass.data.pop(f"{DOMAIN}_websocket_registered", None)
-            if unsub := hass.data.pop(f"{DOMAIN}_notifications_unsub", None):
-                unsub()
-            hass.data.pop(f"{DOMAIN}_notifications_registered", None)
-            hass.data.pop(f"{DOMAIN}_store", None)
-            # No entries left — the domain's services have nothing to act on.
-            for service in _SERVICES:
-                hass.services.async_remove(DOMAIN, service)
     return unloaded
 
 
@@ -216,17 +264,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool: 
 # ------------------------------------------------------------------ #
 # Services                                                            #
 # ------------------------------------------------------------------ #
-
-# All service actions registered below — removed again when the last
-# config entry unloads.
-_SERVICES = (
-    "create_user",
-    "update_user",
-    "delete_user",
-    "grant_access",
-    "hangup_calls",
-    "resync_log_history",
-)
 
 
 def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoordinator:
@@ -255,7 +292,13 @@ def _resolve_coordinator(hass: HomeAssistant, call: ServiceCall) -> DoormanCoord
 
 
 def _register_services(hass: HomeAssistant) -> None:
-    """Register Doorman service actions (once per domain, not per entry)."""
+    """Register Doorman service actions (once per HA run, from async_setup).
+
+    The services stay registered for the lifetime of the HA run, including
+    while zero entries are loaded — ``_resolve_coordinator`` then raises a
+    clean ``no_devices_configured`` validation error instead of the service
+    vanishing from the UI and automations.
+    """
     if hass.services.has_service(DOMAIN, "create_user"):
         return
 

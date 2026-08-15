@@ -441,9 +441,8 @@ async def ws_set_notification_settings(
       first time someone opens Configure.
     * Writing options fires the entry's update listener, reloading the entry.
       That drops the 2N log subscription (a fresh one starts empty, with no
-      watermark) and, on a single-entry install, also tears down the sidebar
-      panel and the ``doorman.*`` services — while the user is standing on the
-      panel that triggered the save.
+      watermark), so every event in the reload window is lost — while the user
+      is standing on the panel that triggered the save.
 
     No reload is needed: the coordinator re-reads the doorbell key from the
     store on every log batch, and notifications.py reads sounds/channels per

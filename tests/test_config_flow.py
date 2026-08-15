@@ -178,9 +178,137 @@ async def test_reauth_flow_success(
             {CONF_USERNAME: "admin", CONF_PASSWORD: "newpassword"},
         )
 
+    # The reload now runs from the entry's update listener as a background
+    # task rather than being awaited inside the flow, so settle it here.
+    await hass.async_block_till_done()
+
     assert result["type"] == "abort"
     assert result["reason"] == "reauth_successful"
     assert setup_doorman.data[CONF_PASSWORD] == "newpassword"
+    assert setup_doorman.state is config_entries.ConfigEntryState.LOADED
+
+
+class _EntryLifecycleCounter:
+    """Count how many times the integration sets up / unloads a config entry.
+
+    Patches the module-level ``async_setup_entry`` / ``async_unload_entry``
+    that HA looks up on the integration module for every (un)load, so it counts
+    real lifecycle cycles rather than a proxy for them.
+    """
+
+    def __init__(self) -> None:
+        self.setups: list[str] = []
+        self.unloads: list[str] = []
+
+    def __enter__(self) -> _EntryLifecycleCounter:
+        import custom_components.doorman as module
+
+        real_setup = module.async_setup_entry
+        real_unload = module.async_unload_entry
+
+        async def counting_setup(hass, entry):
+            self.setups.append(entry.entry_id)
+            return await real_setup(hass, entry)
+
+        async def counting_unload(hass, entry):
+            self.unloads.append(entry.entry_id)
+            return await real_unload(hass, entry)
+
+        self._patches = [
+            patch.object(module, "async_setup_entry", counting_setup),
+            patch.object(module, "async_unload_entry", counting_unload),
+        ]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        for p in self._patches:
+            p.stop()
+
+
+async def _submit_reauth(hass: HomeAssistant, entry: MockConfigEntry, password: str) -> dict:
+    """Run the reauth flow to completion with the given password."""
+    with patch("custom_components.doorman.config_flow.TwoNApiClient") as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reauth", "entry_id": entry.entry_id},
+            data=entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "admin", CONF_PASSWORD: password},
+        )
+    await hass.async_block_till_done()
+    return result
+
+
+@pytest.mark.asyncio
+async def test_reauth_reloads_a_loaded_entry_exactly_once(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """One reauth must produce one teardown/rebuild cycle, not two.
+
+    ``async_update_entry`` fires the entry's update listeners on *any* change,
+    and ``__init__.py`` registers one that reloads the entry — so the explicit
+    ``async_reload`` the flow used to always call was a second, redundant
+    reload. Measured before the fix: 2 setups + 2 unloads for one reauth, i.e.
+    two rounds of device calls, two backfill subscriptions (one cancelled
+    mid-flight) and two windows with no doorman.* services.
+    """
+    with _EntryLifecycleCounter() as counter:
+        result = await _submit_reauth(hass, setup_doorman, "newpassword")
+
+    assert result["reason"] == "reauth_successful"
+    assert counter.setups == [setup_doorman.entry_id]
+    assert counter.unloads == [setup_doorman.entry_id]
+    assert setup_doorman.state is config_entries.ConfigEntryState.LOADED
+    assert setup_doorman.data[CONF_PASSWORD] == "newpassword"
+
+
+@pytest.mark.asyncio
+async def test_reauth_with_unchanged_credentials_still_reloads_once(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Re-submitting the same credentials must still reload the entry — once.
+
+    ``async_update_entry`` fires no update listeners when nothing changed, so
+    simply deleting the explicit reload would leave this reauth doing nothing
+    at all.
+    """
+    with _EntryLifecycleCounter() as counter:
+        result = await _submit_reauth(hass, setup_doorman, "secret")
+
+    assert result["reason"] == "reauth_successful"
+    assert counter.setups == [setup_doorman.entry_id]
+    assert counter.unloads == [setup_doorman.entry_id]
+    assert setup_doorman.state is config_entries.ConfigEntryState.LOADED
+
+
+@pytest.mark.asyncio
+async def test_reauth_sets_up_an_entry_that_failed_to_load(
+    hass: HomeAssistant, doorman_config_entry: MockConfigEntry, mock_2n_client,
+) -> None:
+    """The usual reauth case: the entry never loaded, so it has no update listener.
+
+    Credentials rejected at startup raise ConfigEntryAuthFailed before
+    ``add_update_listener`` runs, so nothing would reload the entry if the flow
+    relied solely on the listener. It must set the entry up exactly once.
+    """
+    mock_2n_client.get_system_info.side_effect = DoormanAuthError("bad creds")
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert doorman_config_entry.state is config_entries.ConfigEntryState.SETUP_ERROR
+
+    mock_2n_client.get_system_info.side_effect = None
+    with _EntryLifecycleCounter() as counter:
+        result = await _submit_reauth(hass, doorman_config_entry, "newpassword")
+
+    assert result["reason"] == "reauth_successful"
+    assert counter.setups == [doorman_config_entry.entry_id]
+    assert doorman_config_entry.state is config_entries.ConfigEntryState.LOADED
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,27 @@
  * Vanilla JS custom element — no build step required.
  */
 
+// The version of the integration this file shipped with. Compared against the
+// version the backend reports in panel.config (see __init__.py) to detect a
+// browser tab still running frontend code from before a HACS update. Keep it
+// in step with custom_components/doorman/manifest.json — a unit test asserts
+// the two match.
+const PANEL_VERSION = "0.5.0";
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+// panel.js is served with a ?v=<version> cache-buster and HA re-imports module
+// panels per URL, so after a HACS update (or an HA restart from the UI, which
+// the browser survives over its WebSocket connection without a page reload)
+// this module is re-executed in a document where the previous version's
+// elements are already defined. An unguarded customElements.define() throws
+// NotSupportedError there and the panel fails to render at all. Guarding turns
+// that hard failure into a soft one: the previously defined classes keep
+// running — one page reload is still needed to actually see the new code, and
+// the banner in DoormanPanel says so.
+function define(name, cls) {
+  if (!customElements.get(name)) customElements.define(name, cls);
+}
 
 const ws = (hass, type, params = {}, entryId = null) => {
   const msg = { type, ...params };
@@ -280,7 +300,7 @@ class DoormanDrawer extends HTMLElement {
     });
   }
 }
-customElements.define("doorman-drawer", DoormanDrawer);
+define("doorman-drawer", DoormanDrawer);
 
 
 // ─── Users Tab ───────────────────────────────────────────────────────────────
@@ -766,7 +786,7 @@ class DoormanUsersTab extends HTMLElement {
     }
   }
 }
-customElements.define("doorman-users-tab", DoormanUsersTab);
+define("doorman-users-tab", DoormanUsersTab);
 
 
 // ─── Access Log Tab ───────────────────────────────────────────────────────────
@@ -858,7 +878,7 @@ class DoormanLogTab extends HTMLElement {
     content.appendChild(table);
   }
 }
-customElements.define("doorman-log-tab", DoormanLogTab);
+define("doorman-log-tab", DoormanLogTab);
 
 
 // ─── Device Tab ───────────────────────────────────────────────────────────────
@@ -991,7 +1011,7 @@ class DoormanDeviceTab extends HTMLElement {
     });
   }
 }
-customElements.define("doorman-device-tab", DoormanDeviceTab);
+define("doorman-device-tab", DoormanDeviceTab);
 
 
 // ─── Notifications Tab ───────────────────────────────────────────────────────
@@ -1588,7 +1608,7 @@ class DoormanNotificationsTab extends HTMLElement {
     }, error ? 4000 : 2000);
   }
 }
-customElements.define("doorman-notifications-tab", DoormanNotificationsTab);
+define("doorman-notifications-tab", DoormanNotificationsTab);
 
 
 // ─── Main Panel ───────────────────────────────────────────────────────────────
@@ -1600,6 +1620,10 @@ class DoormanPanel extends HTMLElement {
     this._tab = "users";
     this._devices = [];
     this._selectedEntryId = null;
+    // Set from panel.config.version; false here so the common case (versions
+    // match) is a no-op in `set panel` rather than an extra shell render.
+    this._staleVersion = false;
+    this._backendVersion = "";
 
     // Cross-tab jump event from within a tab (e.g. "go to Users tab" link).
     // Bound here, not in _renderShell(): the listener target is the host
@@ -1625,7 +1649,20 @@ class DoormanPanel extends HTMLElement {
     if (tab) tab.hass = h;
   }
 
-  set panel(p) { this._panel = p; }
+  set panel(p) {
+    this._panel = p;
+    // The backend passes its own version in the panel config. If it differs
+    // from the version this file was built with, the browser is running
+    // frontend code from before a HACS update — the module URL changed, but
+    // the already-defined custom elements (see define() above) win, so only a
+    // page reload picks up the new code.
+    const backendVersion = p?.config?.version || "";
+    const stale = Boolean(backendVersion) && backendVersion !== PANEL_VERSION;
+    this._backendVersion = backendVersion;
+    if (stale === this._staleVersion) return;
+    this._staleVersion = stale;
+    if (this.isConnected) this._renderShell();
+  }
   set narrow(n) {
     // HA re-sets narrow on every viewport change; skip the re-render (and the
     // tab remount + WS refetch + drawer state loss it causes) when unchanged.
@@ -1720,6 +1757,30 @@ class DoormanPanel extends HTMLElement {
         .tab.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
         .tab:hover:not(.active) { color: var(--primary-text-color); }
         .content { padding: 20px; max-width: 960px; margin: 0 auto; }
+        .update-banner {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 12px 16px;
+          margin-bottom: 16px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-left: 4px solid var(--primary-color);
+          border-radius: 6px;
+          background: var(--card-background-color, white);
+          color: var(--primary-text-color);
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .update-banner svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; fill: var(--primary-color); }
+        .update-banner button {
+          background: none;
+          border: none;
+          padding: 0;
+          font: inherit;
+          color: var(--primary-color);
+          cursor: pointer;
+          text-decoration: underline;
+        }
       </style>
       <div class="header">
         ${this._narrow ? `
@@ -1737,6 +1798,13 @@ class DoormanPanel extends HTMLElement {
         ${tabs.map(t => `<div class="tab${this._tab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("")}
       </div>
       <div class="content">
+        ${this._staleVersion ? `
+          <div class="update-banner">
+            <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
+            <span>Doorman was updated to ${esc(this._backendVersion)} — this page is still
+            running ${esc(PANEL_VERSION)}. <button id="reload-page" type="button">Reload this page</button>
+            to finish updating.</span>
+          </div>` : ""}
         ${this._loadError ? `
           <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 16px;background:#fff3f3;border:1px solid #ffcdd2;border-radius:6px;color:#c62828;font-size:13px;margin-bottom:16px;line-height:1.5">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="#c62828" style="flex-shrink:0;margin-top:1px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
@@ -1746,6 +1814,9 @@ class DoormanPanel extends HTMLElement {
       </div>
     `;
 
+    this.shadowRoot.getElementById("reload-page")?.addEventListener("click", () => {
+      location.reload();
+    });
     this.shadowRoot.getElementById("menu-btn")?.addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
     });
@@ -1791,4 +1862,4 @@ class DoormanPanel extends HTMLElement {
     container.appendChild(el);
   }
 }
-customElements.define("doorman-panel", DoormanPanel);
+define("doorman-panel", DoormanPanel);
