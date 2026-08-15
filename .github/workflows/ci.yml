@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# Superseded PR runs are pointless, but a superseded push to main is not: if a
+# run on main is cancelled, nobody ever sees whether main was actually green.
+# That is how the last outage stayed invisible. Cancel on pull_request only.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate-manifest:
     name: Validate manifest.json
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - name: Validate JSON
@@ -18,36 +26,53 @@ jobs:
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
+      # Pinned to the same version as requirements_test.txt — keep the two in
+      # lockstep. An unpinned ruff picks up newly stabilised preview rules and
+      # fails main on unchanged source, which (via `needs: [..., lint]` below)
+      # silently skips the unit tests too.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.16.3
       - name: Run ruff
         run: ruff check custom_components/ tests/
 
   tests:
     name: Unit tests & coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [validate-manifest, lint]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          # Must track requirements_test.txt: pytest-homeassistant-custom-component
+          # 0.13.355 requires Python >= 3.14, and the homeassistant 2026.8.1 it
+          # pins requires >= 3.14.2. Lowering this does not fail the install — pip
+          # quietly resolves to an older PHACC and an older HA, which is exactly
+          # how this job spent six months testing HA 2026.2.3.
+          python-version: "3.14"
           cache: pip
       - name: Install test dependencies
         run: pip install -r requirements_test.txt
+      - name: Show resolved Home Assistant version
+        # Make the system under test visible in the log, so a silent HA
+        # downgrade shows up in the run instead of having to be excavated
+        # from the pip install output.
+        run: |
+          python -c "import importlib.metadata as m; print('homeassistant', m.version('homeassistant')); print('pytest-homeassistant-custom-component', m.version('pytest-homeassistant-custom-component'))"
       - name: Run tests with coverage
         run: |
           pytest tests/ --ignore=tests/integration \
             --cov=custom_components/doorman \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=60 \
+            --cov-fail-under=90 \
             -v --tb=short
       - name: Upload coverage report
         if: always()
@@ -60,6 +85,7 @@ jobs:
   hacs-validate:
     name: HACS Action
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - name: HACS Action
@@ -70,6 +96,7 @@ jobs:
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: home-assistant/actions/hassfest@master

@@ -1,4 +1,23 @@
-pytest-homeassistant-custom-component>=0.13.205
-pytest-asyncio>=0.23.0
-pytest-cov>=5.0.0
-ruff>=0.4.0
+# Pinned exactly, on purpose. pytest-homeassistant-custom-component decides
+# which Home Assistant version the unit tests run against — 0.13.355 pins
+# homeassistant==2026.8.1 — so an open floor here silently changes the system
+# under test. It already did: a `>=0.13.205` floor plus a Python 3.13 runner
+# resolved to 0.13.316 / HA 2026.2.3 and left CI six months behind the HA users
+# actually run. Read "Home Assistant version compatibility" in AGENTS.md before
+# changing this line, and bump the CI Python version with it.
+pytest-homeassistant-custom-component==0.13.355
+
+# pytest, pytest-asyncio, pytest-cov and coverage are deliberately NOT listed
+# here. PHACC depends on them with exact pins (pytest==9.0.3,
+# pytest-asyncio==1.4.0, pytest-cov==7.1.0 as of 0.13.355) and an exact pin
+# always beats a floor, so the `pytest-asyncio>=0.23.0` / `pytest-cov>=5.0.0`
+# lines that used to live here were inert — they described a resolution that
+# could never happen. PHACC owns that stack; let it.
+
+# Pinned exactly so local and CI ruff agree. Ruff promotes preview rules to
+# stable in minor releases, and with E,F,W,I,UP,B,SIM selected in pyproject.toml
+# a newly stabilised rule starts firing on unchanged source — turning main red
+# with no commit behind it. Because ci.yml runs `tests: needs: [..., lint]`,
+# that also skips the test job entirely. Bump this deliberately, not by drift,
+# and keep it identical to the version in .github/workflows/ci.yml.
+ruff==0.16.3
