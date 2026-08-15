@@ -32,8 +32,12 @@ jobs:
 
       # CI uses Docker Compose v2 (pre-installed on ubuntu-latest) rather than
       # podman-compose: the Docker daemon runs container healthchecks natively,
-      # whereas rootless Podman on the runners implements them via systemd
-      # transient timers that never fire without a user systemd session.
+      # whereas the runner image's Podman 5.8.4 is a static bundle built
+      # WITHOUT the `systemd` build tag (runner-images #14412 switched from the
+      # apt 4.9.3 to mgoltzsche/podman-static). That build compiles
+      # libpod/healthcheck_nosystemd_linux.go, whose createTimer/startTimer are
+      # no-ops, so a container's health stays `starting` forever — silently,
+      # since the healthcheck code is not in the binary at all.
       # The compose file stays portable — `podman compose` still works locally.
       - name: Build and start services
         timeout-minutes: 8

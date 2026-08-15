@@ -12,30 +12,79 @@ jobs:
   release:
     name: Create release
     runs-on: ubuntu-latest
+    # The job runs in seconds; 10 minutes is a generous backstop against a
+    # hung upload. The default is 360 minutes — six hours of a release that
+    # looks like it is still working.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Update manifest version
+      # This is the only thing standing between a forgotten version bump and
+      # users installing code that misreports its own version. HACS installs
+      # this integration from the repository tree at the tag, NOT from the
+      # release zip: it only downloads release assets when the category is
+      # plugin/theme, or when hacs.json sets both `zip_release` and
+      # `filename` (see HACS `repositories/base.py`, `should_try_releases()`).
+      # This repo is an `integration` and hacs.json sets neither. So the
+      # committed manifest.json is what users get, the manual
+      # `chore: bump version to X.Y.Z` commit is the real release mechanism,
+      # and nothing else in CI checks it — ci.yml does not even run on tags.
+      - name: Verify manifest version matches tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          TAG_VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           python - <<'EOF'
-          import json, pathlib
-          manifest = pathlib.Path("custom_components/doorman/manifest.json")
-          data = json.loads(manifest.read_text())
-          data["version"] = "${{ steps.version.outputs.VERSION }}"
-          manifest.write_text(json.dumps(data, indent=2) + "\n")
+          import json
+          import os
+          import pathlib
+          import sys
+
+          tag_name = os.environ["TAG_NAME"]
+          tag_version = os.environ["TAG_VERSION"]
+          manifest_path = pathlib.Path("custom_components/doorman/manifest.json")
+          manifest_version = json.loads(manifest_path.read_text()).get("version")
+
+          if manifest_version == tag_version:
+              print(f"manifest.json version {manifest_version!r} matches tag {tag_name!r}.")
+              sys.exit(0)
+
+          print(
+              f"::error file={manifest_path}::"
+              f"manifest.json version is {manifest_version!r} but tag {tag_name!r} "
+              f"means version {tag_version!r}. "
+              "HACS installs this integration from the repository tree at the tag, "
+              "not from the release zip, so the version users see is whatever is "
+              "COMMITTED in manifest.json — rewriting it during the release would "
+              "change nothing for them. "
+              f"Fix: commit 'chore: bump version to {tag_version}' on main, then "
+              f"delete and re-push the {tag_name} tag."
+          )
+          sys.exit(1)
           EOF
 
+      # No manifest rewrite happens here: the check above guarantees the
+      # committed version already equals the tag, so a rewrite would be a
+      # no-op that only implies the versioning is automated. It is not.
+      # The zip is a convenience artifact for manual installers (v0.5.0's has
+      # one download); not rewriting keeps it byte-identical to the tagged
+      # tree, i.e. to what HACS actually ships.
       - name: Build release zip
         run: |
           cd custom_components
           zip -r ../doorman.zip doorman/ -x "**/__pycache__/*" -x "**/*.pyc"
 
+      # Pinned to the v3.0.2 commit: this action writes the published artifact
+      # in a job with `contents: write`, and the v3 tag moved three times in
+      # three months (3.0.0 2026-04-12 → 3.0.1 2026-06-19 → 3.0.2 2026-07-13),
+      # with 3.0.0 changing draft-handling semantics. See AGENTS.md for why
+      # hacs/action and hassfest are deliberately NOT pinned.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: doorman.zip
           generate_release_notes: true

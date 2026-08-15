@@ -313,9 +313,20 @@ in August 2026, when the job hung for ~19.5 minutes and was killed by its own
 `timeout-minutes` with no logs:
 
 1. **No `depends_on: condition: service_healthy`.** Container healthchecks are
-   run by the container runtime, and under rootless Podman on CI runners they
-   are implemented as systemd transient timers that never fire without a user
-   systemd session — so the dependent service waits forever. Readiness is gated
+   run by the container runtime, and the runner image's Podman (5.8.4, a static
+   bundle built **without the `systemd` build tag** — runner-images #14412
+   swapped apt's 4.9.3 for `mgoltzsche/podman-static`) does not run them at all:
+   `libpod/healthcheck_linux.go` is `//go:build systemd` and is excluded, so the
+   `//go:build !systemd` twin supplies `createTimer`/`startTimer` that return nil
+   and do nothing. Health stays `starting` forever. Note this is *not* a missing
+   user systemd session — that would make `podman start` fail loudly; here the
+   code simply is not in the binary, so it fails silently, which is why the hung
+   runs produced 19.5 minutes of no output. `podman-compose` 1.6.0 then waits
+   forever because `check_dep_conditions()` retries
+   `podman wait --condition=healthy` in an unbounded loop and `podman wait` only
+   gives up if the container *stops*. `podman-compose` itself was not the
+   trigger: it was 1.6.0 in both the passing and the failing runs, and PyPI has
+   no release since 2026-06-03. Readiness is gated
    explicitly instead: `curl` polling in the workflow (with `timeout`) and the
    session fixtures in `tests/integration/conftest.py`. Both have their own
    deadlines; the compose-level gate was pure redundancy with an unbounded wait.
@@ -336,6 +347,57 @@ Nothing in the tests or helpers depends on container *names*, so the
 (Compose v2) difference is immaterial. `MOCK_2N_HOST=mock-2n` is the compose
 *service* name, which both runtimes publish as a network alias. Keep it that way.
 
+### Release pipeline invariants
+
+**HACS ships the committed tree, not the release zip.** HACS only downloads
+release *assets* when the repository category is `plugin`/`theme`, or when
+`hacs.json` sets both `zip_release` and `filename` (HACS source:
+`custom_components/hacs/repositories/base.py`, `should_try_releases()`). This
+repo is an `integration` and `hacs.json` sets neither, so HACS downloads the
+repository tree at the tag — `manifest.json` exactly as committed. Three
+consequences, all load-bearing:
+
+- The manual `chore: bump version to X.Y.Z` commit **is** the release
+  mechanism. Forget it and every HACS user installs code whose manifest
+  misreports its version, silently. `ci.yml` only checks that the JSON parses,
+  hassfest only checks that a `version` key exists, and `ci.yml` does not run
+  on tags at all.
+- `release.yml` therefore fails the release at tag time if `manifest.json`'s
+  committed `version` is not the tag minus its leading `v`. Never weaken that
+  step into a warning, and never "fix" a mismatch by rewriting the manifest in
+  CI — the rewrite would only touch the zip. Fix it with a bump commit and a
+  re-pushed tag.
+- The zip is nearly vestigial: it exists for the handful of manual installers
+  (v0.5.0's asset has one download). The old "update manifest version" step was
+  removed for that reason — after the check above it was provably a no-op, and
+  its presence created the illusion that versioning was automated, which is
+  what made the bump easy to forget. Not rewriting also keeps the zip
+  byte-identical to the tagged tree, i.e. to what HACS ships.
+
+**Pin `softprops/action-gh-release`, deliberately do not pin `hacs/action` or
+`home-assistant/actions/hassfest`.** `softprops` writes the published artifact
+from a job holding `contents: write`, and its v3 tag moved three times in three
+months (3.0.0 2026-04-12 → 3.0.1 2026-06-19 → 3.0.2 2026-07-13, with 3.0.0
+changing draft-handling semantics), so it is pinned to a commit SHA with a
+trailing `# vX.Y.Z` comment. The other two are pinned to nothing on purpose:
+their `action.yml` files just run floating Docker images
+(`ghcr.io/hacs/action:main` and an untagged `ghcr.io/home-assistant/hassfest`),
+so pinning the action reference changes which YAML wrapper you get but not
+which code runs. It buys no supply-chain guarantee. Don't "fix" it.
+
+**`cancelled` is not `failed`.** A job killed by its own `timeout-minutes` is
+cancelled, and `if: failure()` steps do not run on cancellation. Diagnostic /
+log-dump steps must use `if: always()`. Two hung integration runs produced zero
+diagnostics precisely because of this.
+
+**Don't hand-create a GitHub release for a tag the workflow will create.** The
+only two failed release runs (v0.1.3, v0.2.3) are exactly the two tags where a
+maintainer-authored release exists for the same tag; each left an orphaned
+draft (with `doorman.zip` attached) beside it. Let the workflow publish, then
+edit the release body afterwards if the generated notes aren't enough.
+Re-running a failed release run is safe and idempotent — softprops updates an
+existing release and `overwrite_files` defaults to true.
+
 ### No Claude attribution in commits
 Per the project's `CLAUDE.md`: never add "Co-Authored-By: Claude" or similar
 footers to commit messages. Keep commit messages focused on technical changes.
@@ -346,8 +408,12 @@ footers to commit messages. Keep commit messages focused on technical changes.
   `ruff check --fix` before committing.
 - **Tests**: `pytest tests/ --ignore=tests/integration` for unit tests.
   Integration tests require Docker/Podman and a running HA instance.
-- **Releases**: tag `vX.Y.Z` → GitHub Actions zips `custom_components/doorman/`
-  and creates a GitHub Release. HACS installs from the release zip.
+- **Releases**: commit `chore: bump version to X.Y.Z` (updating
+  `custom_components/doorman/manifest.json`) **first**, then tag `vX.Y.Z`.
+  GitHub Actions verifies the manifest matches the tag, zips
+  `custom_components/doorman/` and creates a GitHub Release. HACS installs the
+  repository tree at the tag, *not* the release zip — see "Release pipeline
+  invariants" above.
 - **Frontend changes**: edit `frontend/panel.js` directly; no build step.
   `panel.js` is cache-busted automatically with `?v={manifest version}` in
   `__init__.py`, so a release is enough — no manual busting needed. Do bump
