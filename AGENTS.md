@@ -404,7 +404,12 @@ footers to commit messages. Keep commit messages focused on technical changes.
 
 ## Conventions
 
-- **Python**: 3.12+ target, ruff for linting (`pyproject.toml`). Run
+- **Python**: CI runs **3.14** for both lint and unit tests — not a preference,
+  a requirement: `homeassistant` 2026.8.1 declares `requires-python >= 3.14.2`
+  and won't install below it. Ruff's `target-version` stays at `py312`
+  deliberately and is a *different* number from the runner: see "Home Assistant
+  version compatibility" below. Ruff is pinned exactly in both
+  `requirements_test.txt` and `ci.yml`; keep the two identical. Run
   `ruff check --fix` before committing.
 - **Tests**: `pytest tests/ --ignore=tests/integration` for unit tests.
   Integration tests require Docker/Podman and a running HA instance.
@@ -423,6 +428,108 @@ footers to commit messages. Keep commit messages focused on technical changes.
   `LOG_STORAGE_KEY`/`LOG_STORAGE_VERSION` (per-entry access log) are defined
   in `const.py`. Bump the matching version when a stored schema changes in a
   breaking way.
+
+## Home Assistant version compatibility
+
+Doorman is installed by strangers onto servers we don't control, on HA versions
+we don't choose. Two failure modes matter and they pull in opposite directions:
+breaking *forward* (HA changes an API and current users break) and breaking
+*backward* (we adopt a shiny new API and users on older servers break). Check
+for the first constantly; optimise for the second.
+
+### Know what you are actually testing
+
+`requirements_test.txt` pins `pytest-homeassistant-custom-component` exactly,
+and **PHACC is what selects the Home Assistant version under test** — 0.13.355
+pins `homeassistant==2026.8.1`. Nothing else in the repo names an HA version.
+
+That pin is exact because a floor is not a choice, it's a coin flip resolved by
+pip. Concretely, this already went wrong: `>=0.13.205` plus a `python-version:
+"3.13"` runner resolved to PHACC 0.13.316 (HA 2026.2.3) for six months, because
+every PHACC from 0.13.317 on requires Python >= 3.14 and pip silently walked
+backwards to something the runner could install. CI was green the whole time and
+said nothing about the HA people were actually running.
+
+So: **PHACC's Python requirement silently pins the HA version under test.**
+Whenever you touch the Python version in `ci.yml`, or the PHACC pin, or see a
+PHACC release you can't install, re-check the pair together and confirm what
+resolved. The `Show resolved Home Assistant version` step in `ci.yml` prints
+both versions into the run log for exactly this reason — read it, don't assume.
+Never loosen either pin to make an install succeed; that is the bug, not the fix.
+
+### Checking for HA breaking changes
+
+Do this when bumping the PHACC pin, and periodically even when not:
+
+- **HA release notes.** Every monthly release has a "Breaking Changes" section
+  (and each has a companion developer-blog post at
+  `developers.home-assistant.io/blog` for integration-facing changes). Bumping
+  across N months means reading N of them, not just the newest.
+- **Deprecation warnings in the test run.** HA reports its own deprecations
+  through the logger and through `DeprecationWarning`. They surface in pytest
+  output, and it's worth running
+  `pytest tests/ --ignore=tests/integration -W error::DeprecationWarning`
+  after a bump — a warning that's merely noisy today is a hard failure two
+  releases out, and it is much cheaper to fix while it is still a warning.
+- **Hassfest.** The `hassfest` job validates `manifest.json` against current HA
+  expectations (dependencies, iot_class, integration_type, version). It fails on
+  manifest-level breakage the unit tests can't see.
+- **HACS Action.** Validates repository structure and `hacs.json`.
+
+### Adopting new HA APIs
+
+The rule: **a new HA API may only be used unguarded when the declared minimum
+permits it.** Otherwise guard it, or don't use it.
+
+`hacs.json` declares the floor:
+
+```json
+"homeassistant": "2024.1.0"
+```
+
+Be honest about what that number is worth: **it is currently an unverified
+assertion.** CI installs exactly one HA version and tests exactly that one. It
+has never once executed this integration against HA 2024.1.0, so the floor is a
+claim, not a tested contract. Treat it as a promise we've made to users rather
+than a fact we've checked — which means don't casually break it, and don't
+casually trust it either. (Verifying it would mean a second CI matrix leg
+pinning the oldest supported HA. That's a maintainer decision, not a drive-by
+one.)
+
+When HA introduces a replacement for something we call:
+
+1. **Prefer a guarded call over a bump.** Feature-detect rather than
+   version-sniff where you can — `hasattr` on the helper, or a `try: from … import
+   new_thing / except ImportError:` fallback to the old one. The old path keeps
+   working on older servers and gets deleted when the floor eventually rises.
+2. **Only raise `hacs.json`'s minimum deliberately**, as its own decision with
+   its own reasoning, never as a side effect of "the new API is nicer". Raising
+   it strands every user below the new floor — HACS will refuse to offer them
+   updates. If a change genuinely requires a newer HA, stop and ask the
+   maintainer rather than bumping the floor to make your diff compile.
+3. **Never silence a deprecation warning.** Suppressing it converts a dated,
+   actionable notice into a surprise outage on the release that removes the API.
+   Fix the call properly, guarded if need be.
+
+This is also why ruff's `target-version` in `pyproject.toml` is `py312` while CI
+runs Python 3.14. `target-version` governs what syntax the `UP` rules will
+rewrite *our shipped source* into, and that source has to import cleanly on the
+oldest server we claim to support (HA 2024.1.0 → Python 3.11). Bumping it to
+match the runner would let ruff auto-rewrite the integration into syntax an
+older HA cannot parse — a backwards-compatibility break introduced by a linter.
+The two numbers are supposed to differ; don't "fix" them into agreement.
+
+### Known gaps
+
+Worth stating plainly so nobody mistakes green CI for coverage we don't have:
+
+- The `hacs.json` floor of 2024.1.0 is untested (above). `target-version =
+  "py312"` is also *stricter* than that floor implies (2024.1.0 runs on Python
+  3.11), so the two disagree by one version; resolving that — lower
+  `target-version` to `py311`, or raise the declared floor — is a maintainer
+  call.
+- CI tests one HA version, so "works on current HA" and "works on the floor"
+  are two different claims and we only ever check the first.
 
 ## Common tasks
 
