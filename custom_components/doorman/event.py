@@ -8,7 +8,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
-from .coordinator import DoormanCoordinator
+from .coordinator import DOORBELL_EVENT_TYPE, DoormanCoordinator
 
 
 async def async_setup_entry(
@@ -35,10 +35,14 @@ class DoormanAccessEventEntity(EventEntity):
         "card_entered",
         "finger_entered",
         "mobile_key",
+        "doorbell_pressed",
     ]
     _attr_icon = "mdi:shield-account"
 
-    # Map 2N event type strings → HA event type slugs
+    # Map 2N event type strings → HA event type slugs. ``DoorbellPressed``
+    # is a synthetic value fired by the coordinator (see
+    # ``DOORBELL_EVENT_TYPE``) — not a raw 2N event name — so keypad
+    # digits don't trigger doorbell automations.
     _EVENT_MAP = {
         "UserAuthenticated": "authenticated",
         "UserRejected": "rejected",
@@ -46,6 +50,7 @@ class DoormanAccessEventEntity(EventEntity):
         "CardEntered": "card_entered",
         "FingerEntered": "finger_entered",
         "MobKeyEntered": "mobile_key",
+        DOORBELL_EVENT_TYPE: "doorbell_pressed",
     }
 
     def __init__(

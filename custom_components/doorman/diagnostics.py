@@ -25,6 +25,14 @@ async def async_get_config_entry_diagnostics(
         "options": dict(entry.options),
     }
 
+    # Notification settings are stored in DoormanStore rather than in
+    # entry.options (see storage.py), so dump them explicitly — otherwise a
+    # misconfigured doorbell key would be invisible in a support bundle.
+    store = hass.data.get(f"{DOMAIN}_store")
+    diag["notification_settings"] = (
+        store.get_notification_settings(entry.entry_id) if store else "no_store"
+    )
+
     if coordinator is None:
         diag["coordinator"] = "not_loaded"
         return diag

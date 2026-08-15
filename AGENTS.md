@@ -15,14 +15,18 @@ repo was built to cover that gap.
 ```
 custom_components/doorman/
   __init__.py          — entry setup, static file serving, panel registration, services
+                         (incl. doorman.hangup_calls and doorman.resync_log_history)
   api_client.py        — TwoNApiClient: async HTTP wrapper around the 2N local REST API
-                         (directory, switches, log, and call control)
+                         (directory, switches, log, log history, and call control)
   config_flow.py       — UI config flow (host / username / password / SSL options)
-  coordinator.py       — DataUpdateCoordinator: polls users, switches, log; fires bus events
-  storage.py           — DoormanStore: persists UUID↔HA-user links and notify targets
+  coordinator.py       — DataUpdateCoordinator: polls users, switches, log; fires bus
+                         events (incl. the doorbell); runs the access-log backfill
+  storage.py           — DoormanStore: persists UUID↔HA-user links, notify targets,
+                         and per-entry notification settings
                          AccessLogStore: durable per-entry access-log history
   notifications.py     — Listens for doorman_access bus events, dispatches notify.* calls
-  websocket.py         — 9 WebSocket commands exposed to the frontend panel
+  ios_sounds.py        — Static catalog of iOS Companion notification sounds for the panel
+  websocket.py         — 12 WebSocket commands exposed to the frontend panel
   sensor.py            — User count sensor
   switch.py            — Relay switches (one entity per 2N relay)
   event.py             — Access event entity
@@ -120,7 +124,10 @@ history file `async_remove_entry` just deleted.
 `_last_access`.** Only the live listener calls `_fire_new_access_events`;
 backfill writes straight to the store. This is the same guarantee the old
 no-watermark design provided — replaying history through the notification path
-would spam every notify target with stale door events after each restart.
+would spam every notify target with stale door events after each restart. It
+covers the synthetic `DoorbellPressed` event too: that is fired from inside
+`_fire_new_access_events`, so it is on the live path only and a backfilled
+`KeyPressed` can never ring anyone's phone.
 
 Dedupe key is `id@utcTime`, not `id` alone: the 2N event `id` is a uint32 that
 restarts at 1 after a device reboot, so a post-reboot event reusing an old id
@@ -133,10 +140,44 @@ The keys are 2N UUIDs, not HA user IDs, because a 2N user may exist without
 being linked to any HA account. The `notifications.py` module reads these
 targets when a `UserAuthenticated` event fires.
 
+### Notification settings live in DoormanStore, not entry.options
+The six per-flow notification settings (`access_sound_ios`,
+`access_channel_android`, `doorbell_sound_ios`, `doorbell_channel_android`,
+`doorbell_key_code`, `doorbell_targets`) are persisted in `DoormanStore`
+under `notification_settings`, keyed by config `entry_id`. Two reasons, both
+load-bearing:
+
+1. **The options flow would wipe them.** `DoormanOptionsFlow` renders only
+   `poll_interval` and finishes with `async_create_entry(data=user_input)`,
+   which *replaces* the whole options dict. Anything else stored there is
+   destroyed the first time a user opens Configure and presses Submit.
+2. **Writing options reloads the entry.** `add_update_listener` →
+   `async_reload` tears down the 2N log subscription, and per the section
+   above a fresh subscription starts empty with no watermark, so events in
+   the reload window are lost. On a single-entry install the unload path also
+   removes the sidebar panel, the store and every `doorman.*` service —
+   while the user is standing on the panel that triggered the save.
+
+Because nothing reloads, readers must not cache: `coordinator.py` re-reads
+the doorbell key from the store on every log batch and `notifications.py`
+reads sounds/channels per event, so a panel save applies to the next event.
+Keying by `entry_id` matters — `DoormanStore` is one shared instance across
+all entries, so an unkeyed dict would merge two doors' settings.
+
+An empty `doorbell_key_code` means "this device has no doorbell button" and
+disables the flow; to restore the default, send `"%1"` explicitly. Only the
+2N `%N` quick-dial form is accepted — a bare digit would make every PIN
+keystroke ring the doorbell.
+
 ### WebSocket API surface
-All frontend↔backend communication goes through the 9 WS commands in
+All frontend↔backend communication goes through the 12 WS commands in
 `websocket.py`. Don't add HA services for things that only the panel needs;
 use WS commands instead. Services are for HA automations / scripts.
+Give every command a real voluptuous schema (not just types) and test it
+through the `hass_ws_client` fixture — calling a handler directly bypasses
+schema validation entirely. Tests that need `hass_ws_client` must be marked
+`@pytest.mark.real_http` so the conftest sets up the genuine `http`
+component instead of the MagicMock.
 
 ### `doorman.resync_log_history`
 A service (not a WS command — a manual resync is legitimately automatable)
@@ -216,6 +257,12 @@ Add a method to `TwoNApiClient` in `api_client.py`. Use `self._get` or
 appropriate.
 
 ### Add a new persistent setting
-Add it to `DoormanStore` in `storage.py`. Update `_EMPTY` to include the
-new key so existing `.storage` files get it on migration. If the schema
-changes, bump `STORAGE_VERSION`.
+Add it to `DoormanStore` in `storage.py` — not to `entry.options` (see
+"Notification settings live in DoormanStore" above). Update `_empty_data()`
+to include the new key; `async_load` layers stored data over it, so existing
+`.storage` files pick up new keys with safe defaults automatically. Adding a
+key is *not* a breaking schema change and does not need a `STORAGE_VERSION`
+bump — only bump it when existing values change shape or meaning.
+
+Settings that belong to a specific 2N device must be keyed by config
+`entry_id`: the store is a single shared instance across all entries.

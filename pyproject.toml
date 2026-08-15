@@ -4,6 +4,9 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "DEBUG"
 pythonpath = ["."]
+markers = [
+    "real_http: set up the genuine http component instead of mocking it (needed by hass_ws_client)",
+]
 
 [tool.ruff]
 target-version = "py312"

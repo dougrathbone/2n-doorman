@@ -1,8 +1,12 @@
 """Persistent HA-side storage for Doorman.
 
-``DoormanStore`` stores two kinds of per-user metadata:
-  user_links          — 2N UUID → HA User ID (for identity linking)
+``DoormanStore`` stores per-user metadata:
+  user_links           — 2N UUID → HA User ID (for identity linking)
   notification_targets — 2N UUID → list of notify.* service targets
+  last_access          — 2N UUID → epoch seconds of the last successful access
+
+…and per-config-entry metadata:
+  notification_settings — entry_id → per-flow notification configuration
 
 ``AccessLogStore`` stores the durable access-log history, one file per
 config entry.
@@ -15,6 +19,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    CONF_ACCESS_CHANNEL_ANDROID,
+    CONF_ACCESS_SOUND_IOS,
+    CONF_DOORBELL_CHANNEL_ANDROID,
+    CONF_DOORBELL_KEY_CODE,
+    CONF_DOORBELL_SOUND_IOS,
+    CONF_DOORBELL_TARGETS,
+    DEFAULT_DOORBELL_KEY_CODE,
     LOG_SAVE_DELAY,
     LOG_STORAGE_KEY,
     LOG_STORAGE_VERSION,
@@ -31,7 +42,27 @@ def _empty_data() -> dict:
     copy of a shared dict would alias the nested dicts, so a mutation on one
     store instance would leak into the module global and every other instance.
     """
-    return {"user_links": {}, "notification_targets": {}, "last_access": {}}
+    return {
+        "user_links": {},
+        "notification_targets": {},
+        "last_access": {},
+        "notification_settings": {},
+    }
+
+
+def _default_notification_settings() -> dict:
+    """Return the default per-entry notification settings.
+
+    Empty strings mean "use the Companion app default" for sound/channel.
+    """
+    return {
+        CONF_ACCESS_SOUND_IOS: "",
+        CONF_ACCESS_CHANNEL_ANDROID: "",
+        CONF_DOORBELL_SOUND_IOS: "",
+        CONF_DOORBELL_CHANNEL_ANDROID: "",
+        CONF_DOORBELL_KEY_CODE: DEFAULT_DOORBELL_KEY_CODE,
+        CONF_DOORBELL_TARGETS: [],
+    }
 
 
 class DoormanStore:
@@ -42,9 +73,17 @@ class DoormanStore:
         self._data: dict = _empty_data()
 
     async def async_load(self) -> None:
-        """Load data from disk. Call once during integration setup."""
+        """Load data from disk. Call once during integration setup.
+
+        Stored data is layered over a fresh empty structure so a `.storage`
+        file written by an older version gains any newly added top-level keys
+        with safe defaults — no STORAGE_VERSION bump required for additive
+        schema changes.
+        """
         stored = await self._store.async_load()
-        self._data = stored or _empty_data()
+        self._data = _empty_data()
+        if stored:
+            self._data.update(stored)
 
     # ------------------------------------------------------------------ #
     # Read                                                                 #
@@ -131,6 +170,58 @@ class DoormanStore:
         """Remove all notification targets for a 2N UUID. Persists immediately."""
         if self._data.get("notification_targets", {}).pop(two_n_uuid, None) is not None:
             await self._store.async_save(self._data)
+
+    # ------------------------------------------------------------------ #
+    # Per-entry notification settings                                      #
+    # ------------------------------------------------------------------ #
+    #
+    # These live here rather than in ``entry.options`` for two reasons:
+    #
+    # 1. The options flow only shows ``poll_interval``, and
+    #    ``async_create_entry(data=user_input)`` replaces the whole options
+    #    dict — so opening Configure and pressing Submit would wipe every
+    #    panel-set notification setting.
+    # 2. Writing options fires the entry's update listener, which reloads the
+    #    entry. A reload tears down the 2N log subscription, and a fresh
+    #    subscription starts empty with no watermark, so events during the
+    #    reload window are lost. Saving notification settings must not cost
+    #    the user their doorbell events.
+    #
+    # Keyed by config ``entry_id``: the store is a single shared instance
+    # across all entries, so a flat (unkeyed) dict would merge the settings of
+    # every 2N device in a multi-device install.
+
+    @property
+    def notification_settings(self) -> dict[str, dict]:
+        """Return the full map of ``{entry_id: settings}`` as stored."""
+        return self._data.get("notification_settings", {})
+
+    def get_notification_settings(self, entry_id: str) -> dict:
+        """Return the notification settings for a config entry.
+
+        Always returns every key: stored values are layered over the defaults,
+        so callers never have to handle a missing field.
+        """
+        settings = _default_notification_settings()
+        settings.update(self.notification_settings.get(entry_id, {}))
+        # Hand back a copy of the mutable list so a caller can't mutate the
+        # stored value without going through set_notification_settings.
+        settings[CONF_DOORBELL_TARGETS] = list(settings[CONF_DOORBELL_TARGETS] or [])
+        return settings
+
+    async def set_notification_settings(self, entry_id: str, updates: dict) -> dict:
+        """Merge ``updates`` into an entry's notification settings and persist.
+
+        Partial updates are merged rather than replacing the whole dict so a
+        caller that only owns some of the fields can't silently drop the rest.
+        Returns the full effective settings after the merge.
+        """
+        settings = self.get_notification_settings(entry_id)
+        settings.update(updates)
+        settings[CONF_DOORBELL_TARGETS] = list(settings[CONF_DOORBELL_TARGETS] or [])
+        self._data.setdefault("notification_settings", {})[entry_id] = settings
+        await self._store.async_save(self._data)
+        return self.get_notification_settings(entry_id)
 
 
 # ---------------------------------------------------------------------- #

@@ -112,6 +112,38 @@ async def test_options_flow_saves_poll_interval(
 
 
 @pytest.mark.asyncio
+async def test_options_flow_submit_preserves_notification_settings(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Opening Configure and pressing Submit must not wipe panel-set settings.
+
+    ``async_create_entry(data=user_input)`` replaces the whole options dict and
+    the form only carries ``poll_interval``, so anything else kept in
+    ``entry.options`` would be destroyed here. Notification settings live in
+    DoormanStore precisely so that cannot happen.
+    """
+    store = hass.data[f"{DOMAIN}_store"]
+    settings = {
+        "access_sound_ios": "US-EN-Alexa-Front-Door-Opened.wav",
+        "doorbell_key_code": "%2",
+        "doorbell_targets": ["notify.mobile_app"],
+    }
+    await store.set_notification_settings(setup_doorman.entry_id, settings)
+
+    result = await hass.config_entries.options.async_init(setup_doorman.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"poll_interval": 30}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    stored = hass.data[f"{DOMAIN}_store"].get_notification_settings(setup_doorman.entry_id)
+    assert stored["access_sound_ios"] == "US-EN-Alexa-Front-Door-Opened.wav"
+    assert stored["doorbell_key_code"] == "%2"
+    assert stored["doorbell_targets"] == ["notify.mobile_app"]
+
+
+@pytest.mark.asyncio
 async def test_reauth_flow_shows_form(
     hass: HomeAssistant, setup_doorman: MockConfigEntry,
 ) -> None:

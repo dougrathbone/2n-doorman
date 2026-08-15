@@ -162,17 +162,37 @@ if _PAHCC_AVAILABLE:
     # ─── HA frontend / HTTP mock ──────────────────────────────────────────────────
 
     @pytest.fixture(autouse=True)
-    async def mock_frontend_setup(hass):
+    async def mock_frontend_setup(hass, request):
         """Mock HA HTTP and panel_custom calls.
 
         These require a live HTTP server which is not available in unit tests.
         The actual serving behaviour is tested in e2e / manual testing.
+
+        Tests marked ``@pytest.mark.real_http`` opt out of the ``http`` mock and
+        get the genuine component instead: ``hass_ws_client`` connects to
+        ``hass.http.app``, so a MagicMock there makes the fixture unusable. Those
+        tests exercise the WebSocket commands end-to-end (voluptuous schema
+        validation included) rather than calling the handlers directly.
         """
+        real_http = "real_http" in request.keywords
+
         # Mark frontend, panel_custom, and http as already set up so HA won't try
         # to load them (they require heavy optional deps not available in unit tests)
-        for comp in ("frontend", "panel_custom", "http"):
+        mocked = ("frontend", "panel_custom") if real_http else ("frontend", "panel_custom", "http")
+        for comp in mocked:
             if comp not in hass.config.components:
                 mock_component(hass, comp)
+
+        if real_http:
+            from homeassistant.setup import async_setup_component
+
+            assert await async_setup_component(hass, "http", {})
+            with patch(
+                "custom_components.doorman.panel_custom.async_register_panel",
+                new=AsyncMock(),
+            ):
+                yield
+            return
 
         mock_http = MagicMock()
         mock_http.async_register_static_paths = AsyncMock()

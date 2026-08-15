@@ -5,6 +5,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.doorman.const import DOMAIN
 from custom_components.doorman.diagnostics import async_get_config_entry_diagnostics
 
 from .conftest import MOCK_DEVICE_INFO
@@ -27,6 +28,20 @@ async def test_diagnostics_returns_coordinator_state(
     assert coord["switch_count"] == 1
     assert isinstance(coord["access_points"], list)
     assert coord["log_task_running"] is True
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_includes_notification_settings(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Notification settings live in the store, so diagnostics must dump them."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_settings(setup_doorman.entry_id, {"doorbell_key_code": "%2"})
+
+    diag = await async_get_config_entry_diagnostics(hass, setup_doorman)
+
+    assert diag["notification_settings"]["doorbell_key_code"] == "%2"
 
 
 @pytest.mark.asyncio

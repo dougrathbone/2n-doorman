@@ -1,13 +1,60 @@
 """WebSocket API handlers for the Doorman sidebar panel."""
 from __future__ import annotations
 
+import re
+
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
+from .ios_sounds import catalog_for_ws
 from .storage import DoormanStore
+
+# The panel's <select> uses this sentinel to mean "reveal a free-text field".
+# It is UI-only: if it ever reached the backend it would be persisted as a
+# sound filename and end up in ``data.push.sound``, where the Companion app
+# would silently fall back to the default sound.
+UI_CUSTOM_SENTINEL = "__custom__"
+
+# 2N reports quick-dial / call buttons as "%N" in ``KeyPressed.params.key``;
+# ordinary keypad presses are reported as bare characters ("5", "*", "#").
+# Accepting a bare digit as the doorbell key would make every PIN keystroke
+# ring the doorbell, so only the "%N" form is allowed.
+_DOORBELL_KEY_RE = re.compile(r"^%\d{1,2}$")
+
+
+def _doorbell_key_code(value: str) -> str:
+    """Validate a doorbell key code.
+
+    ``""`` is accepted and means "this device has no doorbell button" — the
+    coordinator then fires no DoorbellPressed events at all. To restore the
+    default, send the default value (``"%1"``) explicitly; there is
+    deliberately no magic "reset" value, so the meaning of every accepted
+    input is unambiguous.
+    """
+    if value == "":
+        return value
+    if not _DOORBELL_KEY_RE.match(value):
+        raise vol.Invalid(
+            "doorbell_key_code must be a 2N quick-dial code such as '%1', "
+            f"or '' to disable the doorbell — got {value!r}"
+        )
+    return value
+
+
+def _presentation_value(value: str) -> str:
+    """Reject the panel's UI-only 'custom' sentinel from a sound/channel field."""
+    if value == UI_CUSTOM_SENTINEL:
+        raise vol.Invalid(
+            f"{UI_CUSTOM_SENTINEL!r} is a UI placeholder, not a sound or channel name"
+        )
+    return value
+
+
+_PRESENTATION = vol.All(str, _presentation_value)
 
 
 def async_setup_websocket(hass: HomeAssistant) -> None:
@@ -24,6 +71,9 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_unlink_user)
     websocket_api.async_register_command(hass, ws_list_notify_services)
     websocket_api.async_register_command(hass, ws_set_notification_targets)
+    websocket_api.async_register_command(hass, ws_get_notification_settings)
+    websocket_api.async_register_command(hass, ws_set_notification_settings)
+    websocket_api.async_register_command(hass, ws_send_test_notification)
 
 
 def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> DoormanCoordinator | None:
@@ -308,4 +358,171 @@ async def ws_set_notification_targets(
         return
 
     await store.set_notification_targets(msg["two_n_uuid"], msg["targets"])
+    connection.send_result(msg["id"], {"success": True})
+
+
+# ------------------------------------------------------------------ #
+# Per-entry notification settings (Notifications tab)                  #
+# ------------------------------------------------------------------ #
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_notification_settings",
+        vol.Optional("entry_id"): str,
+    }
+)
+@callback
+def ws_get_notification_settings(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return notification settings + the iOS sound catalog for the panel.
+
+    The catalog is returned alongside the settings so a single round-trip
+    populates the entire Notifications tab (dropdown options + current
+    values). A separate ``list_notify_services`` call still exists for
+    the per-user Users tab.
+    """
+    if not _require_admin(connection, msg):
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    store = _store(hass)
+    if coordinator is None or store is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    entry = coordinator.config_entry
+    notify_services = sorted(
+        f"notify.{s}"
+        for s in hass.services.async_services().get("notify", {})
+        if s not in ("notify", "send_message")
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "device_name": entry.title,
+            # The DoormanStore keys are the wire keys (see const.py), and the
+            # store fills in defaults, so the stored dict is the payload.
+            "settings": store.get_notification_settings(entry.entry_id),
+            "ios_sound_catalog": catalog_for_ws(),
+            "notify_services": notify_services,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_notification_settings",
+        vol.Optional("entry_id"): str,
+        vol.Required("settings"): {
+            vol.Optional("access_sound_ios"): _PRESENTATION,
+            vol.Optional("access_channel_android"): _PRESENTATION,
+            vol.Optional("doorbell_sound_ios"): _PRESENTATION,
+            vol.Optional("doorbell_channel_android"): _PRESENTATION,
+            vol.Optional("doorbell_key_code"): vol.All(str, _doorbell_key_code),
+            vol.Optional("doorbell_targets"): [str],
+        },
+    }
+)
+@websocket_api.async_response
+async def ws_set_notification_settings(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Persist all notification-related settings for a Doorman entry.
+
+    Written to ``DoormanStore`` keyed by entry_id, deliberately not to
+    ``entry.options``:
+
+    * The options flow only renders ``poll_interval`` and replaces the whole
+      options dict on submit, so anything else stored there is destroyed the
+      first time someone opens Configure.
+    * Writing options fires the entry's update listener, reloading the entry.
+      That drops the 2N log subscription (a fresh one starts empty, with no
+      watermark) and, on a single-entry install, also tears down the sidebar
+      panel and the ``doorman.*`` services — while the user is standing on the
+      panel that triggered the save.
+
+    No reload is needed: the coordinator re-reads the doorbell key from the
+    store on every log batch, and notifications.py reads sounds/channels per
+    event, so a saved change applies to the very next event.
+    """
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Admin access required")
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    store = _store(hass)
+    if coordinator is None or store is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    settings = await store.set_notification_settings(
+        coordinator.config_entry.entry_id, msg["settings"]
+    )
+    connection.send_result(msg["id"], {"settings": settings})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/send_test_notification",
+        vol.Required("target"): str,
+        vol.Required("title"): str,
+        vol.Required("message"): str,
+        vol.Optional("ios_sound", default=""): _PRESENTATION,
+        vol.Optional("android_channel", default=""): _PRESENTATION,
+    }
+)
+@websocket_api.async_response
+async def ws_send_test_notification(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Fire a single notify.* call for the Preview button.
+
+    Uses the same payload shape as the real dispatch (``data.push.sound``
+    on iOS, ``data.channel`` on Android) so what the user hears in
+    preview matches what they'll hear live.
+
+    The call is ``blocking=True`` on purpose. The whole point of Preview is to
+    report whether the notification actually went out, so a failure from the
+    Companion handler (expired push token, unregistered device, bad channel)
+    must reach the panel as an error rather than a green "sent" toast.
+    """
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Admin access required")
+        return
+
+    target: str = msg["target"]
+    service = target.removeprefix("notify.")
+    if not hass.services.has_service("notify", service):
+        connection.send_error(
+            msg["id"],
+            "unknown_target",
+            f"Notify target {target!r} is not registered",
+        )
+        return
+
+    data: dict = {"tag": "doorman_test"}
+    if msg.get("ios_sound"):
+        data["push"] = {"sound": msg["ios_sound"]}
+    if msg.get("android_channel"):
+        data["channel"] = msg["android_channel"]
+
+    try:
+        await hass.services.async_call(
+            "notify",
+            service,
+            {"title": msg["title"], "message": msg["message"], "data": data},
+            blocking=True,
+        )
+    except HomeAssistantError as err:
+        # Expected failure mode (the notify platform rejected the payload or
+        # the device is gone): report it cleanly instead of letting the
+        # generic handler log a traceback.
+        connection.send_error(msg["id"], "notify_failed", str(err))
+        return
+
     connection.send_result(msg["id"], {"success": True})

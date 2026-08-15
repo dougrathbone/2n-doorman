@@ -124,6 +124,33 @@ async def test_known_event_type_lowercased_via_map(
 
 
 @pytest.mark.asyncio
+async def test_doorbell_pressed_event_type(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A DoorbellPressed event maps to the 'doorbell_pressed' HA event type."""
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": doorman_config_entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+            "utc_time": 1743250000,
+        },
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("event.doorman_access")
+    assert state is not None
+    assert state.attributes.get("event_type") == "doorbell_pressed"
+
+
+@pytest.mark.asyncio
 async def test_rejected_event_type(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,
