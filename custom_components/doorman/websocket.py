@@ -5,7 +5,7 @@ import re
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
@@ -74,6 +74,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_notification_settings)
     websocket_api.async_register_command(hass, ws_set_notification_settings)
     websocket_api.async_register_command(hass, ws_send_test_notification)
+    websocket_api.async_register_command(hass, ws_subscribe_events)
 
 
 def _coordinator(hass: HomeAssistant, entry_id: str | None = None) -> DoormanCoordinator | None:
@@ -525,3 +526,58 @@ async def ws_send_test_notification(
         return
 
     connection.send_result(msg["id"], {"success": True})
+
+
+# ------------------------------------------------------------------ #
+# Live event subscription                                              #
+# ------------------------------------------------------------------ #
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/subscribe_events",
+        vol.Optional("entry_id"): str,
+    }
+)
+@callback
+def ws_subscribe_events(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Subscribe the panel to live ``doorman_access`` events for one device.
+
+    Each matching bus event is pushed to the subscriber as a WS event with
+    the same shape as the log-tab rows ({event_type, params, utc_time}),
+    so the access log updates live instead of only on manual refresh.
+    """
+    if not _require_admin(connection, msg):
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "not_configured",
+            "No Doorman device is configured, or entry_id is required for multi-device installs",
+        )
+        return
+    entry_id = coordinator.config_entry.entry_id
+
+    @callback
+    def _forward(event: Event) -> None:
+        if event.data.get("entry_id") != entry_id:
+            return
+        connection.send_event(
+            msg["id"],
+            {
+                "entry_id": entry_id,
+                "event_type": event.data.get("event_type"),
+                "params": event.data.get("params", {}),
+                "utc_time": event.data.get("utc_time"),
+            },
+        )
+
+    # Dropping the entry in .subscriptions makes HA cancel it on disconnect.
+    connection.subscriptions[msg["id"]] = hass.bus.async_listen(
+        f"{DOMAIN}_access", _forward
+    )
+    connection.send_result(msg["id"], {"entry_id": entry_id})

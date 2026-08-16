@@ -28,7 +28,8 @@ custom_components/doorman/
                          AccessLogStore: durable per-entry access-log history
   notifications.py     — Listens for doorman_access bus events, dispatches notify.* calls
   ios_sounds.py        — Static catalog of iOS Companion notification sounds for the panel
-  websocket.py         — 12 WebSocket commands exposed to the frontend panel
+  websocket.py         — 13 WebSocket commands exposed to the frontend panel
+                         (incl. subscribe_events, which pushes live log events)
   sensor.py            — User count sensor
   switch.py            — Relay switches (one entity per 2N relay)
   event.py             — Access/security/state event entity
