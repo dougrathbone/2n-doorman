@@ -57,6 +57,7 @@ async def test_coordinator_fetch_returns_users_and_switches(
     client.check_directory_write_permission = AsyncMock(return_value=True)
     client.get_access_point_caps = AsyncMock(return_value=[{"id": 1, "name": "Access point 1"}])
     client.get_camera_caps = AsyncMock(return_value={})
+    client.get_io_caps = AsyncMock(return_value=[])
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
 

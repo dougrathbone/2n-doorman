@@ -779,3 +779,17 @@ class TwoNApiClient:
         return await self._request_raw(
             "camera/snapshot", params={"width": width, "height": height}
         )
+
+    # ------------------------------------------------------------------ #
+    # Inputs / outputs (/api/io/*)                                         #
+    # ------------------------------------------------------------------ #
+
+    async def get_io_caps(self) -> list[dict[str, Any]]:
+        """List hardware ports: ``[{"port": "input1", "type": "input"}, …]``."""
+        data = await self._request("GET", "io/caps")
+        return data.get("result", {}).get("ports", [])
+
+    async def get_io_status(self) -> list[dict[str, Any]]:
+        """Current logic state of all ports: ``[{"port": "input1", "state": 0}, …]``."""
+        data = await self._request("GET", "io/status")
+        return data.get("result", {}).get("ports", [])

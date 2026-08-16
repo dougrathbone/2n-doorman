@@ -35,6 +35,26 @@ ACCESS_EVENTS = {
     "MobKeyEntered",
 }
 
+# Security-relevant 2N log event types — door forced/held open, tamper, etc.
+# Fired on the bus like access events so automations can alert on them.
+SECURITY_EVENTS = {
+    "UnauthorizedDoorOpen",
+    "DoorOpenTooLong",
+    "TamperSwitchActivated",
+    "SwitchesBlocked",
+    "SilentAlarm",
+    "LoginBlocked",
+}
+
+# State-change 2N log event types — fired on the bus AND applied to entity
+# state immediately (no waiting for the next scheduled poll).
+STATE_EVENTS = {
+    "DoorStateChanged",
+    "SwitchStateChanged",
+    "InputChanged",
+    "OutputChanged",
+}
+
 # Synthetic event_type emitted on the bus when a KeyPressed matches the
 # configured doorbell key. Downstream listeners (event entity, notifications)
 # discriminate on this rather than raw "KeyPressed" so keypad digits don't
@@ -91,6 +111,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client = client
         self.device_info: dict[str, Any] = {}
         self.access_points: list[dict[str, Any]] = []
+        self.camera_caps: dict[str, Any] = {}
+        self.io_ports: list[dict[str, Any]] = []
         self.has_write_permission: bool = True
         # Durable access-log history for this entry — survives restarts and
         # reloads, unlike the in-memory buffer it replaces.
@@ -115,6 +137,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.has_write_permission = await self.client.check_directory_write_permission()
         self.access_points: list[dict[str, Any]] = await self.client.get_access_point_caps()
         self.camera_caps: dict[str, Any] = await self._probe_camera_caps()
+        self.io_ports: list[dict[str, Any]] = await self._probe_io_caps()
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "
@@ -138,6 +161,19 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not caps.get("jpegResolution"):
             return {}
         return caps
+
+    async def _probe_io_caps(self) -> list[dict[str, Any]]:
+        """Fetch I/O port capabilities, tolerating devices without the I/O service.
+
+        Older firmware returns code 2 (invalid request path) for /api/io/*;
+        without caps the coordinator never polls /api/io/status, so such
+        devices don't pay for a failing request every cycle.
+        """
+        try:
+            return await self.client.get_io_caps()
+        except (DoormanApiError, TimeoutError) as err:
+            _LOGGER.debug("Doorman: I/O service not available (%s)", err)
+            return []
 
     async def async_load_access_log(self) -> None:
         """Load this entry's persisted access-log history.
@@ -378,10 +414,17 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            users, switches = await asyncio.gather(
+            coros: list[Any] = [
                 self.client.query_users(),
                 self.client.get_switch_status(),
-            )
+            ]
+            # Only poll I/O when the caps probe found ports — devices without
+            # the I/O service would otherwise error every cycle.
+            if self.io_ports:
+                coros.append(self.client.get_io_status())
+            results = await asyncio.gather(*coros)
+            users, switches = results[0], results[1]
+            io_status = results[2] if len(results) > 2 else []
         except DoormanAuthError as err:
             self._consecutive_auth_failures += 1
             if self._consecutive_auth_failures >= AUTH_FAILURE_THRESHOLD:
@@ -401,6 +444,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "users": users,
             "switches": switches,
+            "io": io_status,
             "log_events": self.log_store.events,
             "has_write_permission": self.has_write_permission,
             "last_access": self._last_access,
@@ -425,7 +469,12 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _fire_new_access_events(self, events: list[dict[str, Any]]) -> None:
-        """Fire HA bus events for log entries returned since the last poll.
+        """Process log entries returned since the last poll.
+
+        Fires ``doorman_access`` bus events for access, security, and state
+        events, and applies state events (switch/door/I-O) to coordinator data
+        immediately so entities reflect them without waiting for the next
+        scheduled poll.
 
         The bus event carries the originating ``entry_id`` so per-entry
         listeners (event entities, per-device UI) can ignore events from
@@ -441,7 +490,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             event_type = event.get("event", "")
             params = event.get("params", {})
             utc_time = event.get("utcTime")
-            if event_type in ACCESS_EVENTS:
+            if event_type in ACCESS_EVENTS | SECURITY_EVENTS | STATE_EVENTS:
                 self.hass.bus.async_fire(
                     f"{DOMAIN}_access",
                     {
@@ -451,6 +500,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "utc_time": utc_time,
                     },
                 )
+                self._apply_state_event(event_type, params)
             # KeyPressed reports every keypad interaction; only the
             # configured doorbell key fires a doorbell event. An empty
             # doorbell key disables the flow entirely.
@@ -475,3 +525,24 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if user_uuid and utc_time:
                     self._last_access[str(user_uuid)] = utc_time
                     self._pending_access_saves.append((str(user_uuid), utc_time))
+
+    def _apply_state_event(self, event_type: str, params: dict[str, Any]) -> None:
+        """Apply a state-change log event to coordinator data in place.
+
+        The listener's post-pull ``async_set_updated_data`` picks the mutation
+        up in the same batch, so entities see the change immediately.
+        """
+        if self.data is None:
+            return
+        if event_type == "SwitchStateChanged":
+            switch_id = params.get("switch")
+            for sw in self.data.get("switches", []):
+                if sw.get("id") == switch_id:
+                    sw["active"] = bool(params.get("state"))
+                    break
+        elif event_type in ("InputChanged", "OutputChanged"):
+            port = params.get("port")
+            for p in self.data.get("io", []):
+                if p.get("port") == port:
+                    p["state"] = int(bool(params.get("state")))
+                    break
