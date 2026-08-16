@@ -305,6 +305,80 @@ class TwoNApiClient:
         except aiohttp.ClientError as err:
             raise DoormanApiError(f"Request failed: {err}") from err
 
+    async def _request_raw(
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        request_timeout: int = 10,
+    ) -> bytes:
+        """GET an endpoint that returns binary data (e.g. image/jpeg).
+
+        Mirrors the digest-auth handshake of :meth:`_request` (initial attempt,
+        digest retry, stale-nonce retry) but returns the response body as bytes.
+        """
+        url = f"{self._base_url}/api/{endpoint}"
+        ssl_ctx = self._ssl_context()
+        timeout = aiohttp.ClientTimeout(total=request_timeout)
+
+        async def _read(resp: aiohttp.ClientResponse) -> bytes:
+            content_type = resp.headers.get("Content-Type", "")
+            if resp.status != 200 or not content_type.startswith("image/"):
+                # Error replies come back as application/json
+                with contextlib.suppress(Exception):
+                    data = await resp.json()
+                    _raise_api_error(data.get("error", {}), data)
+                raise DoormanApiError(
+                    f"Unexpected response from {endpoint}: "
+                    f"status={resp.status} content-type={content_type}"
+                )
+            return await resp.read()
+
+        try:
+            async with self._session.get(
+                url, params=params, ssl=ssl_ctx, timeout=timeout
+            ) as resp:
+                if resp.status == 401:
+                    digest_challenge = self._pick_digest_challenge(resp.headers)
+                    if digest_challenge is None:
+                        raise DoormanAuthError("Invalid credentials")
+                    auth_header = self._build_digest_header("GET", url, digest_challenge)
+                    async with self._session.get(
+                        url, params=params, ssl=ssl_ctx, timeout=timeout,
+                        headers={"Authorization": auth_header},
+                    ) as resp2:
+                        if resp2.status == 401:
+                            stale_challenge = self._pick_digest_challenge(resp2.headers)
+                            if stale_challenge and self._challenge_is_stale(stale_challenge):
+                                stale_auth = self._build_digest_header(
+                                    "GET", url, stale_challenge
+                                )
+                                async with self._session.get(
+                                    url, params=params, ssl=ssl_ctx, timeout=timeout,
+                                    headers={"Authorization": stale_auth},
+                                ) as resp3:
+                                    if resp3.status == 401:
+                                        raise DoormanAuthError("Invalid credentials")
+                                    return await _read(resp3)
+                            raise DoormanAuthError("Invalid credentials")
+                        if resp2.status == 403:
+                            raise DoormanAuthError(
+                                "Permission denied — ensure the API user has Camera access"
+                            )
+                        return await _read(resp2)
+                if resp.status == 403:
+                    raise DoormanAuthError(
+                        "Permission denied — ensure the API user has Camera access"
+                    )
+                return await _read(resp)
+        except aiohttp.ClientConnectorError as err:
+            raise DoormanConnectionError(
+                f"Cannot connect to {self._base_url}"
+            ) from err
+        except (DoormanApiError, DoormanAuthError, DoormanConnectionError):
+            raise
+        except aiohttp.ClientError as err:
+            raise DoormanApiError(f"Request failed: {err}") from err
+
     # ------------------------------------------------------------------ #
     # System                                                               #
     # ------------------------------------------------------------------ #
@@ -681,3 +755,27 @@ class TwoNApiClient:
             await self.hangup_call(int(session_id))
             hung_up += 1
         return hung_up
+
+
+    # ------------------------------------------------------------------ #
+    # Camera (/api/camera/*)                                               #
+    # ------------------------------------------------------------------ #
+
+    async def get_camera_caps(self) -> dict[str, Any]:
+        """Return camera capabilities (supported JPEG resolutions, sources).
+
+        Empty dict when the device has no camera or the API user lacks the
+        Camera privilege.
+        """
+        data = await self._request("GET", "camera/caps")
+        return data.get("result", {})
+
+    async def get_camera_snapshot(self, width: int = 640, height: int = 480) -> bytes:
+        """Fetch a single JPEG snapshot from the intercom camera.
+
+        ``width``/``height`` must be one of the combinations reported by
+        :meth:`get_camera_caps` — the device rejects unsupported sizes.
+        """
+        return await self._request_raw(
+            "camera/snapshot", params={"width": width, "height": height}
+        )

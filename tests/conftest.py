@@ -77,6 +77,28 @@ if _PAHCC_AVAILABLE:
         {"id": 1, "name": "Main Door", "active": False},
     ]
 
+    MOCK_CAMERA_CAPS = {
+        "jpegResolution": [
+            {"width": 320, "height": 240},
+            {"width": 640, "height": 480},
+        ]
+    }
+
+    # Smallest valid JPEG (1x1 white) for snapshot tests
+    MOCK_JPEG = bytes.fromhex(
+        "ffd8ffe000104a46494600010100000100010000"
+        "ffdb0043000302020302020303030304030304050805050404050a07070608"
+        "0c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514"
+        "ffc0000b080001000101011100"
+        "ffc4001f0000010501010101010100000000000000000102030405060708090a0b"
+        "ffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191"
+        "42a10815b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748"
+        "494a535455565758595a636465666768696a737475767778797a838485868788898a9293949596979899"
+        "9aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3"
+        "e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"
+        "ffda0008010100003f00d2cf20ffd9"
+    )
+
     # NB: 2N places identifiers flat on params (name/uuid) — there is no
     # nested "user" object. utcTime is epoch seconds (uint32) on a real
     # device, not an ISO string. See /api/log/pull output on a real device.
@@ -149,6 +171,8 @@ if _PAHCC_AVAILABLE:
         mock.get_call_status = AsyncMock(return_value=[])
         mock.hangup_call = AsyncMock(return_value=None)
         mock.hangup_all_calls = AsyncMock(return_value=0)
+        mock.get_camera_caps = AsyncMock(return_value=MOCK_CAMERA_CAPS)
+        mock.get_camera_snapshot = AsyncMock(return_value=MOCK_JPEG)
         mock.async_close = AsyncMock(return_value=None)
 
         with patch(

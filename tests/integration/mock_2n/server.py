@@ -200,6 +200,21 @@ async def hangup_call(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+# Minimal JPEG payload (SOI/EOI markers) — enough for HA's camera proxy.
+_MOCK_JPEG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9")
+
+
+async def get_camera_caps(request: web.Request) -> web.Response:
+    return web.json_response({"success": True, "result": {
+        "jpegResolution": [{"width": 320, "height": 240}, {"width": 640, "height": 480}],
+    }})
+
+
+async def get_camera_snapshot(request: web.Request) -> web.Response:
+    _log("GET", "/api/camera/snapshot", dict(request.rel_url.query))
+    return web.Response(body=_MOCK_JPEG, content_type="image/jpeg")
+
+
 # ─── Admin endpoints (for test assertions) ──────────────────────────────────
 
 async def admin_get_calls(request: web.Request) -> web.Response:
@@ -260,6 +275,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/accesspoint/grantaccess", grant_access)
     app.router.add_get("/api/call/status", get_call_status)
     app.router.add_get("/api/call/hangup", hangup_call)
+    app.router.add_get("/api/camera/caps", get_camera_caps)
+    app.router.add_get("/api/camera/snapshot", get_camera_snapshot)
     # Admin
     app.router.add_get("/admin/calls", admin_get_calls)
     app.router.add_post("/admin/reset", admin_reset)

@@ -21,3 +21,9 @@ pytest-homeassistant-custom-component==0.13.355
 # that also skips the test job entirely. Bump this deliberately, not by drift,
 # and keep it identical to the version in .github/workflows/ci.yml.
 ruff==0.16.3
+
+# PyTurboJPEG is a requirement of HA's built-in camera component (see its
+# manifest.json), which tests/test_camera.py imports. PHACC installs the
+# homeassistant package only — per-component requirements like this one are
+# not pulled in, so pin it here, matching the camera component's manifest.
+PyTurboJPEG==1.8.0
