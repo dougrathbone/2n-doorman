@@ -251,3 +251,22 @@ async def test_hangup_calls_service(
     hangup_calls = [c for c in calls if c["path"] == "/api/call/hangup"]
     assert hangup_calls, "Expected a GET /api/call/hangup call"
     assert hangup_calls[0]["body"]["session"] == 1
+
+
+# ─── Camera ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_camera_entity_exists_and_snapshots(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """camera.doorman_camera exists and a snapshot request reaches the device."""
+    state = await ha.wait_for_state("camera.doorman_camera", timeout=30)
+    assert state["state"] == "idle"
+
+    # Fetch the image through HA's camera proxy
+    assert ha._session is not None
+    async with ha._session.get(f"{ha.base_url}/api/camera_proxy/camera.doorman_camera") as resp:
+        assert resp.status == 200
+        body = await resp.read()
+        assert body.startswith(b"\xff\xd8"), "Expected JPEG data from the camera proxy"
+
+    calls = await mock_2n.get_calls()
+    assert any(c["path"] == "/api/camera/snapshot" for c in calls)

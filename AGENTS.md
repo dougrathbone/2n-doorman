@@ -32,6 +32,7 @@ custom_components/doorman/
   sensor.py            — User count sensor
   switch.py            — Relay switches (one entity per 2N relay)
   event.py             — Access event entity
+  camera.py            — Still-image camera (JPEG snapshots via /api/camera/snapshot)
   frontend/panel.js    — Vanilla JS sidebar panel (no build step)
   const.py             — All constants
 ```

@@ -70,4 +70,4 @@ LOG_BACKFILL_SECONDS = 7 * 24 * 60 * 60
 # events beyond the budget are not retrievable through this path.
 LOG_BACKFILL_MAX_PULLS = 5
 
-PLATFORMS = ["sensor", "switch", "event"]
+PLATFORMS = ["sensor", "switch", "event", "camera"]

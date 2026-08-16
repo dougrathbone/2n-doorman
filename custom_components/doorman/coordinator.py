@@ -114,6 +114,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.client.load_dir_template()
         self.has_write_permission = await self.client.check_directory_write_permission()
         self.access_points: list[dict[str, Any]] = await self.client.get_access_point_caps()
+        self.camera_caps: dict[str, Any] = await self._probe_camera_caps()
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "
@@ -122,6 +123,21 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "2N HTTP API in a later firmware version). Check for a firmware update, "
                 "or enable Directory write access in: Settings → Services → HTTP API → Users."
             )
+
+    async def _probe_camera_caps(self) -> dict[str, Any]:
+        """Fetch camera capabilities, tolerating camera-less devices.
+
+        Keypad-only Access Units (and accounts without the Camera privilege)
+        fail this call — that must not block setup of everything else.
+        """
+        try:
+            caps = await self.client.get_camera_caps()
+        except (DoormanApiError, TimeoutError) as err:
+            _LOGGER.debug("Doorman: camera not available (%s)", err)
+            return {}
+        if not caps.get("jpegResolution"):
+            return {}
+        return caps
 
     async def async_load_access_log(self) -> None:
         """Load this entry's persisted access-log history.

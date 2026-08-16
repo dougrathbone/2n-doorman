@@ -1633,3 +1633,37 @@ async def test_live_subscribe_does_not_request_history() -> None:
     await client._subscribe_log()
 
     assert captured["params"] is None or "include" not in captured["params"]
+
+
+@pytest.mark.asyncio
+async def test_get_camera_caps_returns_result():
+    """get_camera_caps returns the camera capabilities dict."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        assert endpoint == "camera/caps"
+        return {"success": True, "result": {"jpegResolution": [{"width": 640, "height": 480}]}}
+
+    client._request = fake_request
+    caps = await client.get_camera_caps()
+    assert caps["jpegResolution"] == [{"width": 640, "height": 480}]
+
+
+@pytest.mark.asyncio
+async def test_get_camera_snapshot_returns_bytes():
+    """get_camera_snapshot passes the resolution and returns raw JPEG bytes."""
+    client = _make_client()
+    captured = {}
+
+    async def fake_raw(endpoint, params=None, request_timeout=10):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return b"\xff\xd8jpeg\xff\xd9"
+
+    client._request_raw = fake_raw
+    data = await client.get_camera_snapshot(320, 240)
+    assert data == b"\xff\xd8jpeg\xff\xd9"
+    assert captured == {
+        "endpoint": "camera/snapshot",
+        "params": {"width": 320, "height": 240},
+    }
