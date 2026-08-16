@@ -114,6 +114,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.access_points: list[dict[str, Any]] = []
         self.camera_caps: dict[str, Any] = {}
         self.io_ports: list[dict[str, Any]] = []
+        self.phone_status_available: bool = False
+        self.system_status_available: bool = False
         self.has_write_permission: bool = True
         # Durable access-log history for this entry — survives restarts and
         # reloads, unlike the in-memory buffer it replaces.
@@ -139,6 +141,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.access_points: list[dict[str, Any]] = await self.client.get_access_point_caps()
         self.camera_caps: dict[str, Any] = await self._probe_camera_caps()
         self.io_ports: list[dict[str, Any]] = await self._probe_io_caps()
+        # Phone/system health probes — polled each cycle only when available.
+        self.phone_status_available: bool = await self._probe(self.client.get_phone_status)
+        self.system_status_available: bool = await self._probe(self.client.get_system_status)
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "
@@ -175,6 +180,19 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (DoormanApiError, TimeoutError) as err:
             _LOGGER.debug("Doorman: I/O service not available (%s)", err)
             return []
+
+    async def _probe(self, fn: Any) -> bool:
+        """Return True when an optional endpoint answers, False otherwise.
+
+        Used for health endpoints whose availability depends on firmware and
+        API-user privileges (Phone/Call Monitoring, System Control).
+        """
+        try:
+            await fn()
+        except (DoormanApiError, TimeoutError) as err:
+            _LOGGER.debug("Doorman: optional endpoint unavailable (%s)", err)
+            return False
+        return True
 
     async def async_load_access_log(self) -> None:
         """Load this entry's persisted access-log history.
@@ -415,17 +433,22 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            coros: list[Any] = [
+            # Optional endpoints are polled only when the startup probe found
+            # them — devices/accounts without them don't pay for a failing
+            # request every cycle.
+            optional: dict[str, Any] = {}
+            if self.io_ports:
+                optional["io"] = self.client.get_io_status()
+            if self.phone_status_available:
+                optional["phone_accounts"] = self.client.get_phone_status()
+            if self.system_status_available:
+                optional["system_status"] = self.client.get_system_status()
+            users, switches, *opt_results = await asyncio.gather(
                 self.client.query_users(),
                 self.client.get_switch_status(),
-            ]
-            # Only poll I/O when the caps probe found ports — devices without
-            # the I/O service would otherwise error every cycle.
-            if self.io_ports:
-                coros.append(self.client.get_io_status())
-            results = await asyncio.gather(*coros)
-            users, switches = results[0], results[1]
-            io_status = results[2] if len(results) > 2 else []
+                *optional.values(),
+            )
+            opt_data = dict(zip(optional, opt_results, strict=True))
         except DoormanAuthError as err:
             self._consecutive_auth_failures += 1
             if self._consecutive_auth_failures >= AUTH_FAILURE_THRESHOLD:
@@ -445,7 +468,9 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "users": users,
             "switches": switches,
-            "io": io_status,
+            "io": opt_data.get("io", []),
+            "phone_accounts": opt_data.get("phone_accounts", []),
+            "system_status": opt_data.get("system_status", {}),
             "log_events": self.log_store.events,
             "has_write_permission": self.has_write_permission,
             "last_access": self._last_access,

@@ -829,3 +829,22 @@ class TwoNApiClient:
         """Current logic state of all ports: ``[{"port": "input1", "state": 0}, …]``."""
         data = await self._request("GET", "io/status")
         return data.get("result", {}).get("ports", [])
+
+
+    # ------------------------------------------------------------------ #
+    # Phone & system health (/api/phone/*, /api/system/*)                  #
+    # ------------------------------------------------------------------ #
+
+    async def get_phone_status(self) -> list[dict[str, Any]]:
+        """SIP account statuses: ``[{"account": 1, "enabled": …, "registered": …}, …]``."""
+        data = await self._request("GET", "phone/status")
+        return data.get("result", {}).get("accounts", [])
+
+    async def get_system_status(self) -> dict[str, Any]:
+        """Runtime status: ``{"systemTime": <epoch>, "upTime": <seconds>}``."""
+        data = await self._request("GET", "system/status")
+        return data.get("result", {})
+
+    async def restart_device(self) -> None:
+        """Reboot the 2N device. Use sparingly — drops calls and the log subscription."""
+        await self._request("GET", "system/restart")

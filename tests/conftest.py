@@ -94,6 +94,20 @@ if _PAHCC_AVAILABLE:
         {"port": "relay1", "state": 0},
     ]
 
+    MOCK_PHONE_ACCOUNTS = [
+        {
+            "account": 1,
+            "accountType": "general",
+            "enabled": True,
+            "sipNumber": "1000",
+            "registrationEnabled": True,
+            "registered": True,
+            "registerTime": 1743240000,
+        },
+    ]
+
+    MOCK_SYSTEM_STATUS = {"systemTime": 1743242400, "upTime": 3600}
+
     # Smallest valid JPEG (1x1 white) for snapshot tests
     MOCK_JPEG = bytes.fromhex(
         "ffd8ffe000104a46494600010100000100010000"
@@ -188,6 +202,9 @@ if _PAHCC_AVAILABLE:
         mock.get_camera_snapshot = AsyncMock(return_value=MOCK_JPEG)
         mock.get_io_caps = AsyncMock(return_value=MOCK_IO_PORTS)
         mock.get_io_status = AsyncMock(return_value=[dict(p) for p in MOCK_IO_STATUS])
+        mock.get_phone_status = AsyncMock(return_value=[dict(a) for a in MOCK_PHONE_ACCOUNTS])
+        mock.get_system_status = AsyncMock(return_value=dict(MOCK_SYSTEM_STATUS))
+        mock.restart_device = AsyncMock(return_value=None)
         mock.async_close = AsyncMock(return_value=None)
 
         with patch(

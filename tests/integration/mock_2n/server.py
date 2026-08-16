@@ -259,6 +259,33 @@ async def get_io_status(request: web.Request) -> web.Response:
     ]}})
 
 
+async def get_phone_status(request: web.Request) -> web.Response:
+    return web.json_response({"success": True, "result": {"accounts": [
+        {
+            "account": 1,
+            "accountType": "general",
+            "enabled": True,
+            "sipNumber": "1000",
+            "registrationEnabled": True,
+            "registered": True,
+            "registerTime": 1743240000,
+        },
+    ]}})
+
+
+async def get_system_status(request: web.Request) -> web.Response:
+    import time as _time
+
+    return web.json_response({"success": True, "result": {
+        "systemTime": int(_time.time()), "upTime": 3600,
+    }})
+
+
+async def system_restart(request: web.Request) -> web.Response:
+    _log("GET", "/api/system/restart")
+    return web.json_response({"success": True})
+
+
 # ─── Admin endpoints (for test assertions) ──────────────────────────────────
 
 async def admin_get_calls(request: web.Request) -> web.Response:
@@ -368,6 +395,9 @@ def create_app() -> web.Application:
     app.router.add_get("/api/camera/snapshot", get_camera_snapshot)
     app.router.add_get("/api/io/caps", get_io_caps)
     app.router.add_get("/api/io/status", get_io_status)
+    app.router.add_get("/api/phone/status", get_phone_status)
+    app.router.add_get("/api/system/status", get_system_status)
+    app.router.add_get("/api/system/restart", system_restart)
     # Admin
     app.router.add_get("/admin/calls", admin_get_calls)
     app.router.add_post("/admin/reset", admin_reset)

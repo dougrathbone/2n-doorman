@@ -367,3 +367,23 @@ async def test_call_state_changed_reaches_event_entity(
     )
     assert state["attributes"].get("state") == "ringing"
     assert state["attributes"].get("direction") == "outgoing"
+# ─── Health entities ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_entities_exist(ha: HaClient) -> None:
+    """SIP registration, uptime, and restart entities are registered."""
+    sip = await ha.wait_for_state("binary_sensor.doorman_sip_registered", timeout=30)
+    assert sip["state"] == "on"
+    uptime = await ha.wait_for_state("sensor.doorman_uptime", timeout=30)
+    assert uptime["state"] not in ("unknown", "unavailable")
+    # Button state is "unknown" until first press — existence is the check.
+    await ha.wait_for_state("button.doorman_restart", timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_restart_button_reaches_device(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """Pressing the restart button calls /api/system/restart on the device."""
+    await ha.call_service("button", "press", {"entity_id": "button.doorman_restart"})
+
+    calls = await mock_2n.get_calls()
+    assert any(c["path"] == "/api/system/restart" for c in calls)

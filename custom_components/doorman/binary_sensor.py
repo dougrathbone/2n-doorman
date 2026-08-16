@@ -18,6 +18,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -51,6 +52,8 @@ async def async_setup_entry(
         for port in coordinator.io_ports
         if port.get("type") == "input" and port.get("port")
     )
+    if coordinator.phone_status_available:
+        entities.append(DoormanSipRegisteredSensor(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -93,7 +96,6 @@ class DoormanDoorSensor(BinarySensorEntity):
 
 class DoormanInputSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEntity):
     """One hardware input port (REX button, external contact, …)."""
-
     _attr_has_entity_name = False
 
     def __init__(
@@ -112,3 +114,49 @@ class DoormanInputSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEnti
             if port.get("port") == self._port:
                 return bool(port.get("state"))
         return None
+
+
+class DoormanSipRegisteredSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEntity):
+    """Whether every registration-enabled SIP account is actually registered.
+
+    This is the "can the intercom actually ring phones" signal: an
+    unregistered account means doorbell calls silently go nowhere.
+    """
+
+    _attr_name = "Doorman SIP Registered"
+    _attr_has_entity_name = False
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: DoormanCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_sip_registered"
+        self.entity_id = "binary_sensor.doorman_sip_registered"
+        self._attr_device_info = _device_info(coordinator, entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        accounts = (self.coordinator.data or {}).get("phone_accounts", [])
+        if not accounts:
+            return None
+        registered_required = [a for a in accounts if a.get("registrationEnabled")]
+        if not registered_required:
+            # Device-to-device calling only (no registrar involved) → healthy.
+            return True
+        return all(a.get("registered") for a in registered_required)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "accounts": [
+                {
+                    "account": a.get("account"),
+                    "enabled": a.get("enabled"),
+                    "registration_enabled": a.get("registrationEnabled"),
+                    "registered": a.get("registered"),
+                }
+                for a in (self.coordinator.data or {}).get("phone_accounts", [])
+            ]
+        }
