@@ -799,11 +799,38 @@ class DoormanLogTab extends HTMLElement {
     this._loading = true;
     this._error = null;
     this._entryId = null;
+    this._unsubLive = null;
   }
 
   set hass(h) { this._hass = h; }
   set entryId(id) { this._entryId = id; }
-  connectedCallback() { this._load(); }
+  connectedCallback() {
+    this._load();
+    this._subscribeLive();
+  }
+
+  disconnectedCallback() {
+    if (this._unsubLive) { this._unsubLive(); this._unsubLive = null; }
+  }
+
+  async _subscribeLive() {
+    try {
+      this._unsubLive = await this._hass.connection.subscribeMessage(
+        (ev) => this._onLiveEvent(ev),
+        { type: "doorman/subscribe_events", ...(this._entryId ? { entry_id: this._entryId } : {}) }
+      );
+    } catch (e) {
+      // Older backend without the subscription command — stay on manual refresh
+      this._unsubLive = null;
+    }
+  }
+
+  _onLiveEvent(ev) {
+    if (!this._events) return;  // initial load not finished — it will include these
+    this._events.unshift({ event: ev.event_type, params: ev.params || {}, utcTime: ev.utc_time });
+    if (this._events.length > 100) this._events.length = 100;
+    this._render();
+  }
 
   async _load() {
     this._loading = true;

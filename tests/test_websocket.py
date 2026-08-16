@@ -21,6 +21,7 @@ from custom_components.doorman.websocket import (
     ws_send_test_notification,
     ws_set_notification_settings,
     ws_set_notification_targets,
+    ws_subscribe_events,
     ws_unlink_user,
 )
 
@@ -837,3 +838,69 @@ async def test_ws_send_test_notification_rejects_non_admin(
     conn.send_error.assert_called_once()
     assert conn.send_error.call_args[0][1] == "unauthorized"
 
+
+
+# ------------------------------------------------------------------ #
+# ws_subscribe_events                                                  #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_ws_subscribe_events_forwards_matching_events(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """A subscription forwards doorman_access events for its entry only."""
+    conn = _mock_connection()
+    conn.subscriptions = {}
+    ws_subscribe_events(hass, conn, {"id": 42})
+
+    conn.send_result.assert_called_once()
+    assert conn.send_result.call_args[0][1]["entry_id"] == setup_doorman.entry_id
+    assert 42 in conn.subscriptions
+
+    # Matching event is forwarded; another entry's event is not
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": setup_doorman.entry_id,
+            "event_type": "UserAuthenticated",
+            "params": {"name": "Jane"},
+            "utc_time": 1743242400,
+        },
+    )
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {"entry_id": "other-entry", "event_type": "UserAuthenticated", "params": {}},
+    )
+    await hass.async_block_till_done()
+
+    conn.send_event.assert_called_once()
+    sent = conn.send_event.call_args[0]
+    assert sent[0] == 42
+    assert sent[1]["event_type"] == "UserAuthenticated"
+    assert sent[1]["params"] == {"name": "Jane"}
+    assert sent[1]["utc_time"] == 1743242400
+
+    # Unsubscribing (HA clears .subscriptions on disconnect) stops forwarding
+    conn.subscriptions[42]()
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {"entry_id": setup_doorman.entry_id, "event_type": "UserAuthenticated", "params": {}},
+    )
+    await hass.async_block_till_done()
+    assert conn.send_event.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ws_subscribe_events_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """ws_subscribe_events rejects non-admin connections."""
+    conn = _mock_connection(is_admin=False)
+    ws_subscribe_events(hass, conn, {"id": 1})
+    await hass.async_block_till_done()
+
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unauthorized"
