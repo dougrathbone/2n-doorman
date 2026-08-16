@@ -756,6 +756,42 @@ class TwoNApiClient:
             hung_up += 1
         return hung_up
 
+    async def answer_call(self, session: int) -> None:
+        """Answer a ringing incoming call (session id from :meth:`get_call_status`)."""
+        await self._request("GET", "call/answer", params={"session": session})
+
+    async def answer_ringing_call(self) -> bool:
+        """Answer the currently ringing incoming call, if any.
+
+        Returns True when a call was answered, False when no incoming call
+        was ringing.
+        """
+        for session in await self.get_call_status():
+            if (
+                session.get("state") == "ringing"
+                and session.get("direction") == "incoming"
+                and session.get("session") is not None
+            ):
+                await self.answer_call(int(session["session"]))
+                return True
+        return False
+
+    async def dial(self, number: str | None = None, users: list[str] | None = None) -> int:
+        """Start an outgoing call to ``number`` (number/SIP URI) or ``users`` (UUIDs).
+
+        The device rejects requests carrying both parameters. Returns the new
+        call's session id.
+        """
+        params: dict[str, Any] = {}
+        if number:
+            params["number"] = number
+        elif users:
+            params["users"] = ",".join(users)
+        else:
+            raise DoormanApiError("dial requires a number or a list of user UUIDs")
+        data = await self._request("GET", "call/dial", params=params)
+        return int(data.get("result", {}).get("session", 0))
+
 
     # ------------------------------------------------------------------ #
     # Camera (/api/camera/*)                                               #

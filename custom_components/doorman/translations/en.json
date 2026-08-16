@@ -113,6 +113,22 @@
         "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
       }
     },
+    "answer_call": {
+      "name": "Answer call",
+      "description": "Answer the currently ringing incoming call on the 2N device, if any.",
+      "fields": {
+        "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
+      }
+    },
+    "dial": {
+      "name": "Dial",
+      "description": "Start an outgoing call from the 2N device to a number/SIP URI or to directory users. Provide exactly one of Number or User UUIDs.",
+      "fields": {
+        "number": { "name": "Number", "description": "Destination phone number or SIP URI (e.g. sip:1234@10.0.0.5)." },
+        "user_uuids": { "name": "User UUIDs", "description": "Comma-separated 2N directory UUIDs to call." },
+        "device": { "name": "Device", "description": "Target device (required when multiple devices are configured)." }
+      }
+    },
     "resync_log_history": {
       "name": "Resync log history",
       "description": "Re-read the access log history stored on the 2N device and merge anything missing into Doorman's log. Adds no duplicates and sends no notifications. The result is written to the Home Assistant log.",

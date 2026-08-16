@@ -1667,3 +1667,83 @@ async def test_get_camera_snapshot_returns_bytes():
         "endpoint": "camera/snapshot",
         "params": {"width": 320, "height": 240},
     }
+
+
+@pytest.mark.asyncio
+async def test_answer_ringing_call_answers_first_ringing_incoming():
+    """answer_ringing_call answers the ringing incoming session only."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append((endpoint, params))
+        if endpoint == "call/status":
+            return {"success": True, "result": {"sessions": [
+                {"session": 1, "state": "connected", "direction": "outgoing"},
+                {"session": 2, "state": "ringing", "direction": "incoming"},
+                {"session": 3, "state": "ringing", "direction": "outgoing"},
+            ]}}
+        return {"success": True}
+
+    client._request = fake_request
+    assert await client.answer_ringing_call() is True
+    assert calls == [("call/status", None), ("call/answer", {"session": 2})]
+
+
+@pytest.mark.asyncio
+async def test_answer_ringing_call_none_ringing():
+    """No ringing incoming call → False, no answer request."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append(endpoint)
+        return {"success": True, "result": {"sessions": [
+            {"session": 1, "state": "connected", "direction": "incoming"},
+        ]}}
+
+    client._request = fake_request
+    assert await client.answer_ringing_call() is False
+    assert calls == ["call/status"]
+
+
+@pytest.mark.asyncio
+async def test_dial_with_number():
+    """dial with a number returns the new session id."""
+    client = _make_client()
+    captured = {}
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"success": True, "result": {"session": 7}}
+
+    client._request = fake_request
+    session = await client.dial(number="sip:1234@10.0.0.5")
+    assert session == 7
+    assert captured["params"] == {"number": "sip:1234@10.0.0.5"}
+
+
+@pytest.mark.asyncio
+async def test_dial_with_users():
+    """dial with user UUIDs joins them comma-separated."""
+    client = _make_client()
+    captured = {}
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        captured["params"] = params
+        return {"success": True, "result": {"session": 3}}
+
+    client._request = fake_request
+    assert await client.dial(users=["uuid-a", "uuid-b"]) == 3
+    assert captured["params"] == {"users": "uuid-a,uuid-b"}
+
+
+@pytest.mark.asyncio
+async def test_dial_requires_target():
+    """dial without number or users raises before any request."""
+    from custom_components.doorman.api_client import DoormanApiError
+
+    client = _make_client()
+    with pytest.raises(DoormanApiError, match="requires a number"):
+        await client.dial()

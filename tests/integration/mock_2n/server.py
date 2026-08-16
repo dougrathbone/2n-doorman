@@ -204,6 +204,34 @@ async def hangup_call(request: web.Request) -> web.Response:
     return web.json_response({"success": True})
 
 
+async def answer_call(request: web.Request) -> web.Response:
+    session = int(request.rel_url.query.get("session", 0))
+    _log("GET", "/api/call/answer", {"session": session})
+    for s in _state["call_sessions"]:
+        if s.get("session") == session:
+            s["state"] = "connected"
+    return web.json_response({"success": True})
+
+
+async def dial_call(request: web.Request) -> web.Response:
+    number = request.rel_url.query.get("number")
+    users = request.rel_url.query.get("users")
+    if number and users:
+        return web.json_response({"success": False, "error": {
+            "code": 10, "param": "number", "description": "mutually exclusive parameters",
+        }})
+    session = _state.get("call_session_seq", 100) + 1
+    _state["call_session_seq"] = session
+    _state["call_sessions"].append({
+        "session": session,
+        "state": "connecting",
+        "direction": "outgoing",
+        "peer": number or users,
+    })
+    _log("GET", "/api/call/dial", {"number": number, "users": users})
+    return web.json_response({"success": True, "result": {"session": session}})
+
+
 # Minimal JPEG payload (SOI/EOI markers) — enough for HA's camera proxy.
 _MOCK_JPEG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9")
 
@@ -298,6 +326,13 @@ async def admin_inject_event(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "event": event})
 
 
+async def admin_set_call_sessions(request: web.Request) -> web.Response:
+    """Replace the active call sessions (e.g. seed a ringing incoming call)."""
+    body = await request.json()
+    _state["call_sessions"] = body.get("sessions", [])
+    return web.json_response({"ok": True})
+
+
 async def admin_get_users(request: web.Request) -> web.Response:
     """Return current in-memory user list."""
     return web.json_response({"users": _state["users"]})
@@ -327,6 +362,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/accesspoint/grantaccess", grant_access)
     app.router.add_get("/api/call/status", get_call_status)
     app.router.add_get("/api/call/hangup", hangup_call)
+    app.router.add_get("/api/call/answer", answer_call)
+    app.router.add_get("/api/call/dial", dial_call)
     app.router.add_get("/api/camera/caps", get_camera_caps)
     app.router.add_get("/api/camera/snapshot", get_camera_snapshot)
     app.router.add_get("/api/io/caps", get_io_caps)
@@ -335,6 +372,7 @@ def create_app() -> web.Application:
     app.router.add_get("/admin/calls", admin_get_calls)
     app.router.add_post("/admin/reset", admin_reset)
     app.router.add_post("/admin/inject_event", admin_inject_event)
+    app.router.add_post("/admin/set_call_sessions", admin_set_call_sessions)
     app.router.add_get("/admin/users", admin_get_users)
     app.router.add_get("/admin/switches", admin_get_switches)
     return app

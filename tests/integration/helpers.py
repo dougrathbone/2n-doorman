@@ -194,6 +194,14 @@ class Mock2nAdmin:
             ) as r:
                 r.raise_for_status()
 
+    async def set_call_sessions(self, sessions: list[dict]) -> None:
+        """Replace the mock's active call sessions."""
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"{self.base_url}/admin/set_call_sessions", json={"sessions": sessions}
+            ) as r:
+                r.raise_for_status()
+
     async def reset(self) -> None:
         async with aiohttp.ClientSession() as s:
             await s.post(f"{self.base_url}/admin/reset")

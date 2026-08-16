@@ -53,6 +53,7 @@ STATE_EVENTS = {
     "SwitchStateChanged",
     "InputChanged",
     "OutputChanged",
+    "CallStateChanged",
 }
 
 # Synthetic event_type emitted on the bus when a KeyPressed matches the

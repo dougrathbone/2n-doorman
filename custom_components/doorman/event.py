@@ -46,6 +46,7 @@ class DoormanAccessEventEntity(EventEntity):
         "switch_state_changed",
         "input_changed",
         "output_changed",
+        "call_state_changed",
     ]
     _attr_icon = "mdi:shield-account"
 
@@ -71,6 +72,7 @@ class DoormanAccessEventEntity(EventEntity):
         "SwitchStateChanged": "switch_state_changed",
         "InputChanged": "input_changed",
         "OutputChanged": "output_changed",
+        "CallStateChanged": "call_state_changed",
     }
 
     def __init__(
@@ -130,6 +132,10 @@ class DoormanAccessEventEntity(EventEntity):
                 "switch": params.get("switch"),
                 "originator": params.get("originator"),
                 "reason": params.get("reason"),
+                # Call event fields
+                "direction": params.get("direction"),
+                "peer": params.get("peer"),
+                "session": params.get("session"),
                 "utc_time": event.data.get("utc_time"),
             },
         )
