@@ -48,6 +48,17 @@
       "description": "The API user `{username}` cannot write to the 2N device directory on **{device_name}**. Create, edit, and delete operations are disabled.\n\n**To fix:** In the 2N web interface go to **Services → HTTP API**, find the API user, and enable **System API** with **Control** access. Access log, switch control, and user viewing will continue to work in the meantime."
     }
   },
+  "device_automation": {
+    "trigger_type": {
+      "doorbell_pressed": "Doorbell pressed",
+      "call_ringing": "Call ringing",
+      "access_granted": "Access granted",
+      "access_denied": "Access denied",
+      "unauthorized_door_open": "Door opened without authorization",
+      "door_open_too_long": "Door open too long",
+      "tamper": "Tamper switch activated"
+    }
+  },
   "options": {
     "step": {
       "init": {
