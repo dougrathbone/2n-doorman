@@ -1708,6 +1708,32 @@ async def test_answer_ringing_call_none_ringing():
 
 
 @pytest.mark.asyncio
+async def test_get_phone_status_returns_accounts():
+    """get_phone_status returns the accounts list."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        assert endpoint == "phone/status"
+        return {"success": True, "result": {"accounts": [{"account": 1, "registered": True}]}}
+
+    client._request = fake_request
+    assert await client.get_phone_status() == [{"account": 1, "registered": True}]
+
+
+@pytest.mark.asyncio
+async def test_get_system_status_returns_result():
+    """get_system_status returns systemTime/upTime."""
+    client = _make_client()
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        assert endpoint == "system/status"
+        return {"success": True, "result": {"systemTime": 1743242400, "upTime": 60}}
+
+    client._request = fake_request
+    assert await client.get_system_status() == {"systemTime": 1743242400, "upTime": 60}
+
+
+@pytest.mark.asyncio
 async def test_dial_with_number():
     """dial with a number returns the new session id."""
     client = _make_client()
@@ -1747,3 +1773,18 @@ async def test_dial_requires_target():
     client = _make_client()
     with pytest.raises(DoormanApiError, match="requires a number"):
         await client.dial()
+
+
+@pytest.mark.asyncio
+async def test_restart_device_calls_endpoint():
+    """restart_device GETs system/restart."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append(endpoint)
+        return {"success": True}
+
+    client._request = fake_request
+    await client.restart_device()
+    assert calls == ["system/restart"]

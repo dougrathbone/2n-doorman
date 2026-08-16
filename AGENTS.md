@@ -33,7 +33,9 @@ custom_components/doorman/
   switch.py            — Relay switches (one entity per 2N relay)
   event.py             — Access/security/state event entity
   camera.py            — Still-image camera (JPEG snapshots via /api/camera/snapshot)
-  binary_sensor.py     — Door contact (DoorStateChanged) + hardware inputs (/api/io/*)
+  binary_sensor.py     — Door contact (DoorStateChanged), hardware inputs (/api/io/*),
+                         SIP registration health (/api/phone/status)
+  button.py            — Device restart button (/api/system/restart)
   frontend/panel.js    — Vanilla JS sidebar panel (no build step)
   const.py             — All constants
 ```

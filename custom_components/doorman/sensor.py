@@ -1,8 +1,11 @@
 """Sensor platform for Doorman — exposes user count and device info."""
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
+from datetime import UTC, datetime
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -18,7 +21,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: DoormanCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([DoormanUserCountSensor(coordinator, entry)])
+    entities: list[SensorEntity] = [DoormanUserCountSensor(coordinator, entry)]
+    if coordinator.system_status_available:
+        entities.append(DoormanUptimeSensor(coordinator, entry))
+    async_add_entities(entities)
 
 
 class DoormanUserCountSensor(CoordinatorEntity[DoormanCoordinator], SensorEntity):
@@ -59,3 +65,40 @@ class DoormanUserCountSensor(CoordinatorEntity[DoormanCoordinator], SensorEntity
                 for u in (self.coordinator.data or {}).get("users", [])
             ]
         }
+
+
+class DoormanUptimeSensor(CoordinatorEntity[DoormanCoordinator], SensorEntity):
+    """Device boot time, derived from /api/system/status (systemTime - upTime).
+
+    A timestamp sensor (rather than a seconds-since-boot duration) so the
+    state only changes when the device actually reboots, not on every poll.
+    """
+
+    _attr_name = "Doorman Uptime"
+    _attr_has_entity_name = False
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:clock-check-outline"
+
+    def __init__(
+        self, coordinator: DoormanCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_uptime"
+        self.entity_id = "sensor.doorman_uptime"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="2N",
+            model=coordinator.device_info.get("hwVersion"),
+            sw_version=coordinator.device_info.get("swVersion"),
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        status = (self.coordinator.data or {}).get("system_status", {})
+        system_time = status.get("systemTime")
+        up_time = status.get("upTime")
+        if not system_time or up_time is None:
+            return None
+        return datetime.fromtimestamp(system_time - up_time, UTC)
