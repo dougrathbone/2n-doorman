@@ -1693,6 +1693,21 @@ async def test_answer_ringing_call_answers_first_ringing_incoming():
 @pytest.mark.asyncio
 async def test_answer_ringing_call_none_ringing():
     """No ringing incoming call → False, no answer request."""
+    client = _make_client()
+    calls = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append(endpoint)
+        return {"success": True, "result": {"sessions": [
+            {"session": 1, "state": "connected", "direction": "incoming"},
+        ]}}
+
+    client._request = fake_request
+    assert await client.answer_ringing_call() is False
+    assert calls == ["call/status"]
+
+
+@pytest.mark.asyncio
 async def test_get_phone_status_returns_accounts():
     """get_phone_status returns the accounts list."""
     client = _make_client()
@@ -1716,23 +1731,6 @@ async def test_get_system_status_returns_result():
 
     client._request = fake_request
     assert await client.get_system_status() == {"systemTime": 1743242400, "upTime": 60}
-
-
-@pytest.mark.asyncio
-async def test_restart_device_calls_endpoint():
-    """restart_device GETs system/restart."""
-    client = _make_client()
-    calls = []
-
-    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
-        calls.append(endpoint)
-        return {"success": True, "result": {"sessions": [
-            {"session": 1, "state": "connected", "direction": "incoming"},
-        ]}}
-
-    client._request = fake_request
-    assert await client.answer_ringing_call() is False
-    assert calls == ["call/status"]
 
 
 @pytest.mark.asyncio
