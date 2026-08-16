@@ -123,3 +123,27 @@ resync_log_history:
       selector:
         config_entry:
           integration: doorman
+
+answer_call:
+  fields:
+    device:
+      required: false
+      selector:
+        config_entry:
+          integration: doorman
+
+dial:
+  fields:
+    number:
+      required: false
+      selector:
+        text:
+    user_uuids:
+      required: false
+      selector:
+        text:
+    device:
+      required: false
+      selector:
+        config_entry:
+          integration: doorman

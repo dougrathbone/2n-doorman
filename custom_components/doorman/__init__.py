@@ -393,6 +393,34 @@ def _register_services(hass: HomeAssistant) -> None:
             coordinator.device_info.get("deviceName") or "the 2N device",
         )
 
+    async def handle_answer_call(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
+        try:
+            answered = await coordinator.client.answer_ringing_call()
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"answer_call failed on the 2N device: {err}") from err
+        _LOGGER.info(
+            "Answered the ringing call on %s"
+            if answered
+            else "No ringing incoming call on %s to answer",
+            coordinator.device_info.get("deviceName") or "the 2N device",
+        )
+
+    async def handle_dial(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(hass, call)
+        number = call.data.get("number")
+        users = call.data.get("user_uuids")
+        user_list = [u.strip() for u in users.split(",") if u.strip()] if users else None
+        try:
+            session = await coordinator.client.dial(number=number, users=user_list)
+        except DoormanApiError as err:
+            raise HomeAssistantError(f"dial failed on the 2N device: {err}") from err
+        _LOGGER.info(
+            "Started call session %d on %s",
+            session,
+            coordinator.device_info.get("deviceName") or "the 2N device",
+        )
+
     async def handle_resync_log_history(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(hass, call)
         device_name = coordinator.device_info.get("deviceName") or "the 2N device"
@@ -495,6 +523,28 @@ def _register_services(hass: HomeAssistant) -> None:
         handle_hangup_calls,
         schema=vol.Schema(
             {
+                vol.Optional("device"): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "answer_call",
+        handle_answer_call,
+        schema=vol.Schema(
+            {
+                vol.Optional("device"): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "dial",
+        handle_dial,
+        schema=vol.Schema(
+            {
+                vol.Exclusive("number", "dial_target"): cv.string,
+                vol.Exclusive("user_uuids", "dial_target"): cv.string,
                 vol.Optional("device"): cv.string,
             }
         ),

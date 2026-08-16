@@ -1620,3 +1620,89 @@ async def test_resync_with_unknown_device_raises(
         await hass.services.async_call(
             DOMAIN, "resync_log_history", {"device": "nope"}, blocking=True
         )
+
+
+@pytest.mark.asyncio
+async def test_answer_call_service(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """doorman.answer_call answers the ringing call via the client."""
+    mock_2n_client.answer_ringing_call.return_value = True
+
+    await hass.services.async_call(DOMAIN, "answer_call", {}, blocking=True)
+
+    mock_2n_client.answer_ringing_call.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_answer_call_service_api_error(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device error from answer_call surfaces as HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.answer_ringing_call.side_effect = DoormanApiError("no privilege")
+
+    with pytest.raises(HomeAssistantError, match="answer_call failed"):
+        await hass.services.async_call(DOMAIN, "answer_call", {}, blocking=True)
+
+
+@pytest.mark.asyncio
+async def test_dial_service_with_number(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """doorman.dial forwards the number and reports the session."""
+    await hass.services.async_call(
+        DOMAIN, "dial", {"number": "sip:1234@10.0.0.5"}, blocking=True
+    )
+
+    mock_2n_client.dial.assert_called_once_with(number="sip:1234@10.0.0.5", users=None)
+
+
+@pytest.mark.asyncio
+async def test_dial_service_with_user_uuids(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """doorman.dial parses the comma-separated UUID list."""
+    await hass.services.async_call(
+        DOMAIN, "dial", {"user_uuids": "uuid-a, uuid-b"}, blocking=True
+    )
+
+    mock_2n_client.dial.assert_called_once_with(number=None, users=["uuid-a", "uuid-b"])
+
+
+@pytest.mark.asyncio
+async def test_call_state_changed_event_mapped(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """CallStateChanged reaches the event entity with call attributes."""
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
+    coordinator._fire_new_access_events([{
+        "event": "CallStateChanged",
+        "utcTime": 1743242400,
+        "params": {
+            "direction": "outgoing",
+            "state": "ringing",
+            "peer": "sip:2001@192.168.0.10",
+            "session": 4,
+        },
+    }])
+    await hass.async_block_till_done()
+
+    state = hass.states.get("event.doorman_access")
+    assert state.attributes.get("event_type") == "call_state_changed"
+    assert state.attributes.get("direction") == "outgoing"
+    assert state.attributes.get("state") == "ringing"
+    assert state.attributes.get("peer") == "sip:2001@192.168.0.10"
+    assert state.attributes.get("session") == 4

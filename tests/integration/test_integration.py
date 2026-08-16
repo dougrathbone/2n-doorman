@@ -325,3 +325,45 @@ async def test_security_event_reaches_event_entity(ha: HaClient, mock_2n: Mock2n
         "event.doorman_access", "event_type", "unauthorized_door_open", timeout=30
     )
     assert state["attributes"].get("state") == "in"
+
+
+# ─── Call answer / dial / call events ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_dial_service_calls_device(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """doorman.dial initiates an outgoing call on the device."""
+    await ha.call_service("doorman", "dial", {"number": "sip:1234@10.0.0.5"})
+
+    calls = await mock_2n.get_calls()
+    dial_calls = [c for c in calls if c["path"] == "/api/call/dial"]
+    assert dial_calls, "Expected a GET /api/call/dial call"
+    assert dial_calls[0]["body"]["number"] == "sip:1234@10.0.0.5"
+
+
+@pytest.mark.asyncio
+async def test_answer_call_service_answers_ringing(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """doorman.answer_call answers the ringing incoming session."""
+    await mock_2n.set_call_sessions([
+        {"session": 9, "state": "ringing", "direction": "incoming", "peer": "sip:door@x"},
+    ])
+    await ha.call_service("doorman", "answer_call", {})
+
+    calls = await mock_2n.get_calls()
+    answer_calls = [c for c in calls if c["path"] == "/api/call/answer"]
+    assert answer_calls, "Expected a GET /api/call/answer call"
+    assert answer_calls[0]["body"]["session"] == 9
+
+
+@pytest.mark.asyncio
+async def test_call_state_changed_reaches_event_entity(
+    ha: HaClient, mock_2n: Mock2nAdmin
+) -> None:
+    """An outgoing ringing call (doorbell button) surfaces as call_state_changed."""
+    await mock_2n.inject_event("CallStateChanged", {
+        "direction": "outgoing", "state": "ringing", "peer": "sip:2001@x", "session": 11,
+    })
+    state = await ha.wait_for_state_attr(
+        "event.doorman_access", "event_type", "call_state_changed", timeout=30
+    )
+    assert state["attributes"].get("state") == "ringing"
+    assert state["attributes"].get("direction") == "outgoing"
