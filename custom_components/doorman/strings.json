@@ -19,6 +19,17 @@
           "username": "API username",
           "password": "API password"
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Doorman",
+        "description": "Update the connection details for **{device}**. The entry reloads after saving.",
+        "data": {
+          "host": "Host / IP address",
+          "username": "API username",
+          "password": "API password",
+          "use_ssl": "Use HTTPS",
+          "verify_ssl": "Verify SSL certificate"
+        }
       }
     },
     "error": {
@@ -28,7 +39,9 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "The connection details were updated.",
+      "different_device": "That host is a different 2N device (serial number mismatch). Create a new entry for it instead."
     }
   },
   "exceptions": {

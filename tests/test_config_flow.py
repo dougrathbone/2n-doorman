@@ -9,7 +9,14 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.doorman.api_client import DoormanAuthError, DoormanConnectionError
-from custom_components.doorman.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from custom_components.doorman.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_USE_SSL,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    DOMAIN,
+)
 
 from .conftest import MOCK_DEVICE_INFO
 
@@ -363,3 +370,123 @@ async def test_config_flow_duplicate_device_aborts(hass: HomeAssistant, mock_2n_
 
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_flow_shows_prefilled_form(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Reconfigure flow shows the connection form pre-filled with current data."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": setup_doorman.entry_id},
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    # Current values suggested in the schema: add_suggested_values_to_schema
+    # stores them in Marker.description["suggested_value"].
+    keys = {
+        k.schema: (k.description or {}).get("suggested_value")
+        for k in result["data_schema"].schema
+    }
+    assert keys[CONF_HOST] == setup_doorman.data[CONF_HOST]
+    assert keys[CONF_USERNAME] == setup_doorman.data[CONF_USERNAME]
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_flow_success(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Valid new connection details update the entry and reload it."""
+    with patch(
+        "custom_components.doorman.config_flow.TwoNApiClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": setup_doorman.entry_id},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_HOST: "192.168.0.99",
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "newpassword",
+                CONF_USE_SSL: True,
+                CONF_VERIFY_SSL: False,
+            },
+        )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    assert setup_doorman.data[CONF_HOST] == "192.168.0.99"
+    assert setup_doorman.data[CONF_USE_SSL] is True
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_flow_invalid_auth(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Bad credentials in reconfigure show an error and keep the old data."""
+    from custom_components.doorman.api_client import DoormanAuthError
+
+    with patch(
+        "custom_components.doorman.config_flow.TwoNApiClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(
+            side_effect=DoormanAuthError("bad credentials")
+        )
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": setup_doorman.entry_id},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_HOST: "192.168.0.99",
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "wrong",
+                CONF_USE_SSL: True,
+                CONF_VERIFY_SSL: False,
+            },
+        )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_auth"}
+    assert setup_doorman.data[CONF_HOST] != "192.168.0.99"
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_flow_rejects_different_device(
+    hass: HomeAssistant, setup_doorman: MockConfigEntry,
+) -> None:
+    """Pointing the entry at a different device (serial mismatch) aborts."""
+    with patch(
+        "custom_components.doorman.config_flow.TwoNApiClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_system_info = AsyncMock(
+            return_value={**MOCK_DEVICE_INFO, "serialNumber": "different-serial"}
+        )
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": setup_doorman.entry_id},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_HOST: "192.168.0.99",
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "newpassword",
+                CONF_USE_SSL: True,
+                CONF_VERIFY_SSL: False,
+            },
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "different_device"
+    assert setup_doorman.data[CONF_HOST] != "192.168.0.99"

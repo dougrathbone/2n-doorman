@@ -156,6 +156,46 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"host": entry.data[CONF_HOST]},
         )
+    async def async_step_reconfigure(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Change connection details (host/credentials/SSL) without re-adding."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            session = async_get_clientsession(self.hass)
+            client = TwoNApiClient(
+                session,
+                user_input[CONF_HOST],
+                user_input[CONF_USERNAME],
+                user_input[CONF_PASSWORD],
+                user_input.get(CONF_USE_SSL, DEFAULT_USE_SSL),
+                user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+            )
+            try:
+                info = await client.get_system_info()
+            except DoormanAuthError:
+                errors["base"] = "invalid_auth"
+            except DoormanConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                errors["base"] = "unknown"
+            else:
+                # Guard against accidentally pointing the entry at a different
+                # intercom — stored user links, notification targets, and log
+                # history are all keyed to the original device's UUIDs.
+                serial = info.get("serialNumber") or user_input[CONF_HOST]
+                if serial != entry.unique_id:
+                    return self.async_abort(reason="different_device")
+                return self.async_update_reload_and_abort(entry, data=user_input)
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(STEP_SCHEMA, entry.data),
+            errors=errors,
+            description_placeholders={"device": entry.title},
+        )
 
 
 OPTIONS_SCHEMA = vol.Schema(
