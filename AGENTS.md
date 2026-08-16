@@ -31,8 +31,9 @@ custom_components/doorman/
   websocket.py         — 12 WebSocket commands exposed to the frontend panel
   sensor.py            — User count sensor
   switch.py            — Relay switches (one entity per 2N relay)
-  event.py             — Access event entity
+  event.py             — Access/security/state event entity
   camera.py            — Still-image camera (JPEG snapshots via /api/camera/snapshot)
+  binary_sensor.py     — Door contact (DoorStateChanged) + hardware inputs (/api/io/*)
   frontend/panel.js    — Vanilla JS sidebar panel (no build step)
   const.py             — All constants
 ```

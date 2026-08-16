@@ -36,6 +36,16 @@ class DoormanAccessEventEntity(EventEntity):
         "finger_entered",
         "mobile_key",
         "doorbell_pressed",
+        "unauthorized_door_open",
+        "door_open_too_long",
+        "tamper",
+        "switches_blocked",
+        "silent_alarm",
+        "login_blocked",
+        "door_state_changed",
+        "switch_state_changed",
+        "input_changed",
+        "output_changed",
     ]
     _attr_icon = "mdi:shield-account"
 
@@ -51,6 +61,16 @@ class DoormanAccessEventEntity(EventEntity):
         "FingerEntered": "finger_entered",
         "MobKeyEntered": "mobile_key",
         DOORBELL_EVENT_TYPE: "doorbell_pressed",
+        "UnauthorizedDoorOpen": "unauthorized_door_open",
+        "DoorOpenTooLong": "door_open_too_long",
+        "TamperSwitchActivated": "tamper",
+        "SwitchesBlocked": "switches_blocked",
+        "SilentAlarm": "silent_alarm",
+        "LoginBlocked": "login_blocked",
+        "DoorStateChanged": "door_state_changed",
+        "SwitchStateChanged": "switch_state_changed",
+        "InputChanged": "input_changed",
+        "OutputChanged": "output_changed",
     }
 
     def __init__(
@@ -88,7 +108,11 @@ class DoormanAccessEventEntity(EventEntity):
             return
 
         raw_type: str = event.data.get("event_type", "")
-        ha_type = self._EVENT_MAP.get(raw_type, raw_type.lower())
+        ha_type = self._EVENT_MAP.get(raw_type)
+        if ha_type is None:
+            # Unknown/unmapped types are not in _attr_event_types —
+            # _trigger_event would raise ValueError for them.
+            return
         params: dict = event.data.get("params", {})
 
         self._trigger_event(
@@ -100,6 +124,12 @@ class DoormanAccessEventEntity(EventEntity):
                 # "card" is kept as a defensive fallback.
                 "card": params.get("uid") or params.get("card"),
                 "valid": params.get("valid"),
+                # State/security event fields (None for auth events)
+                "state": params.get("state"),
+                "port": params.get("port"),
+                "switch": params.get("switch"),
+                "originator": params.get("originator"),
+                "reason": params.get("reason"),
                 "utc_time": event.data.get("utc_time"),
             },
         )

@@ -94,6 +94,32 @@ class HaClient:
             f"(last seen: {last_state!r})"
         )
 
+    async def wait_for_state_attr(
+        self,
+        entity_id: str,
+        attr: str,
+        expected: Any,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+    ) -> dict:
+        """Poll until an entity attribute reaches a specific value."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        last: Any = None
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                state = await self.get_state(entity_id)
+                last = state.get("attributes", {}).get(attr)
+                if last == expected:
+                    return state
+            except aiohttp.ClientResponseError as exc:
+                if exc.status != 404:
+                    raise
+            await asyncio.sleep(interval)
+        raise TimeoutError(
+            f"Entity {entity_id!r} attribute {attr!r} did not reach {expected!r} "
+            f"within {timeout}s (last seen: {last!r})"
+        )
+
 
 # ─── HA WebSocket client ─────────────────────────────────────────────────────
 
@@ -158,6 +184,15 @@ class Mock2nAdmin:
         async with aiohttp.ClientSession() as s:
             async with s.get(f"{self.base_url}/admin/calls") as r:
                 return (await r.json())["calls"]
+
+    async def inject_event(self, event: str, params: dict | None = None) -> None:
+        """Inject a device-log event into all active subscription queues."""
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"{self.base_url}/admin/inject_event",
+                json={"event": event, "params": params or {}},
+            ) as r:
+                r.raise_for_status()
 
     async def reset(self) -> None:
         async with aiohttp.ClientSession() as s:

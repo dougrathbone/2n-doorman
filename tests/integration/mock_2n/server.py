@@ -38,6 +38,10 @@ _state: dict = {
     "call_sessions": [
         {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
     ],
+    "io": [
+        {"port": "input1", "type": "input", "state": 0},
+        {"port": "relay1", "type": "output", "state": 0},
+    ],
     "call_log": [],  # {"method", "path", "body"}
     # On-box event history, as returned by log/subscribe?include=all
     "log_history": [],
@@ -215,6 +219,18 @@ async def get_camera_snapshot(request: web.Request) -> web.Response:
     return web.Response(body=_MOCK_JPEG, content_type="image/jpeg")
 
 
+async def get_io_caps(request: web.Request) -> web.Response:
+    return web.json_response({"success": True, "result": {"ports": [
+        {"port": p["port"], "type": p["type"]} for p in _state["io"]
+    ]}})
+
+
+async def get_io_status(request: web.Request) -> web.Response:
+    return web.json_response({"success": True, "result": {"ports": [
+        {"port": p["port"], "state": p["state"]} for p in _state["io"]
+    ]}})
+
+
 # ─── Admin endpoints (for test assertions) ──────────────────────────────────
 
 async def admin_get_calls(request: web.Request) -> web.Response:
@@ -240,10 +256,46 @@ async def admin_reset(request: web.Request) -> web.Response:
     _state["call_sessions"] = [
         {"session": 1, "state": "connected", "peer": "sip:test@example.local"},
     ]
+    _state["io"] = [
+        {"port": "input1", "type": "input", "state": 0},
+        {"port": "relay1", "type": "output", "state": 0},
+    ]
     _state["log_history"] = _initial_log_history()
     _state["log_subscriptions"] = {}
     _state["log_subscription_seq"] = 0
     return web.json_response({"ok": True})
+
+
+async def admin_inject_event(request: web.Request) -> web.Response:
+    """Append an event to every active log subscription queue.
+
+    Lets integration tests drive the whole event pipeline (listener → bus →
+    entities) as if something happened on the device. The event is also
+    applied to mock state so event-driven changes survive polling.
+    """
+    import time as _time
+
+    body = await request.json()
+    event = {
+        "id": _state.get("event_seq", 0) + 1,
+        "utcTime": int(_time.time()),
+        "event": body["event"],
+        "params": body.get("params", {}),
+    }
+    _state["event_seq"] = event["id"]
+    for queue in _state["log_subscriptions"].values():
+        queue.append(event)
+
+    # Reflect state events in the mock's own state (like a real device)
+    if event["event"] == "SwitchStateChanged":
+        for sw in _state["switches"]:
+            if sw["id"] == event["params"].get("switch"):
+                sw["active"] = bool(event["params"].get("state"))
+    elif event["event"] in ("InputChanged", "OutputChanged"):
+        for p in _state["io"]:
+            if p["port"] == event["params"].get("port"):
+                p["state"] = int(bool(event["params"].get("state")))
+    return web.json_response({"ok": True, "event": event})
 
 
 async def admin_get_users(request: web.Request) -> web.Response:
@@ -277,9 +329,12 @@ def create_app() -> web.Application:
     app.router.add_get("/api/call/hangup", hangup_call)
     app.router.add_get("/api/camera/caps", get_camera_caps)
     app.router.add_get("/api/camera/snapshot", get_camera_snapshot)
+    app.router.add_get("/api/io/caps", get_io_caps)
+    app.router.add_get("/api/io/status", get_io_status)
     # Admin
     app.router.add_get("/admin/calls", admin_get_calls)
     app.router.add_post("/admin/reset", admin_reset)
+    app.router.add_post("/admin/inject_event", admin_inject_event)
     app.router.add_get("/admin/users", admin_get_users)
     app.router.add_get("/admin/switches", admin_get_switches)
     return app

@@ -84,6 +84,16 @@ if _PAHCC_AVAILABLE:
         ]
     }
 
+    MOCK_IO_PORTS = [
+        {"port": "input1", "type": "input"},
+        {"port": "relay1", "type": "output"},
+    ]
+
+    MOCK_IO_STATUS = [
+        {"port": "input1", "state": 0},
+        {"port": "relay1", "state": 0},
+    ]
+
     # Smallest valid JPEG (1x1 white) for snapshot tests
     MOCK_JPEG = bytes.fromhex(
         "ffd8ffe000104a46494600010100000100010000"
@@ -142,7 +152,7 @@ if _PAHCC_AVAILABLE:
         mock.check_directory_write_permission = AsyncMock(return_value=True)
         mock.get_access_point_caps = AsyncMock(return_value=[{"id": 1, "name": "Access point 1"}])
         mock.query_users = AsyncMock(return_value=MOCK_USERS)
-        mock.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
+        mock.get_switch_status = AsyncMock(return_value=[dict(s) for s in MOCK_SWITCHES])
         # pull_log simulates long-poll: returns events on the first call, then
         # blocks indefinitely (mimicking the device holding the connection open).
         # Using asyncio.sleep inside the side_effect keeps the background task
@@ -173,6 +183,8 @@ if _PAHCC_AVAILABLE:
         mock.hangup_all_calls = AsyncMock(return_value=0)
         mock.get_camera_caps = AsyncMock(return_value=MOCK_CAMERA_CAPS)
         mock.get_camera_snapshot = AsyncMock(return_value=MOCK_JPEG)
+        mock.get_io_caps = AsyncMock(return_value=MOCK_IO_PORTS)
+        mock.get_io_status = AsyncMock(return_value=[dict(p) for p in MOCK_IO_STATUS])
         mock.async_close = AsyncMock(return_value=None)
 
         with patch(

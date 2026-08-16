@@ -270,3 +270,58 @@ async def test_camera_entity_exists_and_snapshots(ha: HaClient, mock_2n: Mock2nA
 
     calls = await mock_2n.get_calls()
     assert any(c["path"] == "/api/camera/snapshot" for c in calls)
+
+
+# ─── Door & I/O binary sensors, event-driven state ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_door_and_input_sensors_exist(ha: HaClient) -> None:
+    """Door and input binary sensors are registered."""
+    door = await ha.wait_for_state("binary_sensor.doorman_door", timeout=30)
+    assert door["state"] == "unknown"  # no DoorStateChanged yet
+    inp = await ha.wait_for_state("binary_sensor.doorman_input_input1", timeout=30)
+    assert inp["state"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_door_sensor_follows_injected_event(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """Injected DoorStateChanged drives the door sensor in near-real-time."""
+    await mock_2n.inject_event("DoorStateChanged", {"state": "opened"})
+    await ha.wait_for_state_value("binary_sensor.doorman_door", "on", timeout=30)
+
+    await mock_2n.inject_event("DoorStateChanged", {"state": "closed"})
+    await ha.wait_for_state_value("binary_sensor.doorman_door", "off", timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_input_sensor_follows_injected_event(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """Injected InputChanged flips the input sensor without a poll cycle."""
+    await mock_2n.inject_event("InputChanged", {"port": "input1", "state": True})
+    await ha.wait_for_state_value("binary_sensor.doorman_input_input1", "on", timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_switch_state_event_updates_relay_immediately(
+    ha: HaClient, mock_2n: Mock2nAdmin
+) -> None:
+    """Injected SwitchStateChanged updates the relay entity without a poll."""
+    # Prior state is unknowable here (an earlier test may have toggled the
+    # relay), so drive both transitions rather than assuming an initial state.
+    await mock_2n.inject_event(
+        "SwitchStateChanged", {"switch": 1, "state": True, "originator": "auth"}
+    )
+    await ha.wait_for_state_value("switch.doorman_relay_1", "on", timeout=30)
+    await mock_2n.inject_event(
+        "SwitchStateChanged", {"switch": 1, "state": False, "originator": "api"}
+    )
+    await ha.wait_for_state_value("switch.doorman_relay_1", "off", timeout=30)
+
+
+@pytest.mark.asyncio
+async def test_security_event_reaches_event_entity(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
+    """Injected UnauthorizedDoorOpen surfaces on the access event entity."""
+    await mock_2n.inject_event("UnauthorizedDoorOpen", {"state": "in"})
+    state = await ha.wait_for_state_attr(
+        "event.doorman_access", "event_type", "unauthorized_door_open", timeout=30
+    )
+    assert state["attributes"].get("state") == "in"
