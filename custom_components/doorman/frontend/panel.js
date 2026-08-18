@@ -900,7 +900,10 @@ class DoormanLogTab extends HTMLElement {
       const note = document.createElement("p");
       note.style.cssText = "font-size:12px;color:var(--secondary-text-color);margin:0 0 8px";
       note.textContent = `Showing 100 of ${this._events.length} events`;
-      content.insertBefore(note, table);
+      // Append the note first so it renders above the table. The previous
+      // insertBefore(note, table) threw NotFoundError because `table` had
+      // not yet been added to `content`, which aborted the whole render.
+      content.appendChild(note);
     }
     content.appendChild(table);
   }
