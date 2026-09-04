@@ -264,6 +264,52 @@ async def test_key_pressed_with_doorbell_key_fires_doorbell_event(
 
 
 @pytest.mark.asyncio
+async def test_call_state_ringing_fires_call_ringing_synthetic(
+    hass: HomeAssistant,
+) -> None:
+    """CallStateChanged with state=ringing also fires synthetic CallRinging."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    params = {"direction": "incoming", "state": "ringing", "session": 3}
+    coordinator._fire_new_access_events(
+        [{"id": "e-ring", "event": "CallStateChanged", "utcTime": 1743250200, "params": params}]
+    )
+    await hass.async_block_till_done()
+
+    types = [e.data["event_type"] for e in fired]
+    assert types == ["CallStateChanged", "CallRinging"]
+    assert fired[1].data["params"] == params
+
+
+@pytest.mark.asyncio
+async def test_call_state_connected_does_not_fire_call_ringing(
+    hass: HomeAssistant,
+) -> None:
+    """Non-ringing CallStateChanged must not emit CallRinging."""
+    client = MagicMock()
+    coordinator = _make_coordinator(hass, client)
+
+    fired = []
+    hass.bus.async_listen(f"{DOMAIN}_access", lambda e: fired.append(e))
+
+    coordinator._fire_new_access_events(
+        [{
+            "id": "e-conn",
+            "event": "CallStateChanged",
+            "utcTime": 1743250300,
+            "params": {"state": "connected", "session": 3},
+        }]
+    )
+    await hass.async_block_till_done()
+
+    assert [e.data["event_type"] for e in fired] == ["CallStateChanged"]
+
+
+@pytest.mark.asyncio
 async def test_key_pressed_on_non_doorbell_key_does_not_fire(
     hass: HomeAssistant,
 ) -> None:

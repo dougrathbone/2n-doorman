@@ -58,7 +58,7 @@ async def test_attach_trigger_fires_on_matching_event(
         trigger_data={"id": "0", "idx": "0", "alias": None},
     )
 
-    for trig_type in ("doorbell_pressed", "access_granted"):
+    for trig_type in ("doorbell_pressed", "access_granted", "call_ringing"):
         attach = await async_attach_trigger(
             hass,
             {
@@ -87,6 +87,23 @@ async def test_attach_trigger_fires_on_matching_event(
         f"{DOMAIN}_access",
         {"entry_id": setup_doorman.entry_id, "event_type": "TamperSwitchActivated", "params": {}},
     )
+    # Call ringing fires; bare CallStateChanged (connected) must not.
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": setup_doorman.entry_id,
+            "event_type": "CallRinging",
+            "params": {"state": "ringing"},
+        },
+    )
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": setup_doorman.entry_id,
+            "event_type": "CallStateChanged",
+            "params": {"state": "connected"},
+        },
+    )
     await hass.async_block_till_done()
 
-    assert len(calls) == 1
+    assert len(calls) == 2  # doorbell + call_ringing

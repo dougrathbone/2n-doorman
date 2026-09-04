@@ -1,5 +1,5 @@
 /**
- * Device info / grant-access tab for the Doorman panel.
+ * Device info / grant-access / call-control tab for the Doorman panel.
  */
 
 import { define, ws, svc, esc, BASE_CSS } from "./helpers.js";
@@ -16,6 +16,7 @@ class DoormanDeviceTab extends HTMLElement {
     this._loading = true;
     this._error = null;
     this._entryId = null;
+    this._busy = null; // which button is in-flight, if any
   }
 
   set hass(h) { this._hass = h; }
@@ -42,9 +43,24 @@ class DoormanDeviceTab extends HTMLElement {
     }
   }
 
+  async _runService(action, service, params = {}) {
+    if (this._busy) return;
+    this._busy = action;
+    this._render();
+    try {
+      await svc(this._hass, service, params, this._entryId);
+    } catch (e) {
+      alert(`Failed: ${e.message}`);
+    } finally {
+      this._busy = null;
+      this._render();
+    }
+  }
+
   _render() {
     const info = this._info || {};
     const multiAp = this._accessPoints.length > 1;
+    const busy = this._busy;
     this.shadowRoot.innerHTML = `
       <style>
         ${BASE_CSS}
@@ -56,9 +72,9 @@ class DoormanDeviceTab extends HTMLElement {
         .info-label { font-size: 13px; color: var(--secondary-text-color); }
         .info-value { font-size: 13px; font-weight: 500; }
         .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
-        select { width: 100%; padding: 8px 10px; border: 1px solid var(--divider-color);
+        select, input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid var(--divider-color);
           border-radius: 4px; background: var(--card-background-color, white);
-          color: var(--primary-text-color); font-size: 13px; margin-bottom: 12px; }
+          color: var(--primary-text-color); font-size: 13px; margin-bottom: 12px; box-sizing: border-box; }
       </style>
       ${this._loading ? `<div class="loading">Loading device info…</div>` : this._error ? `<div class="error">${esc(this._error)}</div>` : `
         <div class="card">
@@ -82,17 +98,37 @@ class DoormanDeviceTab extends HTMLElement {
           ${multiAp ? `<select id="grant-ap"></select>` : ``}
           ${this._users.length > 0 ? `<select id="grant-user"></select>` : ``}
           <div class="btn-row">
-            <button class="btn btn-primary" id="grant-btn">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <button class="btn btn-primary" id="grant-btn" type="button" ${busy ? "disabled" : ""}>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
                 <path d="M18,8H17V6A5,5 0 0,0 12,1A5,5 0 0,0 7,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17M15.1,8H8.9V6A3.1,3.1 0 0,1 12,2.9A3.1,3.1 0 0,1 15.1,6V8Z"/>
               </svg>
-              Grant Access Now
+              ${busy === "grant" ? "Granting…" : "Grant Access Now"}
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Call Control</h3>
+          <p style="font-size:13px;color:var(--secondary-text-color);margin:0 0 12px">
+            Answer a ringing call, hang up active sessions, or dial a number / directory user.
+          </p>
+          <div class="btn-row" style="margin-bottom:12px">
+            <button class="btn btn-primary" id="answer-btn" type="button" ${busy ? "disabled" : ""}>
+              ${busy === "answer" ? "Answering…" : "Answer Call"}
+            </button>
+            <button class="btn btn-outlined" id="hangup-btn" type="button" ${busy ? "disabled" : ""}>
+              ${busy === "hangup" ? "Hanging up…" : "Hang Up"}
+            </button>
+          </div>
+          <input type="text" id="dial-number" placeholder="Number to dial (optional)" autocomplete="off" />
+          ${this._users.length > 0 ? `<select id="dial-user"></select>` : ``}
+          <div class="btn-row">
+            <button class="btn btn-outlined" id="dial-btn" type="button" ${busy ? "disabled" : ""}>
+              ${busy === "dial" ? "Dialing…" : "Dial"}
             </button>
           </div>
         </div>
       `}
     `;
-    // Populate access point selector safely (names come from device)
     const apSelect = this.shadowRoot.getElementById("grant-ap");
     if (apSelect) {
       for (const ap of this._accessPoints) {
@@ -102,7 +138,6 @@ class DoormanDeviceTab extends HTMLElement {
         apSelect.appendChild(opt);
       }
     }
-    // Populate user select safely (names/UUIDs come from device)
     const grantUserSelect = this.shadowRoot.getElementById("grant-user");
     if (grantUserSelect) {
       const placeholder = document.createElement("option");
@@ -116,6 +151,19 @@ class DoormanDeviceTab extends HTMLElement {
         grantUserSelect.appendChild(opt);
       }
     }
+    const dialUserSelect = this.shadowRoot.getElementById("dial-user");
+    if (dialUserSelect) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Or dial a directory user\u2026";
+      dialUserSelect.appendChild(placeholder);
+      for (const u of this._users) {
+        const opt = document.createElement("option");
+        opt.value = u.uuid;
+        opt.textContent = u.name || u.uuid;
+        dialUserSelect.appendChild(opt);
+      }
+    }
     this.shadowRoot.getElementById("grant-btn")?.addEventListener("click", async () => {
       const apId = apSelect ? parseInt(apSelect.value, 10) : 1;
       const userSelect = this.shadowRoot.getElementById("grant-user");
@@ -124,13 +172,27 @@ class DoormanDeviceTab extends HTMLElement {
         alert("Please select a user to grant access to.");
         return;
       }
-      try {
-        const params = { access_point_id: apId || 1 };
-        if (userUuid) params.user_uuid = userUuid;
-        await svc(this._hass, "grant_access", params, this._entryId);
-      } catch (e) {
-        alert(`Failed: ${e.message}`);
+      const params = { access_point_id: apId || 1 };
+      if (userUuid) params.user_uuid = userUuid;
+      await this._runService("grant", "grant_access", params);
+    });
+    this.shadowRoot.getElementById("answer-btn")?.addEventListener("click", () => {
+      this._runService("answer", "answer_call");
+    });
+    this.shadowRoot.getElementById("hangup-btn")?.addEventListener("click", () => {
+      this._runService("hangup", "hangup_calls");
+    });
+    this.shadowRoot.getElementById("dial-btn")?.addEventListener("click", () => {
+      const number = this.shadowRoot.getElementById("dial-number")?.value?.trim() || "";
+      const userUuid = this.shadowRoot.getElementById("dial-user")?.value || "";
+      if (!number && !userUuid) {
+        alert("Enter a number or select a directory user to dial.");
+        return;
       }
+      const params = {};
+      if (number) params.number = number;
+      if (userUuid) params.user_uuids = userUuid;
+      this._runService("dial", "dial", params);
     });
   }
 }

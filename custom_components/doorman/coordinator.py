@@ -63,6 +63,12 @@ STATE_EVENTS = {
 # accidentally trigger doorbell logic.
 DOORBELL_EVENT_TYPE = "DoorbellPressed"
 
+# Synthetic event_type when CallStateChanged reports state=ringing. The raw
+# CallStateChanged also covers connected/terminated/outgoing progress, so
+# device triggers labeled "Call ringing" must not match every call-state
+# change — they listen for this instead.
+CALL_RINGING_EVENT_TYPE = "CallRinging"
+
 # 2N devices intermittently return 401/timeout on polls when the digest
 # nonce rotates or the device is briefly busy. Re-authentication on the
 # next request usually succeeds, so we only surface a re-auth flow after
@@ -537,6 +543,22 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 )
                 self._apply_state_event(event_type, params)
+                # CallStateChanged covers the full call lifecycle; expose a
+                # ringing-only synthetic event for device triggers / automations
+                # that should not fire on connected/terminated.
+                if (
+                    event_type == "CallStateChanged"
+                    and params.get("state") == "ringing"
+                ):
+                    self.hass.bus.async_fire(
+                        f"{DOMAIN}_access",
+                        {
+                            "entry_id": entry_id,
+                            "event_type": CALL_RINGING_EVENT_TYPE,
+                            "params": params,
+                            "utc_time": utc_time,
+                        },
+                    )
             # KeyPressed reports every keypad interaction; only the
             # configured doorbell key fires a doorbell event. An empty
             # doorbell key disables the flow entirely.

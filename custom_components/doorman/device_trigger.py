@@ -16,11 +16,12 @@ from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
+from .coordinator import CALL_RINGING_EVENT_TYPE
 
 # Trigger type slug → 2N/synthetic event_type on the doorman_access bus.
 TRIGGER_TYPES = {
     "doorbell_pressed": "DoorbellPressed",
-    "call_ringing": "CallStateChanged",
+    "call_ringing": CALL_RINGING_EVENT_TYPE,
     "access_granted": "UserAuthenticated",
     "access_denied": "UserRejected",
     "unauthorized_door_open": "UnauthorizedDoorOpen",
