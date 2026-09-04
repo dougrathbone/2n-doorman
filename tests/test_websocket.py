@@ -324,9 +324,12 @@ async def test_ws_link_user(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """ws_link_user links a 2N user to an HA user, visible via ws_list_users."""
+    """ws_link_user links a 2N user to a real HA user, visible via ws_list_users."""
+    ha_user = await hass.auth.async_create_user("Linked User")
     conn = _mock_connection(is_admin=True)
-    ws_link_user(hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "ha_user_id": "ha-user-1"})
+    ws_link_user(
+        hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "ha_user_id": ha_user.id}
+    )
     await hass.async_block_till_done()
 
     conn.send_result.assert_called_once()
@@ -337,7 +340,23 @@ async def test_ws_link_user(
     ws_list_users(hass, conn2, {"id": 2})
     users = conn2.send_result.call_args[0][1]["users"]
     jane = next(u for u in users if u["uuid"] == "uuid-jane")
-    assert jane["ha_user_id"] == "ha-user-1"
+    assert jane["ha_user_id"] == ha_user.id
+
+
+@pytest.mark.asyncio
+async def test_ws_link_user_rejects_unknown_ha_user(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """ws_link_user refuses to persist a nonexistent HA user id."""
+    conn = _mock_connection(is_admin=True)
+    ws_link_user(
+        hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "ha_user_id": "missing-user"}
+    )
+    await hass.async_block_till_done()
+
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "unknown_user"
 
 
 @pytest.mark.real_http
@@ -385,10 +404,13 @@ async def test_ws_unlink_user(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_unlink_user removes a previously linked HA user."""
+    ha_user = await hass.auth.async_create_user("Linked User")
     conn = _mock_connection(is_admin=True)
 
     # Link first
-    ws_link_user(hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "ha_user_id": "ha-user-1"})
+    ws_link_user(
+        hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "ha_user_id": ha_user.id}
+    )
     await hass.async_block_till_done()
 
     # Unlink
@@ -437,6 +459,7 @@ async def test_ws_set_notification_targets(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """ws_set_notification_targets persists targets, visible inline via list_users."""
+    hass.services.async_register("notify", "mobile_app", lambda call: None)
     conn = _mock_connection(is_admin=True)
     ws_set_notification_targets(
         hass, conn, {"id": 1, "two_n_uuid": "uuid-jane", "targets": ["notify.mobile_app"]}
@@ -452,6 +475,24 @@ async def test_ws_set_notification_targets(
     users = conn2.send_result.call_args[0][1]["users"]
     jane = next(u for u in users if u["uuid"] == "uuid-jane")
     assert jane["notification_targets"] == ["notify.mobile_app"]
+
+
+@pytest.mark.asyncio
+async def test_ws_set_notification_targets_rejects_unknown_service(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """ws_set_notification_targets rejects targets that are not registered."""
+    conn = _mock_connection(is_admin=True)
+    ws_set_notification_targets(
+        hass,
+        conn,
+        {"id": 1, "two_n_uuid": "uuid-jane", "targets": ["notify.not_a_real_service"]},
+    )
+    await hass.async_block_till_done()
+
+    conn.send_error.assert_called_once()
+    assert conn.send_error.call_args[0][1] == "invalid_target"
 
 
 @pytest.mark.asyncio
@@ -555,6 +596,7 @@ async def test_ws_set_notification_settings_round_trips_via_the_store(
     hass_ws_client,
 ) -> None:
     """Saved settings come back from a later get, and land in DoormanStore."""
+    hass.services.async_register("notify", "mobile_app", lambda call: None)
     settings_in = {
         "access_sound_ios": "US-EN-Alexa-Front-Door-Opened.wav",
         "access_channel_android": "doorman_access",
@@ -589,6 +631,7 @@ async def test_ws_set_notification_settings_merges_partial_updates(
     hass_ws_client,
 ) -> None:
     """A save that carries one field must not blank the others."""
+    hass.services.async_register("notify", "mobile_app", lambda call: None)
     client = await hass_ws_client(hass)
     await client.send_json_auto_id(
         {
@@ -660,6 +703,7 @@ async def test_ws_set_notification_settings_preserves_poll_interval(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
+    hass.services.async_register("notify", "mobile_app", lambda call: None)
     client = await hass_ws_client(hass)
     await client.send_json_auto_id(
         {
@@ -783,7 +827,8 @@ async def test_ws_send_test_notification_dispatches_with_sound(
 
     assert res["success"], res
     assert len(calls) == 1
-    assert calls[0].data["title"] == "Doorbell"
+    assert calls[0].data["title"] == "Doorman test"
+    assert calls[0].data["message"] == "This is a Doorman test notification."
     assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Mail-Has-Arrived.wav"}
     assert calls[0].data["data"]["channel"] == "doorbell"
 

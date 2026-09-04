@@ -122,6 +122,8 @@ class TwoNApiClient:
         # Number of access points on this device — loaded from dir/template at startup.
         # 2N devices control per-user enabled/disabled via access.accessPoints[N].enabled.
         self._access_point_count: int = 2
+        # RFC 2617 nonce-count: increment per request under the same server nonce.
+        self._digest_nc: dict[str, int] = {}
 
     async def async_close(self) -> None:
         """Best-effort unsubscribe from the live log; the session stays with HA.
@@ -205,7 +207,9 @@ class TwoNApiClient:
         ha2 = _h(f"{method.upper()}:{uri}")
 
         if use_qop:
-            nc = "00000001"
+            # Increment nc for this nonce; a new nonce starts at 1.
+            self._digest_nc[nonce] = self._digest_nc.get(nonce, 0) + 1
+            nc = f"{self._digest_nc[nonce]:08x}"
             cnonce = os.urandom(8).hex()
             response = _h(f"{ha1}:{nonce}:{nc}:{cnonce}:{use_qop}:{ha2}")
             return (
@@ -314,6 +318,10 @@ class TwoNApiClient:
             raise DoormanConnectionError(
                 f"Cannot connect to {self._base_url}"
             ) from err
+        except TimeoutError as err:
+            raise DoormanConnectionError(
+                f"Timed out talking to {self._base_url}"
+            ) from err
         except (DoormanApiError, DoormanAuthError, DoormanConnectionError):
             raise
         except aiohttp.ClientError as err:
@@ -387,6 +395,10 @@ class TwoNApiClient:
         except aiohttp.ClientConnectorError as err:
             raise DoormanConnectionError(
                 f"Cannot connect to {self._base_url}"
+            ) from err
+        except TimeoutError as err:
+            raise DoormanConnectionError(
+                f"Timed out talking to {self._base_url}"
             ) from err
         except (DoormanApiError, DoormanAuthError, DoormanConnectionError):
             raise

@@ -868,8 +868,13 @@ async def test_unreachable_intercom_still_gets_a_panel_and_services(
         assert res["error"]["code"] == "not_configured", command
 
     # Store-only commands work without any device configured.
+    ha_user = await hass.auth.async_create_user("Offline Link User")
     await client.send_json_auto_id(
-        {"type": "doorman/link_user", "two_n_uuid": "uuid-jane", "ha_user_id": "ha-1"}
+        {
+            "type": "doorman/link_user",
+            "two_n_uuid": "uuid-jane",
+            "ha_user_id": ha_user.id,
+        }
     )
     assert (await client.receive_json())["success"]
 

@@ -1,0 +1,12 @@
+{
+  "services": {
+    "create_user": { "service": "mdi:account-plus" },
+    "update_user": { "service": "mdi:account-edit" },
+    "delete_user": { "service": "mdi:account-remove" },
+    "grant_access": { "service": "mdi:door-open" },
+    "hangup_calls": { "service": "mdi:phone-hangup" },
+    "answer_call": { "service": "mdi:phone-in-talk" },
+    "dial": { "service": "mdi:phone-outgoing" },
+    "resync_log_history": { "service": "mdi:history" }
+  }
+}

@@ -48,6 +48,41 @@ def _doorbell_key_code(value: str) -> str:
     return value
 
 
+def _registered_notify_targets(hass: HomeAssistant) -> set[str]:
+    """Return the set of currently registered ``notify.*`` service targets."""
+    return {
+        f"notify.{name}"
+        for name in hass.services.async_services().get("notify", {})
+        if name not in ("notify", "send_message")
+    }
+
+
+def _validate_notify_targets(
+    hass: HomeAssistant, targets: list[str]
+) -> list[str] | str:
+    """Return the validated target list, or an error message string.
+
+    Every target must be a currently registered ``notify.*`` service so the
+    store cannot accumulate dead or out-of-domain spam destinations.
+    """
+    allowed = _registered_notify_targets(hass)
+    invalid = [t for t in targets if t not in allowed]
+    if invalid:
+        return (
+            "Unknown notify target(s): "
+            + ", ".join(repr(t) for t in invalid)
+            + ". Choose from registered notify.* services."
+        )
+    # Preserve order, drop duplicates.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for target in targets:
+        if target not in seen:
+            seen.add(target)
+            ordered.append(target)
+    return ordered
+
+
 def _presentation_value(value: str) -> str:
     """Reject the panel's UI-only 'custom' sentinel from a sound/channel field."""
     if value == UI_CUSTOM_SENTINEL:
@@ -446,6 +481,15 @@ async def ws_link_user(
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
 
+    ha_user = await hass.auth.async_get_user(msg["ha_user_id"])
+    if ha_user is None or ha_user.system_generated or not ha_user.is_active:
+        connection.send_error(
+            msg["id"],
+            "unknown_user",
+            f"Home Assistant user {msg['ha_user_id']!r} was not found",
+        )
+        return
+
     await store.link_user(msg["two_n_uuid"], msg["ha_user_id"])
     connection.send_result(msg["id"], {"success": True})
 
@@ -518,7 +562,12 @@ async def ws_set_notification_targets(
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
 
-    await store.set_notification_targets(msg["two_n_uuid"], msg["targets"])
+    validated = _validate_notify_targets(hass, msg["targets"])
+    if isinstance(validated, str):
+        connection.send_error(msg["id"], "invalid_target", validated)
+        return
+
+    await store.set_notification_targets(msg["two_n_uuid"], validated)
     connection.send_result(msg["id"], {"success": True})
 
 
@@ -618,8 +667,16 @@ async def ws_set_notification_settings(
         connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
         return
 
+    settings = dict(msg["settings"])
+    if "doorbell_targets" in settings:
+        validated = _validate_notify_targets(hass, settings["doorbell_targets"])
+        if isinstance(validated, str):
+            connection.send_error(msg["id"], "invalid_target", validated)
+            return
+        settings["doorbell_targets"] = validated
+
     settings = await store.set_notification_settings(
-        coordinator.config_entry.entry_id, msg["settings"]
+        coordinator.config_entry.entry_id, settings
     )
     connection.send_result(msg["id"], {"settings": settings})
 
@@ -665,6 +722,11 @@ async def ws_send_test_notification(
         )
         return
 
+    # Ignore client-supplied title/message — Preview is admin-only, but fixed
+    # copy still prevents a compromised admin session from phishing phones.
+    title = "Doorman test"
+    message = "This is a Doorman test notification."
+
     data: dict = {"tag": "doorman_test"}
     if msg.get("ios_sound"):
         data["push"] = {"sound": msg["ios_sound"]}
@@ -675,7 +737,7 @@ async def ws_send_test_notification(
         await hass.services.async_call(
             "notify",
             service,
-            {"title": msg["title"], "message": msg["message"], "data": data},
+            {"title": title, "message": message, "data": data},
             blocking=True,
         )
     except HomeAssistantError as err:

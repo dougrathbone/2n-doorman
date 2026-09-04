@@ -465,6 +465,22 @@ def test_build_digest_header_with_qop_auth():
     assert 'response="' in header
 
 
+def test_build_digest_header_increments_nc_for_same_nonce():
+    """Repeated use of one nonce increments the RFC 2617 nonce-count."""
+    client = _make_client()
+    www_auth = 'Digest realm="2N", nonce="abc123", qop="auth", algorithm=MD5'
+    first = client._build_digest_header("GET", "http://192.168.1.100/api/system/info", www_auth)
+    second = client._build_digest_header("GET", "http://192.168.1.100/api/system/info", www_auth)
+    assert "nc=00000001" in first
+    assert "nc=00000002" in second
+    other = client._build_digest_header(
+        "GET",
+        "http://192.168.1.100/api/system/info",
+        'Digest realm="2N", nonce="fresh", qop="auth", algorithm=MD5',
+    )
+    assert "nc=00000001" in other
+
+
 def test_build_digest_header_without_qop():
     """Digest header without qop omits nc, cnonce, and qop fields."""
     client = _make_client()
@@ -703,6 +719,16 @@ async def test_request_connection_error():
     )
 
     with pytest.raises(DoormanConnectionError, match="Cannot connect"):
+        await client._request("GET", "system/info")
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_is_connection_error():
+    """Bare TimeoutError from aiohttp is wrapped as DoormanConnectionError."""
+    client = _make_client()
+    client._session.request = MagicMock(side_effect=TimeoutError("slow"))
+
+    with pytest.raises(DoormanConnectionError, match="Timed out"):
         await client._request("GET", "system/info")
 
 
