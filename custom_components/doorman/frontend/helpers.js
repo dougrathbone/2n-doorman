@@ -8,7 +8,7 @@
 // browser tab still running frontend code from before a HACS update. Keep it
 // in step with custom_components/doorman/manifest.json — a unit test asserts
 // the two match.
-export const PANEL_VERSION = "0.8.1";
+export const PANEL_VERSION = "0.8.2";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
