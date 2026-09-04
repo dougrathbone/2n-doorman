@@ -40,7 +40,11 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> DoormanOptionsFlow:
-        return DoormanOptionsFlow()
+        # OptionsFlowWithConfigEntry is required on the HA 2024.11.0 floor:
+        # plain OptionsFlow gained an automatic config_entry property only
+        # later (2024.11 mid-cycle / 2024.12). The subclass remains supported
+        # for custom integrations on current HA.
+        return DoormanOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict | None = None
@@ -208,7 +212,7 @@ OPTIONS_SCHEMA = vol.Schema(
 )
 
 
-class DoormanOptionsFlow(config_entries.OptionsFlow):
+class DoormanOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
     """Allow changing integration options (e.g. poll interval) post-setup."""
 
     async def async_step_init(

@@ -43,6 +43,37 @@ if _PAHCC_AVAILABLE:
     def enable_custom_integrations_fixture(enable_custom_integrations):  # noqa: F811
         """Enable discovery of custom integrations in tests."""
 
+    @pytest.fixture(autouse=True)
+    def _hide_aiohttp_shutdown_threads_on_floor():
+        """Older PHACC rejects aiohttp's ``_run_safe_shutdown_loop`` leftovers.
+
+        Current PHACC allowlists that thread name; PHACC 0.13.181 (HA floor)
+        does not. Hide it from ``verify_cleanup``'s teardown check only — this
+        fixture tears down before the plugin fixture, so the patch is in place
+        for the assertion and restored at the start of the next test.
+        """
+        import inspect
+        import threading
+
+        import pytest_homeassistant_custom_component.plugins as plugins
+
+        if "_run_safe_shutdown_loop" in inspect.getsource(plugins.verify_cleanup):
+            yield
+            return
+
+        real_enumerate = threading.enumerate
+
+        def filtered_enumerate():
+            return [
+                t
+                for t in real_enumerate()
+                if "_run_safe_shutdown_loop" not in t.name
+            ]
+
+        threading.enumerate = real_enumerate
+        yield
+        threading.enumerate = filtered_enumerate
+
     # ─── Representative fixture data ─────────────────────────────────────────────
 
     MOCK_DEVICE_INFO = {
