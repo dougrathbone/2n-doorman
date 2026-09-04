@@ -2,3 +2,6 @@
 # Kept separate from requirements_test.txt so the primary CI leg stays on the
 # current PHACC/HA pair. PHACC 0.13.181 installs homeassistant==2024.11.0.
 pytest-homeassistant-custom-component==0.13.181
+# acme 2.11 (via hass-nabucasa) still needs josepy 1.x ComparableX509; an
+# unpinned install resolves josepy 2+ and HA fails to import at collection.
+josepy==1.14.0
