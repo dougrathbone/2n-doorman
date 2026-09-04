@@ -1,0 +1,4 @@
+# Pins for the declared HA floor in hacs.json (homeassistant: 2024.11.0).
+# Kept separate from requirements_test.txt so the primary CI leg stays on the
+# current PHACC/HA pair. PHACC 0.13.181 installs homeassistant==2024.11.0.
+pytest-homeassistant-custom-component==0.13.181

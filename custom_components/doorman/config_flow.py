@@ -138,9 +138,9 @@ class DoormanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # leave the entry sitting in SETUP_ERROR after a successful
                 # reauth.
                 #
-                # config_entries.OptionsFlowWithReload and
-                # async_update_reload_and_abort would express this natively but
-                # postdate the 2024.1.0 minimum pinned in hacs.json.
+                # config_entries.OptionsFlowWithReload would express this
+                # natively but is not used here — the same-credentials /
+                # SETUP_ERROR cases need an explicit reload decision.
                 if not (changed and was_loaded):
                     await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")

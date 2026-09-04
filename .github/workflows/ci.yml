@@ -82,6 +82,33 @@ jobs:
           path: coverage.xml
           retention-days: 14
 
+  # Declared floor from hacs.json ("homeassistant": "2024.11.0"). Primary
+  # coverage stays on the current PHACC pin above; this leg proves we still
+  # import and pass unit tests against the oldest HA we claim to support.
+  tests-floor:
+    name: Unit tests (HA floor 2024.11.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [validate-manifest, lint]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # PHACC 0.13.181 / HA 2024.11.0 require Python >= 3.12.
+          python-version: "3.12"
+          cache: pip
+      - name: Install floor test dependencies
+        run: pip install -r requirements_test_floor.txt
+      - name: Show resolved Home Assistant version
+        run: |
+          python -c "import importlib.metadata as m; print('homeassistant', m.version('homeassistant')); print('pytest-homeassistant-custom-component', m.version('pytest-homeassistant-custom-component'))"
+      - name: Run unit tests on HA floor
+        # No coverage gate here — the floor job is a compatibility contract,
+        # not the coverage enforcer (that stays on the current-HA job).
+        run: |
+          pytest tests/ --ignore=tests/integration \
+            -v --tb=short
+
   hacs-validate:
     name: HACS Action
     runs-on: ubuntu-latest

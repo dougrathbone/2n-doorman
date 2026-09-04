@@ -1067,7 +1067,7 @@ async def test_panel_module_url_is_cache_busted(
 
 @pytest.mark.asyncio
 async def test_panel_js_version_matches_the_manifest() -> None:
-    """panel.js's PANEL_VERSION must track manifest.json.
+    """helpers.js's PANEL_VERSION must track manifest.json.
 
     The backend passes its version to the panel and panel.js shows a "reload
     this page" banner when it differs from PANEL_VERSION. A PANEL_VERSION left
@@ -1079,10 +1079,12 @@ async def test_panel_js_version_matches_the_manifest() -> None:
 
     root = Path(__file__).parent.parent / "custom_components" / "doorman"
     manifest = json.loads((root / "manifest.json").read_text())
-    source = (root / "frontend" / "panel.js").read_text()
+    source = (root / "frontend" / "helpers.js").read_text()
 
-    match = re.search(r'^const PANEL_VERSION = "([^"]+)";', source, re.MULTILINE)
-    assert match, "PANEL_VERSION constant not found in panel.js"
+    match = re.search(
+        r'^export const PANEL_VERSION = "([^"]+)";', source, re.MULTILINE
+    )
+    assert match, "PANEL_VERSION constant not found in helpers.js"
     assert match.group(1) == manifest["version"]
 
 
@@ -1090,26 +1092,30 @@ async def test_panel_js_version_matches_the_manifest() -> None:
 async def test_panel_js_guards_every_custom_element_definition() -> None:
     """Every customElements.define() must be guarded against a re-import.
 
-    panel.js is served with a ?v=<version> cache-buster and HA re-imports module
-    panels per URL, so after a HACS update the module re-executes in a document
-    that already has the previous version's elements defined. An unguarded
-    define() throws NotSupportedError and the whole panel fails to render.
+    The panel is served with a ?v=<version> cache-buster and HA re-imports
+    module panels per URL, so after a HACS update the modules re-execute in a
+    document that already has the previous version's elements defined. An
+    unguarded define() throws NotSupportedError and the whole panel fails to
+    render.
     """
     from pathlib import Path
 
-    source = (
+    frontend = (
         Path(__file__).parent.parent
-        / "custom_components" / "doorman" / "frontend" / "panel.js"
-    ).read_text()
-
-    # The only permitted call site is the guarded define() helper.
-    calls = [
-        line for line in source.splitlines()
-        if "customElements.define(" in line and not line.lstrip().startswith(("//", "*"))
-    ]
-    assert calls == ["  if (!customElements.get(name)) customElements.define(name, cls);"], (
-        f"Unguarded customElements.define() call(s): {calls}"
+        / "custom_components" / "doorman" / "frontend"
     )
+    calls: list[str] = []
+    for path in sorted(frontend.glob("*.js")):
+        for line in path.read_text().splitlines():
+            if "customElements.define(" in line and not line.lstrip().startswith(
+                ("//", "*")
+            ):
+                calls.append(f"{path.name}: {line}")
+
+    # The only permitted call site is the guarded define() helper in helpers.js.
+    assert calls == [
+        "helpers.js:   if (!customElements.get(name)) customElements.define(name, cls);"
+    ], f"Unguarded customElements.define() call(s): {calls}"
 
 
 @pytest.mark.asyncio
@@ -1117,10 +1123,11 @@ async def test_panel_js_empty_state_and_tablist_a11y() -> None:
     """Static markers for zero-device empty state and tab accessibility."""
     from pathlib import Path
 
-    source = (
+    frontend = (
         Path(__file__).parent.parent
-        / "custom_components" / "doorman" / "frontend" / "panel.js"
-    ).read_text()
+        / "custom_components" / "doorman" / "frontend"
+    )
+    source = "\n".join(p.read_text() for p in sorted(frontend.glob("*.js")))
 
     assert 'role="tablist"' in source
     assert "No devices configured" in source

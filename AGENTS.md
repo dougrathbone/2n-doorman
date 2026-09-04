@@ -40,7 +40,8 @@ custom_components/doorman/
                          SIP registration health (/api/phone/status)
   button.py            — Device restart button (/api/system/restart)
   helpers.py           — device_slug / pinned_entity_id / build_device_info
-  frontend/panel.js    — Vanilla JS sidebar panel (no build step)
+  frontend/            — Vanilla JS ES-module sidebar panel (no build step);
+                         panel.js shell + helpers/drawer/tab modules
   const.py             — All constants
 ```
 
@@ -97,27 +98,27 @@ user-facing statement of this; don't "fix" it with reload tricks.
 
 The frontend has a matching constraint. `panel.js` is served with a
 `?v={manifest version}` cache-buster and HA re-imports module panels per URL, so
-after an update the module re-executes **in the same document**, where the
+after an update the module tree re-executes **in the same document**, where the
 previous version's custom elements are already defined. Therefore:
 - Every `customElements.define()` goes through the guarded `define()` helper in
-  `panel.js`. An unguarded call throws `NotSupportedError` and the panel then
+  `helpers.js`. An unguarded call throws `NotSupportedError` and the panel then
   fails to render at all — a hard failure instead of a soft one. A unit test
-  asserts there are no unguarded call sites.
+  scans all `frontend/*.js` files for unguarded call sites.
 - `async_register_panel` passes `config={"version": …}`, which arrives as
-  `panel.config` in the panel element. `panel.js` compares it against its
-  hardcoded `PANEL_VERSION` and shows a "reload this page to finish updating"
-  banner on mismatch. **Bump `PANEL_VERSION` together with
+  `panel.config` in the panel element. The panel compares it against
+  `PANEL_VERSION` (exported from `helpers.js`) and shows a "reload this page to
+  finish updating" banner on mismatch. **Bump `PANEL_VERSION` together with
   `manifest.json`'s version** — a unit test asserts the two match, otherwise
   every user would see the banner permanently.
 - Version-namespaced element names would make an update take effect without a
   page reload. That is a larger, riskier change; deliberately not done.
 
 ### No build step for the frontend
-`panel.js` uses plain vanilla JS custom elements and Shadow DOM. There is
-deliberately no bundler, no TypeScript, no npm. This keeps the integration
-self-contained and easy to install via HACS without a CI build artifact for
-the JS. If the frontend grows significantly, consider a build step, but for
-now keep it simple.
+The sidebar panel is multi-file vanilla JS ES modules (`panel.js` shell plus
+`helpers.js`, `drawer.js`, and `*-tab.js`) with Shadow DOM. HA serves the whole
+`frontend/` directory at `/api/doorman/`, so sibling relative imports work with
+no bundler, TypeScript, or npm. This keeps the integration self-contained and
+easy to install via HACS without a CI build artifact for the JS.
 
 ### TwoNApiClient written from scratch
 The `py2n` library only covers relay/camera/event operations; it has no
@@ -444,11 +445,12 @@ footers to commit messages. Keep commit messages focused on technical changes.
   `custom_components/doorman/` and creates a GitHub Release. HACS installs the
   repository tree at the tag, *not* the release zip — see "Release pipeline
   invariants" above.
-- **Frontend changes**: edit `frontend/panel.js` directly; no build step.
-  `panel.js` is cache-busted automatically with `?v={manifest version}` in
-  `__init__.py`, so a release is enough — no manual busting needed. Do bump
-  `PANEL_VERSION` in `panel.js` in the same commit as `manifest.json`'s
-  version (see "Updating the integration requires an HA restart").
+- **Frontend changes**: edit the relevant `frontend/*.js` module(s) directly;
+  no build step. `panel.js` is cache-busted automatically with
+  `?v={manifest version}` in `__init__.py`, so a release is enough — no manual
+  busting needed. Do bump `PANEL_VERSION` in `helpers.js` in the same commit as
+  `manifest.json`'s version (see "Updating the integration requires an HA
+  restart").
 - **Storage keys**: `STORAGE_KEY`/`STORAGE_VERSION` (shared config store) and
   `LOG_STORAGE_KEY`/`LOG_STORAGE_VERSION` (per-entry access log) are defined
   in `const.py`. Bump the matching version when a stored schema changes in a
@@ -509,17 +511,15 @@ permits it.** Otherwise guard it, or don't use it.
 `hacs.json` declares the floor:
 
 ```json
-"homeassistant": "2024.1.0"
+"homeassistant": "2024.11.0"
 ```
 
-Be honest about what that number is worth: **it is currently an unverified
-assertion.** CI installs exactly one HA version and tests exactly that one. It
-has never once executed this integration against HA 2024.1.0, so the floor is a
-claim, not a tested contract. Treat it as a promise we've made to users rather
-than a fact we've checked — which means don't casually break it, and don't
-casually trust it either. (Verifying it would mean a second CI matrix leg
-pinning the oldest supported HA. That's a maintainer decision, not a drive-by
-one.)
+That floor is exercised by the **Unit tests (HA floor 2024.11.0)** CI job, which
+installs `requirements_test_floor.txt` (PHACC 0.13.181 → `homeassistant==2024.11.0`
+on Python 3.12). The primary unit-test job still pins current HA via
+`requirements_test.txt` and owns the coverage gate. Keep the two requirement
+files separate — merging them would either drop the floor or silently downgrade
+the current-HA leg.
 
 When HA introduces a replacement for something we call:
 
@@ -548,13 +548,14 @@ The two numbers are supposed to differ; don't "fix" them into agreement.
 
 Worth stating plainly so nobody mistakes green CI for coverage we don't have:
 
-- The `hacs.json` floor of 2024.1.0 is untested (above). `target-version =
-  "py312"` is also *stricter* than that floor implies (2024.1.0 runs on Python
-  3.11), so the two disagree by one version; resolving that — lower
-  `target-version` to `py311`, or raise the declared floor — is a maintainer
-  call.
-- CI tests one HA version, so "works on current HA" and "works on the floor"
-  are two different claims and we only ever check the first.
+- The `hacs.json` floor of **2024.11.0** is now tested by the floor CI job
+  (`requirements_test_floor.txt`). That is still a different claim from
+  "works on current HA" — both jobs must stay green.
+- `target-version = "py312"` matches the floor's Python (HA 2024.11 → 3.12).
+  Don't raise it to match the 3.14 runner.
+- Brand images for custom integrations ship in
+  `custom_components/doorman/brand/` (HA 2026.3+ Brands Proxy). Do not open
+  PRs against `home-assistant/brands` for this integration.
 
 ## Common tasks
 

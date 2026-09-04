@@ -82,7 +82,7 @@ The test suite uses `pytest-homeassistant-custom-component` which spins up a rea
 
 1. Write the backend change (Python)
 2. Add or update WebSocket handlers in `websocket.py` if the panel needs new data
-3. Update the panel in `frontend/panel.js`
+3. Update the relevant panel module(s) under `frontend/` (ES modules, no bundler)
 4. Add translations in `strings.json` and `translations/en.json`
 5. Write tests — aim to keep overall coverage above 60%
 6. Bump `manifest.json` version if this will be released
@@ -95,7 +95,10 @@ The test suite uses `pytest-homeassistant-custom-component` which spins up a rea
 - CI runs lint, all unit tests, a 60% coverage gate, and HACS validation automatically
 - Fill in the PR template — especially the testing section
 - One logical change per PR where practical
-- Brand assets: `brand/` has square icons + `logo.svg`; landscape `logo.png` / `logo@2x.png` for a `home-assistant/brands` submission are not generated yet — do not invent placeholder PNGs
+- Brand assets: ship icons/logos under both repo-root `brand/` (README/HACS)
+  and `custom_components/doorman/brand/` (HA 2026.3+ local Brands Proxy API).
+  Do not open PRs against `home-assistant/brands` for custom integrations —
+  that path is closed; local `brand/` is the source of truth.
 
 ---
 
