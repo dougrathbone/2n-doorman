@@ -4,11 +4,11 @@ from __future__ import annotations
 from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import DOORBELL_EVENT_TYPE, DoormanCoordinator
+from .helpers import build_device_info, pinned_entity_id
 
 
 async def async_setup_entry(
@@ -80,20 +80,14 @@ class DoormanAccessEventEntity(EventEntity):
     ) -> None:
         self._attr_unique_id = f"{entry.entry_id}_access_event"
         self._attr_name = "Doorman Access"
-        # Keep entity IDs (event.doorman_access) stable: with device_info set,
-        # newer HA versions otherwise prefix the object id with the device name.
+        # Keep entity IDs stable: with device_info set, newer HA versions
+        # otherwise prefix the object id with the device name.
         self._attr_has_entity_name = False
         # Pin the entity ID explicitly so device_info can't cause device-name
         # prefixes (HA 2026.7+ prefixes new device-linked entities otherwise).
-        self.entity_id = "event.doorman_access"
+        self.entity_id = pinned_entity_id("event", "access", coordinator, entry)
         self._entry_id = entry.entry_id
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="2N",
-            model=coordinator.device_info.get("hwVersion"),
-            sw_version=coordinator.device_info.get("swVersion"),
-        )
+        self._attr_device_info = build_device_info(coordinator, entry)
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(

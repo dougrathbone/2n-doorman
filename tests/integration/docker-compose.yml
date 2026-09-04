@@ -12,7 +12,8 @@ services:
       retries: 12
 
   homeassistant:
-    image: homeassistant/home-assistant:stable
+    # Must track the HA version PHACC installs (see requirements_test.txt / AGENTS.md).
+    image: homeassistant/home-assistant:2026.8.1
     volumes:
       - ./ha_config:/config
       - ../../custom_components:/config/custom_components:ro

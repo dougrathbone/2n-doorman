@@ -11,13 +11,13 @@ import logging
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_client import DoormanApiError
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
+from .helpers import build_device_info, pinned_entity_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,8 +42,8 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
     """Still-image camera backed by /api/camera/snapshot."""
 
     _attr_name = "Doorman Camera"
-    # Keep entity IDs (camera.doorman_camera) stable: with device_info set,
-    # newer HA versions otherwise prefix the object id with the device name.
+    # Keep entity IDs stable: with device_info set, newer HA versions
+    # otherwise prefix the object id with the device name.
     _attr_has_entity_name = False
 
     def __init__(
@@ -54,14 +54,8 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
         self._attr_unique_id = f"{entry.entry_id}_camera"
         # Pin the entity ID explicitly so device_info can't cause device-name
         # prefixes (HA 2026.7+ prefixes new device-linked entities otherwise).
-        self.entity_id = "camera.doorman_camera"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="2N",
-            model=coordinator.device_info.get("hwVersion"),
-            sw_version=coordinator.device_info.get("swVersion"),
-        )
+        self.entity_id = pinned_entity_id("camera", "camera", coordinator, entry)
+        self._attr_device_info = build_device_info(coordinator, entry)
         self._width, self._height = self._pick_resolution()
 
     def _pick_resolution(self) -> tuple[int, int]:

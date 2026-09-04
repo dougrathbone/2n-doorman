@@ -10,6 +10,9 @@
           "password": "API password",
           "use_ssl": "Use HTTPS",
           "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "use_ssl": "Recommended. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords)."
         }
       },
       "reauth_confirm": {
@@ -29,6 +32,9 @@
           "password": "API password",
           "use_ssl": "Use HTTPS",
           "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "use_ssl": "Recommended. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords)."
         }
       }
     },

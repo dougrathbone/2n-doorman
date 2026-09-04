@@ -14,7 +14,7 @@ async def test_sip_registered_sensor_on(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """All registration-enabled accounts registered → sensor on."""
-    state = hass.states.get("binary_sensor.doorman_sip_registered")
+    state = hass.states.get("binary_sensor.doorman_1012345678_sip_registered")
     assert state is not None
     assert state.state == "on"
     assert state.attributes["accounts"][0]["registered"] is True
@@ -34,7 +34,7 @@ async def test_sip_registered_sensor_off_when_unregistered(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert hass.states.get("binary_sensor.doorman_sip_registered").state == "off"
+    assert hass.states.get("binary_sensor.doorman_1012345678_sip_registered").state == "off"
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_no_sip_sensor_when_phone_status_unavailable(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert hass.states.get("binary_sensor.doorman_sip_registered") is None
+    assert hass.states.get("binary_sensor.doorman_1012345678_sip_registered") is None
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_uptime_sensor(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """Uptime sensor reports boot time (systemTime - upTime) as a timestamp."""
-    state = hass.states.get("sensor.doorman_uptime")
+    state = hass.states.get("sensor.doorman_1012345678_uptime")
     assert state is not None
     # MOCK_SYSTEM_STATUS: 1743242400 - 3600 = 1743238800
     assert state.state == datetime.fromtimestamp(1743238800, UTC).isoformat()
@@ -74,7 +74,7 @@ async def test_restart_button_calls_device(
 ) -> None:
     """Pressing the restart button calls system/restart on the device."""
     await hass.services.async_call(
-        "button", "press", {"entity_id": "button.doorman_restart"}, blocking=True
+        "button", "press", {"entity_id": "button.doorman_1012345678_restart"}, blocking=True
     )
     mock_2n_client.restart_device.assert_called_once()
 
@@ -93,7 +93,7 @@ async def test_restart_button_api_error(
     mock_2n_client.restart_device.side_effect = DoormanApiError("code 10: no privilege")
     with pytest.raises(HomeAssistantError, match="Restart failed"):
         await hass.services.async_call(
-            "button", "press", {"entity_id": "button.doorman_restart"}, blocking=True
+            "button", "press", {"entity_id": "button.doorman_1012345678_restart"}, blocking=True
         )
 
 
@@ -111,5 +111,5 @@ async def test_no_health_entities_when_system_status_unavailable(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert hass.states.get("sensor.doorman_uptime") is None
-    assert hass.states.get("button.doorman_restart") is None
+    assert hass.states.get("sensor.doorman_1012345678_uptime") is None
+    assert hass.states.get("button.doorman_1012345678_restart") is None

@@ -8,13 +8,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_client import DoormanApiError
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
+from .helpers import build_device_info, pinned_entity_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,14 +43,8 @@ class DoormanRestartButton(CoordinatorEntity[DoormanCoordinator], ButtonEntity):
     ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_restart"
-        self.entity_id = "button.doorman_restart"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="2N",
-            model=coordinator.device_info.get("hwVersion"),
-            sw_version=coordinator.device_info.get("swVersion"),
-        )
+        self.entity_id = pinned_entity_id("button", "restart", coordinator, entry)
+        self._attr_device_info = build_device_info(coordinator, entry)
 
     async def async_press(self) -> None:
         try:

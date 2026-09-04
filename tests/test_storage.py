@@ -244,6 +244,67 @@ async def test_get_notification_settings_returns_a_copy(hass: HomeAssistant) -> 
 
 
 @pytest.mark.asyncio
+async def test_clear_entry_removes_settings_and_prunes_uuids(
+    hass: HomeAssistant,
+) -> None:
+    """clear_entry drops entry settings and only the supplied UUID-keyed rows."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.set_notification_settings("entry-a", {"doorbell_key_code": "%2"})
+    await store.set_notification_settings("entry-b", {"doorbell_key_code": "%3"})
+    await store.link_user("uuid-jane", "ha-1")
+    await store.link_user("uuid-other", "ha-2")
+    await store.set_notification_targets("uuid-jane", ["notify.phone"])
+    await store.set_notification_targets("uuid-other", ["notify.tablet"])
+    await store.update_last_access("uuid-jane", 1743242400)
+    await store.update_last_access("uuid-other", 1743242500)
+
+    await store.clear_entry("entry-a", ["uuid-jane"])
+
+    assert "entry-a" not in store.notification_settings
+    assert store.get_notification_settings("entry-b")["doorbell_key_code"] == "%3"
+    assert store.get_ha_user_id("uuid-jane") is None
+    assert store.get_ha_user_id("uuid-other") == "ha-2"
+    assert store.get_notification_targets("uuid-jane") == []
+    assert store.get_notification_targets("uuid-other") == ["notify.tablet"]
+    assert "uuid-jane" not in store.last_access
+    assert store.last_access["uuid-other"] == 1743242500
+
+    store2 = DoormanStore(hass)
+    await store2.async_load()
+    assert "entry-a" not in store2.notification_settings
+    assert store2.get_ha_user_id("uuid-jane") is None
+    assert store2.get_ha_user_id("uuid-other") == "ha-2"
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_settings_only_without_uuids(hass: HomeAssistant) -> None:
+    """Without UUID list, clear_entry only removes notification_settings."""
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    await store.set_notification_settings("entry-a", {"doorbell_key_code": "%2"})
+    await store.link_user("uuid-jane", "ha-1")
+    await store.update_last_access("uuid-jane", 1743242400)
+
+    await store.clear_entry("entry-a")
+
+    assert "entry-a" not in store.notification_settings
+    assert store.get_ha_user_id("uuid-jane") == "ha-1"
+    assert store.last_access["uuid-jane"] == 1743242400
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_noop_when_nothing_to_clear(hass: HomeAssistant) -> None:
+    """clear_entry with an unknown entry and no UUIDs does not raise."""
+    store = DoormanStore(hass)
+    await store.async_load()
+    await store.clear_entry("missing-entry", ["uuid-unknown"])
+    assert store.notification_settings == {}
+
+
+@pytest.mark.asyncio
 async def test_async_load_adds_new_keys_to_an_older_store_file(
     hass: HomeAssistant, hass_storage
 ) -> None:

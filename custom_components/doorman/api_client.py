@@ -124,7 +124,21 @@ class TwoNApiClient:
         self._access_point_count: int = 2
 
     async def async_close(self) -> None:
-        """No-op: the session is owned and managed by Home Assistant."""
+        """Best-effort unsubscribe from the live log; the session stays with HA.
+
+        The aiohttp session is owned by Home Assistant and must not be closed
+        here. If a live ``log/subscribe`` id is held, release it so the device
+        does not keep a channel open until its duration expires.
+        """
+        if self._log_subscription_id is None:
+            return
+        with contextlib.suppress(DoormanApiError, TimeoutError):
+            await self._request(
+                "GET",
+                "log/unsubscribe",
+                params={"id": self._log_subscription_id},
+            )
+        self._log_subscription_id = None
 
     def _ssl_context(self) -> ssl.SSLContext | bool | None:
         """Return the pre-built SSL context (or None for plain HTTP)."""

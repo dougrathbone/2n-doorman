@@ -1636,6 +1636,54 @@ async def test_live_subscribe_does_not_request_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_close_unsubscribes_when_subscribed() -> None:
+    """async_close releases the live log subscription before clearing the id."""
+    client = _make_client()
+    calls: list[tuple[str, dict | None]] = []
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        calls.append((endpoint, params))
+        if endpoint == "log/subscribe":
+            return {"success": True, "result": {"id": 42}}
+        return {"success": True, "result": {}}
+
+    client._request = fake_request
+    await client._subscribe_log()
+    assert client._log_subscription_id == 42
+
+    await client.async_close()
+
+    assert ("log/unsubscribe", {"id": 42}) in calls
+    assert client._log_subscription_id is None
+
+
+@pytest.mark.asyncio
+async def test_async_close_survives_unsubscribe_failure() -> None:
+    """A failing unsubscribe still clears the subscription id."""
+    client = _make_client()
+    client._log_subscription_id = 7
+
+    async def fake_request(method, endpoint, params=None, json=None, request_timeout=10):
+        raise DoormanApiError("gone", code=12)
+
+    client._request = fake_request
+    await client.async_close()
+    assert client._log_subscription_id is None
+
+
+@pytest.mark.asyncio
+async def test_async_close_noop_when_not_subscribed() -> None:
+    """async_close does not hit the device when there is no subscription."""
+    client = _make_client()
+    client._request = AsyncMock()
+
+    await client.async_close()
+
+    client._request.assert_not_called()
+    assert client._log_subscription_id is None
+
+
+@pytest.mark.asyncio
 async def test_get_camera_caps_returns_result():
     """get_camera_caps returns the camera capabilities dict."""
     client = _make_client()

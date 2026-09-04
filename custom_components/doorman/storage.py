@@ -223,6 +223,32 @@ class DoormanStore:
         await self._store.async_save(self._data)
         return self.get_notification_settings(entry_id)
 
+    async def clear_entry(
+        self,
+        entry_id: str,
+        two_n_uuids: list[str] | None = None,
+    ) -> None:
+        """Drop per-entry settings and optionally prune UUID-keyed maps.
+
+        Called when a config entry is removed. ``notification_settings`` is
+        always keyed by ``entry_id``. The UUID-keyed maps (``user_links``,
+        ``notification_targets``, ``last_access``) are shared across devices,
+        so only UUIDs known to belong to this device are pruned — pass them
+        via ``two_n_uuids`` (typically snapshotted from the coordinator before
+        unload, since HA calls ``async_remove_entry`` after unload).
+        """
+        changed = False
+        if self._data.get("notification_settings", {}).pop(entry_id, None) is not None:
+            changed = True
+        if two_n_uuids:
+            for key in ("user_links", "notification_targets", "last_access"):
+                mapping = self._data.get(key, {})
+                for uuid in two_n_uuids:
+                    if mapping.pop(uuid, None) is not None:
+                        changed = True
+        if changed:
+            await self._store.async_save(self._data)
+
 
 # ---------------------------------------------------------------------- #
 # Access log history                                                       #

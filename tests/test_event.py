@@ -20,7 +20,7 @@ async def test_event_entity_created_on_setup(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
 
 
@@ -52,7 +52,7 @@ async def test_bus_event_triggers_entity(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("event_type") == "authenticated"
     assert state.attributes.get("user_name") == "Jane Doe"
@@ -78,7 +78,7 @@ async def test_unknown_event_type_does_not_update_state(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    state_before = hass.states.get("event.doorman_access")
+    state_before = hass.states.get("event.doorman_1012345678_access")
 
     # Fire an event with an unmapped type — the ValueError is caught internally
     hass.bus.async_fire(
@@ -91,7 +91,7 @@ async def test_unknown_event_type_does_not_update_state(
     )
     await hass.async_block_till_done()
 
-    state_after = hass.states.get("event.doorman_access")
+    state_after = hass.states.get("event.doorman_1012345678_access")
     # The event_type attribute should remain unchanged (None from initial state)
     assert state_after.attributes.get("event_type") == state_before.attributes.get("event_type")
 
@@ -118,7 +118,7 @@ async def test_known_event_type_lowercased_via_map(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("event_type") == "code_entered"
 
@@ -145,7 +145,7 @@ async def test_doorbell_pressed_event_type(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("event_type") == "doorbell_pressed"
 
@@ -175,7 +175,7 @@ async def test_rejected_event_type(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("event_type") == "rejected"
     assert state.attributes.get("user_name") == "Bad Actor"
@@ -212,7 +212,7 @@ async def test_card_entered_reads_uid_param(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("event_type") == "card_entered"
     assert state.attributes.get("card") == "AABBCCDD"
@@ -239,7 +239,7 @@ async def test_card_entered_falls_back_to_card_param(
     )
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state is not None
     assert state.attributes.get("card") == "1234"
 
@@ -271,10 +271,20 @@ async def test_bus_event_only_triggers_matching_entry(
     )
     await hass.async_block_till_done()
 
-    # The two entities have unique_ids "{entry_id}_access_event"; HA slugs
-    # them to event.doorman_access and event.doorman_access_2.
-    state1 = hass.states.get("event.doorman_access")
-    state2 = hass.states.get("event.doorman_access_2")
+    # Both fixtures share the same mock serial, so both pin the same entity_id
+    # and HA suffixes the second (_2). Look up by unique_id instead.
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    eid1 = registry.async_get_entity_id(
+        "event", DOMAIN, f"{entry1.entry_id}_access_event"
+    )
+    eid2 = registry.async_get_entity_id(
+        "event", DOMAIN, f"{entry2.entry_id}_access_event"
+    )
+    assert eid1 is not None and eid2 is not None
+    state1 = hass.states.get(eid1)
+    state2 = hass.states.get(eid2)
     assert state1 is not None
     assert state2 is not None
 

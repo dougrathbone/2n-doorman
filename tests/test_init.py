@@ -7,10 +7,11 @@ from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import ServiceValidationError, Unauthorized
+from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
 from custom_components.doorman.const import DOMAIN, LOG_STORAGE_KEY, LOG_STORAGE_VERSION
 
@@ -37,14 +38,10 @@ async def test_setup_entry_creates_sensor(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """A sensor entity is created and reflects the user count from the device."""
-    state = hass.states.get("sensor.doorman_user_count")
+    state = hass.states.get("sensor.doorman_1012345678_user_count")
     assert state is not None
     assert state.state == str(len(MOCK_USERS))
-
-    # User list is exposed as extra attributes for automation use
-    attrs = state.attributes
-    assert "users" in attrs
-    assert len(attrs["users"]) == len(MOCK_USERS)
+    assert "users" not in state.attributes
 
 
 @pytest.mark.asyncio
@@ -54,7 +51,7 @@ async def test_setup_entry_creates_relay_switches(
 ) -> None:
     """A switch entity is created for each relay reported by the device."""
     for sw in MOCK_SWITCHES:
-        entity_id = f"switch.doorman_relay_{sw['id']}"
+        entity_id = f"switch.doorman_1012345678_relay_{sw['id']}"
         state = hass.states.get(entity_id)
         assert state is not None, f"Expected entity {entity_id} to exist"
         assert state.state == ("on" if sw["active"] else "off")
@@ -124,6 +121,42 @@ async def test_create_user_service(
     call_arg = mock_2n_client.create_user.call_args[0][0]
     assert call_arg["name"] == "New Person"
     assert call_arg["pin"] == "5678"
+
+
+@pytest.mark.asyncio
+async def test_create_user_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_read_only_user: MockUser,
+) -> None:
+    """doorman.create_user is admin-gated — non-admin callers are rejected."""
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "create_user",
+            {"name": "Nope"},
+            blocking=True,
+            context=Context(user_id=hass_read_only_user.id),
+        )
+    mock_2n_client.create_user.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_user_rejects_invalid_pin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """create_user pin must be 2–15 digits (or omitted)."""
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            "create_user",
+            {"name": "Bad Pin", "pin": "1"},
+            blocking=True,
+        )
+    mock_2n_client.create_user.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -349,6 +382,25 @@ async def test_grant_access_service(
     )
 
     mock_2n_client.grant_access.assert_called_once_with(access_point_id=2, user_uuid=None)
+
+
+@pytest.mark.asyncio
+async def test_grant_access_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_read_only_user: MockUser,
+) -> None:
+    """doorman.grant_access is admin-gated — non-admin callers are rejected."""
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "grant_access",
+            {"access_point_id": 1},
+            blocking=True,
+            context=Context(user_id=hass_read_only_user.id),
+        )
+    mock_2n_client.grant_access.assert_not_called()
 
 
 # ------------------------------------------------------------------ #
@@ -829,6 +881,46 @@ async def test_unreachable_intercom_still_gets_a_panel_and_services(
 
 
 @pytest.mark.asyncio
+async def test_panel_registration_failure_does_not_stop_entry_load(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A broken sidebar panel must not prevent entities and services from loading.
+
+    ``async_setup`` catches panel registration failures so a missing sidebar
+    entry is never the reason the rest of the integration stops working — the
+    same failure mode as the unreachable-intercom case, just in the other
+    direction.
+    """
+    from unittest.mock import patch
+
+    doorman_config_entry.add_to_hass(hass)
+    with patch(
+        "custom_components.doorman._async_register_panel",
+        side_effect=RuntimeError("panel registration failed"),
+    ):
+        assert await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    assert hass.data.get(f"{DOMAIN}_panel_registered") is not True
+
+    for service in (
+        "create_user",
+        "update_user",
+        "delete_user",
+        "grant_access",
+        "hangup_calls",
+        "resync_log_history",
+    ):
+        assert hass.services.has_service(DOMAIN, service)
+
+    assert hass.states.get("sensor.doorman_1012345678_user_count") is not None
+    assert hass.states.get("switch.doorman_1012345678_relay_1") is not None
+
+
+@pytest.mark.asyncio
 async def test_reloading_the_only_entry_does_not_remove_the_panel(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
@@ -1013,6 +1105,22 @@ async def test_panel_js_guards_every_custom_element_definition() -> None:
     assert calls == ["  if (!customElements.get(name)) customElements.define(name, cls);"], (
         f"Unguarded customElements.define() call(s): {calls}"
     )
+
+
+@pytest.mark.asyncio
+async def test_panel_js_empty_state_and_tablist_a11y() -> None:
+    """Static markers for zero-device empty state and tab accessibility."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parent.parent
+        / "custom_components" / "doorman" / "frontend" / "panel.js"
+    ).read_text()
+
+    assert 'role="tablist"' in source
+    assert "No devices configured" in source
+    assert "Resync history" in source
+    assert 'aria-label="Menu"' in source
 
 
 # ------------------------------------------------------------------ #
@@ -1213,18 +1321,21 @@ async def test_entities_attached_to_device_registry(
     assert device.manufacturer == "2N"
     assert device.name == setup_doorman.title
     assert device.model == "535v1"
+    assert device.hw_version == "535v1"
     assert device.sw_version == "2.49.0.38"
+    assert device.serial_number == "10-12345678"
+    assert device.configuration_url == "https://192.168.1.100/"
 
     entity_registry = er.async_get(hass)
     for entity_id in (
-        "sensor.doorman_user_count",
-        "switch.doorman_relay_1",
-        "event.doorman_access",
+        "sensor.doorman_1012345678_user_count",
+        "switch.doorman_1012345678_relay_1",
+        "event.doorman_1012345678_access",
     ):
         entity = entity_registry.async_get(entity_id)
         assert entity is not None, f"Missing entity {entity_id}"
         assert entity.device_id == device.id
-
+        assert entity.has_entity_name is False
 
 @pytest.mark.asyncio
 async def test_hangup_calls_service(
@@ -1369,6 +1480,65 @@ async def test_removing_an_entry_deletes_its_access_log(
     await hass.async_block_till_done()
 
     assert key not in hass_storage
+
+
+@pytest.mark.asyncio
+async def test_removing_an_entry_clears_doorman_store(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Remove drops this entry's notification settings and its users' UUID maps."""
+    store = hass.data[f"{DOMAIN}_store"]
+    entry_id = setup_doorman.entry_id
+
+    await store.set_notification_settings(entry_id, {"doorbell_key_code": "%2"})
+    await store.set_notification_settings("other-entry", {"doorbell_key_code": "%3"})
+    await store.link_user("uuid-jane", "ha-1")
+    await store.link_user("uuid-stranger", "ha-2")
+    await store.set_notification_targets("uuid-jane", ["notify.phone"])
+    await store.set_notification_targets("uuid-stranger", ["notify.tablet"])
+    await store.update_last_access("uuid-jane", 1743242400)
+    await store.update_last_access("uuid-stranger", 1743242500)
+
+    await hass.config_entries.async_remove(entry_id)
+    await hass.async_block_till_done()
+
+    assert entry_id not in store.notification_settings
+    assert store.get_notification_settings("other-entry")["doorbell_key_code"] == "%3"
+    # MOCK_USERS are uuid-jane and uuid-john — stranger belongs to another device.
+    assert store.get_ha_user_id("uuid-jane") is None
+    assert store.get_ha_user_id("uuid-john") is None
+    assert store.get_ha_user_id("uuid-stranger") == "ha-2"
+    assert store.get_notification_targets("uuid-jane") == []
+    assert store.get_notification_targets("uuid-stranger") == ["notify.tablet"]
+    assert "uuid-jane" not in store.last_access
+    assert store.last_access["uuid-stranger"] == 1743242500
+
+
+@pytest.mark.asyncio
+async def test_setup_seeds_last_access_only_for_this_device(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """_last_access is restored only for UUIDs present on this device."""
+    store = hass.data.get(f"{DOMAIN}_store")
+    if store is None:
+        from custom_components.doorman.storage import DoormanStore
+
+        store = DoormanStore(hass)
+        await store.async_load()
+        hass.data[f"{DOMAIN}_store"] = store
+
+    await store.update_last_access("uuid-jane", 1743242400)
+    await store.update_last_access("uuid-other-device", 1743249999)
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][doorman_config_entry.entry_id]
+    assert coordinator._last_access == {"uuid-jane": 1743242400}
 
 
 # ─── Backfill runs off the setup path ────────────────────────────────────────
@@ -1700,7 +1870,7 @@ async def test_call_state_changed_event_mapped(
     }])
     await hass.async_block_till_done()
 
-    state = hass.states.get("event.doorman_access")
+    state = hass.states.get("event.doorman_1012345678_access")
     assert state.attributes.get("event_type") == "call_state_changed"
     assert state.attributes.get("direction") == "outgoing"
     assert state.attributes.get("state") == "ringing"

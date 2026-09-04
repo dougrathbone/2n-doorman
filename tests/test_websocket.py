@@ -108,6 +108,36 @@ async def test_ws_list_users_without_entry_id(
 
 
 @pytest.mark.asyncio
+async def test_ws_list_users_redacts_credentials(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """list_users never returns pin/card/code secrets — only presence flags."""
+    conn = _mock_connection()
+    ws_list_users(hass, conn, {"id": 1})
+
+    users = conn.send_result.call_args[0][1]["users"]
+    jane = next(u for u in users if u["uuid"] == "uuid-jane")
+    john = next(u for u in users if u["uuid"] == "uuid-john")
+
+    for user in users:
+        assert "pin" not in user
+        assert "card" not in user
+        assert "code" not in user
+
+    assert jane["has_pin"] is True
+    assert jane["has_card"] is True
+    assert jane["card_count"] == 1
+    assert jane["has_code"] is False
+    assert jane["code_count"] == 0
+
+    assert john["has_pin"] is False
+    assert john["has_card"] is False
+    assert john["has_code"] is True
+    assert john["code_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_ws_list_users_invalid_entry_id(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
@@ -310,6 +340,45 @@ async def test_ws_link_user(
     assert jane["ha_user_id"] == "ha-user-1"
 
 
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_link_user_schema_rejects_invalid_payload(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Invalid link_user payloads are rejected by the voluptuous schema.
+
+    Direct handler calls bypass schema validation — this exercises the wire
+    path so a type-only schema cannot ship untested.
+    """
+    client = await hass_ws_client(hass)
+
+    # Missing required ha_user_id.
+    await client.send_json_auto_id(
+        {"type": "doorman/link_user", "two_n_uuid": "uuid-jane"}
+    )
+    res = await client.receive_json()
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_format"
+
+    # Wrong type for ha_user_id.
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/link_user",
+            "two_n_uuid": "uuid-jane",
+            "ha_user_id": 12345,
+        }
+    )
+    res = await client.receive_json()
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_format"
+
+    # Nothing was persisted by the rejected calls.
+    store = hass.data[f"{DOMAIN}_store"]
+    assert store.get_ha_user_id("uuid-jane") is None
+
+
 @pytest.mark.asyncio
 async def test_ws_unlink_user(
     hass: HomeAssistant,
@@ -406,7 +475,7 @@ async def test_read_commands_reject_non_admin(
     hass: HomeAssistant,
     setup_doorman: MockConfigEntry,
 ) -> None:
-    """Sensitive read commands (which expose PINs/cards/codes) reject non-admin users."""
+    """Sensitive read commands reject non-admin users."""
     conn = _mock_connection(is_admin=False)
 
     ws_list_users(hass, conn, {"id": 1})
@@ -822,6 +891,150 @@ async def test_ws_send_test_notification_reports_unknown_target(
 
     assert not res["success"]
     assert res["error"]["code"] == "unknown_target"
+
+
+# ------------------------------------------------------------------ #
+# User CRUD — driven through a real WebSocket client                   #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_create_user_forwards_to_device(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """doorman/create_user creates on the device and refreshes the coordinator."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/create_user",
+            "name": "New Person",
+            "pin": "5678",
+            "card": "DEADBEEF",
+            "enabled": True,
+        }
+    )
+    res = await client.receive_json()
+    assert res["success"], res
+    mock_2n_client.create_user.assert_called_once()
+    payload = mock_2n_client.create_user.call_args[0][0]
+    assert payload["name"] == "New Person"
+    assert payload["pin"] == "5678"
+    assert payload["card"] == ["DEADBEEF"]
+    assert payload["enabled"] is True
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_create_user_rejects_invalid_pin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """create_user pin must be 2–15 digits (schema-enforced)."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/create_user", "name": "X", "pin": "1"}
+    )
+    res = await client.receive_json()
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_format"
+    mock_2n_client.create_user.assert_not_called()
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_update_user_empty_pin_clears(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """update_user with pin="" clears the PIN on the device."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/update_user", "uuid": "uuid-jane", "pin": ""}
+    )
+    res = await client.receive_json()
+    assert res["success"], res
+    payload = mock_2n_client.update_user.call_args[0][0]
+    assert payload["uuid"] == "uuid-jane"
+    assert payload["pin"] == ""
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_update_user_omits_unchanged_credentials(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """update_user without pin/card/code leaves those keys out of the payload."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/update_user", "uuid": "uuid-jane", "name": "Jane Updated"}
+    )
+    res = await client.receive_json()
+    assert res["success"], res
+    payload = mock_2n_client.update_user.call_args[0][0]
+    assert payload["name"] == "Jane Updated"
+    assert "pin" not in payload
+    assert "card" not in payload
+    assert "code" not in payload
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_delete_user_unlinks_store(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+    hass_ws_client,
+) -> None:
+    """delete_user removes the directory entry and clears local link/targets."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.link_user("uuid-jane", "ha-user-1")
+    await store.set_notification_targets("uuid-jane", ["notify.mobile_app"])
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "doorman/delete_user", "uuid": "uuid-jane"}
+    )
+    res = await client.receive_json()
+    assert res["success"], res
+    mock_2n_client.delete_user.assert_called_once_with("uuid-jane")
+    assert store.user_links.get("uuid-jane") is None
+    assert store.get_notification_targets("uuid-jane") == []
+
+
+@pytest.mark.asyncio
+async def test_ws_user_crud_rejects_non_admin(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """create/update/delete require an admin WebSocket user."""
+    from custom_components.doorman.websocket import (
+        ws_create_user,
+        ws_delete_user,
+        ws_update_user,
+    )
+
+    conn = _mock_connection(is_admin=False)
+    ws_create_user(hass, conn, {"id": 1, "name": "X"})
+    ws_update_user(hass, conn, {"id": 2, "uuid": "uuid-jane", "name": "Y"})
+    ws_delete_user(hass, conn, {"id": 3, "uuid": "uuid-jane"})
+    await hass.async_block_till_done()
+    assert conn.send_error.call_count == 3
+    assert all(c.args[1] == "unauthorized" for c in conn.send_error.call_args_list)
+    mock_2n_client.create_user.assert_not_called()
+    mock_2n_client.update_user.assert_not_called()
+    mock_2n_client.delete_user.assert_not_called()
 
 
 @pytest.mark.asyncio

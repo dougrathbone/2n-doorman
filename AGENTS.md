@@ -17,7 +17,8 @@ custom_components/doorman/
   __init__.py          — async_setup: domain-level registration (store, WS, services,
                          static path, panel — see "Domain-level registration" below);
                          async_setup_entry: per-device coordinator, platforms, tasks
-                         (services incl. doorman.hangup_calls and doorman.resync_log_history)
+  services.py          — Admin-gated doorman.* services (user CRUD, grant_access,
+                         hangup_calls / answer_call / dial, resync_log_history)
   api_client.py        — TwoNApiClient: async HTTP wrapper around the 2N local REST API
                          (directory, switches, log, log history, and call control)
   config_flow.py       — UI config flow (host / username / password / SSL options)
@@ -28,15 +29,17 @@ custom_components/doorman/
                          AccessLogStore: durable per-entry access-log history
   notifications.py     — Listens for doorman_access bus events, dispatches notify.* calls
   ios_sounds.py        — Static catalog of iOS Companion notification sounds for the panel
-  websocket.py         — 13 WebSocket commands exposed to the frontend panel
-                         (incl. subscribe_events, which pushes live log events)
-  sensor.py            — User count sensor
+  websocket.py         — 16 WebSocket commands exposed to the frontend panel
+                         (incl. subscribe_events; user CRUD create/update/delete)
+  sanitize.py          — Credential redaction for list_users + access-log ingest
+  sensor.py            — User count / uptime sensors
   switch.py            — Relay switches (one entity per 2N relay)
   event.py             — Access/security/state event entity
   camera.py            — Still-image camera (JPEG snapshots via /api/camera/snapshot)
   binary_sensor.py     — Door contact (DoorStateChanged), hardware inputs (/api/io/*),
                          SIP registration health (/api/phone/status)
   button.py            — Device restart button (/api/system/restart)
+  helpers.py           — device_slug / pinned_entity_id / build_device_info
   frontend/panel.js    — Vanilla JS sidebar panel (no build step)
   const.py             — All constants
 ```
@@ -68,7 +71,7 @@ entry, the store and every `doorman.*` service disappeared and came back.
 Consequences to keep in mind when adding code:
 - **WS handlers and service handlers can run with zero loaded entries.**
   `_coordinator()` returns `None` and handlers must answer
-  `not_configured`; `_resolve_coordinator()` raises the
+  `not_configured`; `services._resolve_coordinator()` raises the
   `no_devices_configured` `ServiceValidationError`. Never assume at least one
   entry exists.
 - **The store outlives every entry**, so it is created and loaded in
@@ -118,19 +121,26 @@ now keep it simple.
 
 ### TwoNApiClient written from scratch
 The `py2n` library only covers relay/camera/event operations; it has no
-`/api/dir/*` support. We own the full HTTP layer using `aiohttp.BasicAuth`
-directly. Don't replace this with py2n unless it gains full directory support.
+`/api/dir/*` support. We own the full HTTP layer and implement Digest auth
+manually (required by 2N for directory operations). Don't replace this with
+py2n unless it gains full directory support.
 
 ### Entity ID stability
 `DoormanRelay` always uses `f"Doorman Relay {self._switch_id}"` as the entity
-name — never the 2N device relay name. This produces predictable entity IDs
-(`switch.doorman_relay_1`) even when the relay is renamed on the intercom.
-The device name is stored in `extra_state_attributes["device_name"]`. Don't
-change this without updating all tests and any automations people may have
-written. All Doorman entities also set `_attr_has_entity_name = False` and pin
-`self.entity_id` explicitly in `__init__`: with `device_info` present, HA
-2026.7+ otherwise generates device-name-prefixed entity IDs
-(`switch.2n_ip_vario_doorman_relay_1`) for new installs.
+name — never the 2N device relay name. Entity IDs are device-scoped via
+`helpers.pinned_entity_id`: `{platform}.doorman_{slug}_{object_id}` (e.g.
+`switch.doorman_1012345678_relay_1`). The slug is the device `serialNumber`
+sanitized to lowercase alphanumeric; if that is shorter than 4 characters,
+the first 8 characters of `entry.entry_id` with hyphens stripped and
+lowercased (entity IDs must be lowercase). That keeps IDs stable when a relay is renamed on the intercom and avoids collisions
+across multiple config entries. The 2N relay name is stored in
+`extra_state_attributes["device_name"]`. Don't change the naming scheme
+without updating all tests and any automations people may have written. All
+Doorman entities also set `_attr_has_entity_name = False` and pin
+`self.entity_id` explicitly in `__init__` via the helper: with `device_info`
+present, HA 2026.7+ otherwise generates device-name-prefixed entity IDs
+(`switch.2n_ip_vario_doorman_relay_1`) for new installs. Shared
+`DeviceInfo` comes from `helpers.build_device_info`.
 
 ### Log events via long-poll subscription
 `DoormanCoordinator` runs a background listener that subscribes to the device
@@ -257,14 +267,24 @@ the explicit call entirely would leave a `SETUP_ERROR` entry unrecovered.
 but postdate the `homeassistant: 2024.1.0` minimum pinned in `hacs.json`.
 
 ### WebSocket API surface
-All frontend↔backend communication goes through the 12 WS commands in
-`websocket.py`. Don't add HA services for things that only the panel needs;
-use WS commands instead. Services are for HA automations / scripts.
-Give every command a real voluptuous schema (not just types) and test it
-through the `hass_ws_client` fixture — calling a handler directly bypasses
-schema validation entirely. Tests that need `hass_ws_client` must be marked
-`@pytest.mark.real_http` so the conftest sets up the genuine `http`
-component instead of the MagicMock.
+The panel talks to the backend through a hybrid of WebSocket commands and
+admin services. The 16 WS commands in `websocket.py` cover reads, HA-user
+links, notification settings/targets, test notifications, the live
+`subscribe_events` feed, and directory mutations (`doorman/create_user` /
+`doorman/update_user` / `doorman/delete_user`). `list_users` returns
+sanitized users only — `has_pin` / `has_card` / `card_count` / `has_code` /
+`code_count` instead of raw pin/card/code values. The panel prefers those
+WS commands for user CRUD; the matching `doorman.*` services remain for
+automations / scripts (also admin-gated via `async_register_admin_service`).
+`grant_access` plus call control and `resync_log_history` stay as services.
+A non-admin `user_id` in a service call context is rejected; calls with no
+user context (automations / scripts) still run — that is HA's admin-service
+contract. Don't add HA services for panel-only reads/settings; use WS
+commands for those. Give every command a real voluptuous schema (not just
+types) and test it through the `hass_ws_client` fixture — calling a handler
+directly bypasses schema validation entirely. Tests that need
+`hass_ws_client` must be marked `@pytest.mark.real_http` so the conftest
+sets up the genuine `http` component instead of the MagicMock.
 
 ### `doorman.resync_log_history`
 A service (not a WS command — a manual resync is legitimately automatable)

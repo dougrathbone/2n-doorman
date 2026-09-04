@@ -6,6 +6,9 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.doorman.const import DOMAIN
+from tests.conftest import doorman_eid
+
+RELAY_1 = doorman_eid("switch", "relay_1")
 
 
 @pytest.mark.asyncio
@@ -22,7 +25,7 @@ async def test_turn_on_calls_set_switch(
     await hass.services.async_call(
         "switch",
         "turn_on",
-        {"entity_id": "switch.doorman_relay_1"},
+        {"entity_id": RELAY_1},
         blocking=True,
     )
 
@@ -43,7 +46,7 @@ async def test_turn_off_calls_set_switch(
     await hass.services.async_call(
         "switch",
         "turn_off",
-        {"entity_id": "switch.doorman_relay_1"},
+        {"entity_id": RELAY_1},
         blocking=True,
     )
 
@@ -62,7 +65,7 @@ async def test_is_on_reflects_coordinator_data(
     await hass.async_block_till_done()
 
     # The fixture switch has active=False
-    state = hass.states.get("switch.doorman_relay_1")
+    state = hass.states.get(RELAY_1)
     assert state is not None
     assert state.state == "off"
 
@@ -72,7 +75,7 @@ async def test_is_on_reflects_coordinator_data(
     coordinator.async_set_updated_data(coordinator.data)
     await hass.async_block_till_done()
 
-    state = hass.states.get("switch.doorman_relay_1")
+    state = hass.states.get(RELAY_1)
     assert state is not None
     assert state.state == "on"
 
@@ -93,7 +96,7 @@ async def test_is_on_returns_false_when_data_is_none(
     coordinator.async_set_updated_data(None)
     await hass.async_block_till_done()
 
-    state = hass.states.get("switch.doorman_relay_1")
+    state = hass.states.get(RELAY_1)
     assert state is not None
     # When data is None, is_on should return False -> state "off"
     assert state.state == "off"
@@ -110,7 +113,7 @@ async def test_switch_has_extra_attributes(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    state = hass.states.get("switch.doorman_relay_1")
+    state = hass.states.get(RELAY_1)
     assert state is not None
     assert state.attributes.get("device_name") == "Main Door"
 
@@ -135,6 +138,6 @@ async def test_malformed_switch_payload_is_skipped(
 
     assert doorman_config_entry.state is ConfigEntryState.LOADED
     # The valid switch still got an entity
-    assert hass.states.get("switch.doorman_relay_1") is not None
+    assert hass.states.get(RELAY_1) is not None
     # ... and is_on tolerates the malformed entry in coordinator data
-    assert hass.states.get("switch.doorman_relay_1").state == "off"
+    assert hass.states.get(RELAY_1).state == "off"

@@ -14,11 +14,18 @@ In CI this is driven by .github/workflows/integration.yml.
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from .helpers import HaClient, HaWebSocket, Mock2nAdmin
+
+# Mock server serialNumber "10-99999999" → helpers.device_slug → alphanumeric lower.
+MOCK_DEVICE_SLUG = "1099999999"
+
+
+def eid(platform: str, object_id: str) -> str:
+    """Device-scoped entity ID matching helpers.pinned_entity_id."""
+    return f"{platform}.doorman_{MOCK_DEVICE_SLUG}_{object_id}"
+
 
 # ─── Sanity / setup validation ───────────────────────────────────────────────
 
@@ -55,8 +62,8 @@ async def test_doorman_config_entry_is_loaded(ha: HaClient) -> None:
 
 @pytest.mark.asyncio
 async def test_sensor_user_count_exists(ha: HaClient) -> None:
-    """sensor.doorman_user_count exists and reflects the mock server's initial user."""
-    state = await ha.wait_for_state("sensor.doorman_user_count", timeout=30)
+    """User-count sensor exists and reflects the mock server's initial user."""
+    state = await ha.wait_for_state(eid("sensor", "user_count"), timeout=30)
     assert state["state"] == "1", f"Expected 1 user, got: {state['state']}"
     assert "users" in state["attributes"]
     assert state["attributes"]["users"][0]["name"] == "Test User"
@@ -64,8 +71,8 @@ async def test_sensor_user_count_exists(ha: HaClient) -> None:
 
 @pytest.mark.asyncio
 async def test_relay_switch_exists(ha: HaClient) -> None:
-    """switch.doorman_relay_1 exists and reflects the mock server's initial switch state."""
-    state = await ha.wait_for_state("switch.doorman_relay_1", timeout=30)
+    """Relay switch exists and reflects the mock server's initial switch state."""
+    state = await ha.wait_for_state(eid("switch", "relay_1"), timeout=30)
     assert state["state"] == "off"
 
 
@@ -92,9 +99,9 @@ async def test_create_user_service_adds_user_to_device(
     assert payload["access"]["pin"] == "5678"
 
     # Wait for coordinator to refresh and sensor to update
-    await asyncio.sleep(2)
     users = await mock_2n.get_users()
     assert any(u["name"] == "New Resident" for u in users)
+    await ha.wait_for_state_value(eid("sensor", "user_count"), "2", timeout=30)
 
 
 @pytest.mark.asyncio
@@ -155,8 +162,8 @@ async def test_relay_switch_turn_on(
     ha: HaClient,
     mock_2n: Mock2nAdmin,
 ) -> None:
-    """Turning on switch.doorman_relay_1 sends action=on to the device."""
-    await ha.call_service("switch", "turn_on", {"entity_id": "switch.doorman_relay_1"})
+    """Turning on the relay switch sends action=on to the device."""
+    await ha.call_service("switch", "turn_on", {"entity_id": eid("switch", "relay_1")})
 
     calls = await mock_2n.get_calls()
     ctrl_calls = [c for c in calls if c["path"] == "/api/switch/ctrl"]
@@ -164,7 +171,7 @@ async def test_relay_switch_turn_on(
     assert ctrl_calls[0]["body"]["action"] == "on"
 
     # Wait for coordinator to refresh and entity state to reflect the change
-    await ha.wait_for_state_value("switch.doorman_relay_1", "on", timeout=30)
+    await ha.wait_for_state_value(eid("switch", "relay_1"), "on", timeout=30)
 
 
 # ─── WebSocket commands ──────────────────────────────────────────────────────
@@ -175,7 +182,15 @@ async def test_ws_list_users_returns_directory(ws: HaWebSocket) -> None:
     result = await ws.command("doorman/list_users")
     assert "users" in result
     assert len(result["users"]) >= 1
-    assert result["users"][0]["name"] == "Test User"
+    user = result["users"][0]
+    assert user["name"] == "Test User"
+    # Credentials are redacted — presence flags only, never pin/card/code values.
+    assert "pin" not in user
+    assert "card" not in user
+    assert "code" not in user
+    assert "has_pin" in user
+    assert "has_card" in user
+    assert "has_code" in user
 
 
 @pytest.mark.asyncio
@@ -257,13 +272,14 @@ async def test_hangup_calls_service(
 
 @pytest.mark.asyncio
 async def test_camera_entity_exists_and_snapshots(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
-    """camera.doorman_camera exists and a snapshot request reaches the device."""
-    state = await ha.wait_for_state("camera.doorman_camera", timeout=30)
+    """Camera entity exists and a snapshot request reaches the device."""
+    state = await ha.wait_for_state(eid("camera", "camera"), timeout=30)
     assert state["state"] == "idle"
 
     # Fetch the image through HA's camera proxy
     assert ha._session is not None
-    async with ha._session.get(f"{ha.base_url}/api/camera_proxy/camera.doorman_camera") as resp:
+    camera_id = eid("camera", "camera")
+    async with ha._session.get(f"{ha.base_url}/api/camera_proxy/{camera_id}") as resp:
         assert resp.status == 200
         body = await resp.read()
         assert body.startswith(b"\xff\xd8"), "Expected JPEG data from the camera proxy"
@@ -277,9 +293,9 @@ async def test_camera_entity_exists_and_snapshots(ha: HaClient, mock_2n: Mock2nA
 @pytest.mark.asyncio
 async def test_door_and_input_sensors_exist(ha: HaClient) -> None:
     """Door and input binary sensors are registered."""
-    door = await ha.wait_for_state("binary_sensor.doorman_door", timeout=30)
+    door = await ha.wait_for_state(eid("binary_sensor", "door"), timeout=30)
     assert door["state"] == "unknown"  # no DoorStateChanged yet
-    inp = await ha.wait_for_state("binary_sensor.doorman_input_input1", timeout=30)
+    inp = await ha.wait_for_state(eid("binary_sensor", "input_input1"), timeout=30)
     assert inp["state"] == "off"
 
 
@@ -287,17 +303,17 @@ async def test_door_and_input_sensors_exist(ha: HaClient) -> None:
 async def test_door_sensor_follows_injected_event(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
     """Injected DoorStateChanged drives the door sensor in near-real-time."""
     await mock_2n.inject_event("DoorStateChanged", {"state": "opened"})
-    await ha.wait_for_state_value("binary_sensor.doorman_door", "on", timeout=30)
+    await ha.wait_for_state_value(eid("binary_sensor", "door"), "on", timeout=30)
 
     await mock_2n.inject_event("DoorStateChanged", {"state": "closed"})
-    await ha.wait_for_state_value("binary_sensor.doorman_door", "off", timeout=30)
+    await ha.wait_for_state_value(eid("binary_sensor", "door"), "off", timeout=30)
 
 
 @pytest.mark.asyncio
 async def test_input_sensor_follows_injected_event(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
     """Injected InputChanged flips the input sensor without a poll cycle."""
     await mock_2n.inject_event("InputChanged", {"port": "input1", "state": True})
-    await ha.wait_for_state_value("binary_sensor.doorman_input_input1", "on", timeout=30)
+    await ha.wait_for_state_value(eid("binary_sensor", "input_input1"), "on", timeout=30)
 
 
 @pytest.mark.asyncio
@@ -310,11 +326,11 @@ async def test_switch_state_event_updates_relay_immediately(
     await mock_2n.inject_event(
         "SwitchStateChanged", {"switch": 1, "state": True, "originator": "auth"}
     )
-    await ha.wait_for_state_value("switch.doorman_relay_1", "on", timeout=30)
+    await ha.wait_for_state_value(eid("switch", "relay_1"), "on", timeout=30)
     await mock_2n.inject_event(
         "SwitchStateChanged", {"switch": 1, "state": False, "originator": "api"}
     )
-    await ha.wait_for_state_value("switch.doorman_relay_1", "off", timeout=30)
+    await ha.wait_for_state_value(eid("switch", "relay_1"), "off", timeout=30)
 
 
 @pytest.mark.asyncio
@@ -322,7 +338,7 @@ async def test_security_event_reaches_event_entity(ha: HaClient, mock_2n: Mock2n
     """Injected UnauthorizedDoorOpen surfaces on the access event entity."""
     await mock_2n.inject_event("UnauthorizedDoorOpen", {"state": "in"})
     state = await ha.wait_for_state_attr(
-        "event.doorman_access", "event_type", "unauthorized_door_open", timeout=30
+        eid("event", "access"), "event_type", "unauthorized_door_open", timeout=30
     )
     assert state["attributes"].get("state") == "in"
 
@@ -363,7 +379,7 @@ async def test_call_state_changed_reaches_event_entity(
         "direction": "outgoing", "state": "ringing", "peer": "sip:2001@x", "session": 11,
     })
     state = await ha.wait_for_state_attr(
-        "event.doorman_access", "event_type", "call_state_changed", timeout=30
+        eid("event", "access"), "event_type", "call_state_changed", timeout=30
     )
     assert state["attributes"].get("state") == "ringing"
     assert state["attributes"].get("direction") == "outgoing"
@@ -372,18 +388,18 @@ async def test_call_state_changed_reaches_event_entity(
 @pytest.mark.asyncio
 async def test_health_entities_exist(ha: HaClient) -> None:
     """SIP registration, uptime, and restart entities are registered."""
-    sip = await ha.wait_for_state("binary_sensor.doorman_sip_registered", timeout=30)
+    sip = await ha.wait_for_state(eid("binary_sensor", "sip_registered"), timeout=30)
     assert sip["state"] == "on"
-    uptime = await ha.wait_for_state("sensor.doorman_uptime", timeout=30)
+    uptime = await ha.wait_for_state(eid("sensor", "uptime"), timeout=30)
     assert uptime["state"] not in ("unknown", "unavailable")
     # Button state is "unknown" until first press — existence is the check.
-    await ha.wait_for_state("button.doorman_restart", timeout=30)
+    await ha.wait_for_state(eid("button", "restart"), timeout=30)
 
 
 @pytest.mark.asyncio
 async def test_restart_button_reaches_device(ha: HaClient, mock_2n: Mock2nAdmin) -> None:
     """Pressing the restart button calls /api/system/restart on the device."""
-    await ha.call_service("button", "press", {"entity_id": "button.doorman_restart"})
+    await ha.call_service("button", "press", {"entity_id": eid("button", "restart")})
 
     calls = await mock_2n.get_calls()
     assert any(c["path"] == "/api/system/restart" for c in calls)

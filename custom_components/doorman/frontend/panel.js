@@ -122,11 +122,23 @@ const BASE_CSS = `
     font-size: 11px;
     font-weight: 500;
   }
-  .badge-yes    { background: #e8f5e9; color: #2e7d32; }
-  .badge-no     { background: #f5f5f5; color: #9e9e9e; }
-  .badge-active   { background: #e8f5e9; color: #2e7d32; }
-  .badge-inactive { background: #fce4e4; color: #c62828; }
-  .badge-future   { background: #fff8e1; color: #f57f17; }
+  .badge-yes    {
+    background: color-mix(in srgb, var(--success-color, #4caf50) 16%, var(--card-background-color, white));
+    color: var(--success-color, #2e7d32);
+  }
+  .badge-no     { background: var(--secondary-background-color, #f5f5f5); color: var(--secondary-text-color, #9e9e9e); }
+  .badge-active   {
+    background: color-mix(in srgb, var(--success-color, #4caf50) 16%, var(--card-background-color, white));
+    color: var(--success-color, #2e7d32);
+  }
+  .badge-inactive {
+    background: color-mix(in srgb, var(--error-color, #f44336) 12%, var(--card-background-color, white));
+    color: var(--error-color, #c62828);
+  }
+  .badge-future   {
+    background: color-mix(in srgb, var(--warning-color, #ff9800) 16%, var(--card-background-color, white));
+    color: var(--warning-color, #f57f17);
+  }
   .icon-btn {
     background: none;
     border: none;
@@ -158,7 +170,13 @@ const BASE_CSS = `
   .btn-danger { background: var(--error-color, #f44336); color: white; }
   .loading { padding: 32px; text-align: center; color: var(--secondary-text-color); }
   .empty   { padding: 32px; text-align: center; color: var(--secondary-text-color); font-style: italic; }
-  .error   { padding: 12px 16px; color: var(--error-color, #f44336); background: #fff3f3; border-radius: 4px; margin: 8px 0; }
+  .error   {
+    padding: 12px 16px;
+    color: var(--error-color, #f44336);
+    background: color-mix(in srgb, var(--error-color, #f44336) 12%, var(--card-background-color, white));
+    border-radius: 4px;
+    margin: 8px 0;
+  }
   .field-group { display: flex; flex-direction: column; gap: 12px; }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); }
@@ -172,8 +190,17 @@ const BASE_CSS = `
     color: var(--primary-text-color);
   }
   .field input:focus, .field select:focus {
-    outline: none;
     border-color: var(--primary-color);
+  }
+  .field input:focus-visible, .field select:focus-visible,
+  .icon-btn:focus-visible, .btn:focus-visible, .close-btn:focus-visible, .menu-btn:focus-visible,
+  .tab:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .ha-link { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--secondary-text-color); }
   .actions { display: flex; gap: 4px; justify-content: flex-end; }
@@ -185,25 +212,48 @@ class DoormanDrawer extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this._open = false;
+    this._opener = null;
+    this._onKeyDown = (ev) => {
+      if (ev.key === "Escape" && this._open) {
+        ev.stopPropagation();
+        this.close();
+      }
+    };
   }
 
   connectedCallback() { this._render(); }
 
   open(title, content, onSave) {
+    this._opener = document.activeElement;
     this._title = title;
     this._content = content;
     this._onSave = onSave;
     this._saving = false;
     this._open = true;
     this._render();
+    // Focus first focusable after the open paint.
+    requestAnimationFrame(() => {
+      const root = this.shadowRoot;
+      const focusable = root.querySelector(
+        "input, select, textarea, button:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      );
+      (focusable || root.getElementById("close-btn"))?.focus();
+    });
   }
 
   close() {
     this._open = false;
     this._render();
+    const opener = this._opener;
+    this._opener = null;
+    if (opener && typeof opener.focus === "function") {
+      try { opener.focus(); } catch (_) { /* detached */ }
+    }
   }
 
   _render() {
+    document.removeEventListener("keydown", this._onKeyDown, true);
     this.shadowRoot.innerHTML = `
       <style>
         .overlay {
@@ -233,6 +283,11 @@ class DoormanDrawer extends HTMLElement {
           color: var(--secondary-text-color); line-height: 0; border-radius: 50%;
         }
         .close-btn:hover { background: var(--secondary-background-color); }
+        .close-btn:focus-visible, .btn:focus-visible,
+        .field input:focus-visible, .field select:focus-visible {
+          outline: 2px solid var(--primary-color);
+          outline-offset: 2px;
+        }
         .close-btn svg { width: 20px; height: 20px; fill: currentColor; display: block; }
         .drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
         .drawer-footer {
@@ -253,32 +308,36 @@ class DoormanDrawer extends HTMLElement {
         .field input, .field select { padding: 8px 10px; border: 1px solid var(--divider-color, #ccc);
           border-radius: 4px; font-size: 14px; font-family: inherit;
           background: var(--card-background-color, white); color: var(--primary-text-color); }
-        .field input:focus, .field select:focus { outline: none; border-color: var(--primary-color); }
+        .field input:focus, .field select:focus { border-color: var(--primary-color); }
         .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
           letter-spacing: 0.5px; color: var(--secondary-text-color); margin: 16px 0 8px; }
         .required { color: var(--error-color, #f44336); margin-left: 2px; }
         .optional-hint { font-weight: 400; text-transform: none; font-size: 10px; opacity: 0.7; }
         .error { padding: 10px 12px; color: var(--error-color, #f44336);
-          background: #fff3f3; border-radius: 4px; font-size: 13px; }
+          background: color-mix(in srgb, var(--error-color, #f44336) 12%, var(--card-background-color, white));
+          border-radius: 4px; font-size: 13px; }
       </style>
-      <div class="overlay">
-        <div class="drawer">
+      <div class="overlay" ${this._open ? "" : "hidden"}>
+        <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
           <div class="drawer-header">
             <h2 id="drawer-title"></h2>
-            <button class="close-btn" id="close-btn">
+            <button class="close-btn" id="close-btn" type="button" aria-label="Close">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
           <div class="drawer-body" id="drawer-body"></div>
           <div class="drawer-footer">
-            <button class="btn btn-outlined" id="cancel-btn">Cancel</button>
-            <button class="btn btn-primary" id="save-btn">Save</button>
+            <button class="btn btn-outlined" id="cancel-btn" type="button">Cancel</button>
+            <button class="btn btn-primary" id="save-btn" type="button">Save</button>
           </div>
         </div>
       </div>
     `;
     // Title comes from device-controlled strings (user name/UUID) — set via textContent
-    this.shadowRoot.getElementById("drawer-title").textContent = this._title || "";
+    const titleEl = this.shadowRoot.getElementById("drawer-title");
+    if (titleEl) titleEl.textContent = this._title || "";
+    const drawer = this.shadowRoot.querySelector(".drawer");
+    if (drawer) drawer.setAttribute("aria-label", this._title || "Dialog");
     if (this._content && this._open) {
       const body = this.shadowRoot.getElementById("drawer-body");
       body.innerHTML = "";
@@ -298,6 +357,13 @@ class DoormanDrawer extends HTMLElement {
         ev.currentTarget.disabled = false;
       }
     });
+    if (this._open) {
+      document.addEventListener("keydown", this._onKeyDown, true);
+    }
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener("keydown", this._onKeyDown, true);
   }
 }
 define("doorman-drawer", DoormanDrawer);
@@ -360,7 +426,8 @@ class DoormanUsersTab extends HTMLElement {
 
   _accessStatus(u) {
     if (u.enabled === false) return { label: "Disabled", cls: "badge-inactive" };
-    const hasCredentials = u.pin || (u.card || []).filter(Boolean).length || (u.code || []).filter(Boolean).length;
+    const hasCredentials = u.has_pin || u.has_card || u.has_code
+      || u.pin || (u.card || []).filter(Boolean).length || (u.code || []).filter(Boolean).length;
     if (!hasCredentials) return { label: "No credentials", cls: "badge-inactive" };
     const now = Date.now() / 1000;
     if (u.validTo && u.validTo < now) return { label: "Expired", cls: "badge-inactive" };
@@ -412,11 +479,16 @@ class DoormanUsersTab extends HTMLElement {
           border-radius: 4px; background: var(--card-background-color, white);
           color: var(--primary-text-color); font-size: 13px; }
         .perm-warning { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px;
-          background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px;
-          color: #5d4037; font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
-        .perm-warning svg { flex-shrink: 0; margin-top: 1px; }
+          background: color-mix(in srgb, var(--warning-color, #ff9800) 14%, var(--card-background-color, white));
+          border: 1px solid color-mix(in srgb, var(--warning-color, #ff9800) 40%, transparent);
+          border-radius: 6px;
+          color: var(--primary-text-color); font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
+        .perm-warning svg { flex-shrink: 0; margin-top: 1px; fill: var(--warning-color, #f57f17); }
         th.sortable:hover { color: var(--primary-color); }
         th.sort-active { color: var(--primary-color); }
+        @media (max-width: 640px) {
+          th, td { padding: 8px 8px; font-size: 13px; }
+        }
       </style>
       <div class="toolbar">
         <h2>Directory Users</h2>
@@ -427,8 +499,8 @@ class DoormanUsersTab extends HTMLElement {
           </button>` : ``}
       </div>
       ${!this._writePermission ? `
-        <div class="perm-warning">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="#f57f17"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+        <div class="perm-warning" role="status">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
           <span><strong>Read-only mode</strong> — the API user lacks Directory write permissions on the 2N device.
           Create, edit and delete are disabled. To fix this, enable Directory write access for the API user in the 2N web interface:
           <em>Settings → Services → HTTP API → Users</em>.</span>
@@ -444,7 +516,7 @@ class DoormanUsersTab extends HTMLElement {
       return;
     }
     if (this._error) {
-      content.innerHTML = `<div class="error">${esc(this._error)}</div>`;
+      content.innerHTML = `<div class="error" role="alert">${esc(this._error)}</div>`;
       return;
     }
     if (!this._users?.length) {
@@ -473,6 +545,7 @@ class DoormanUsersTab extends HTMLElement {
   }
 
   _rebuildTable(content) {
+    content.querySelector(".table-scroll")?.remove();
     content.querySelector("table")?.remove();
     const users = this._sortedFilteredUsers();
 
@@ -488,6 +561,8 @@ class DoormanUsersTab extends HTMLElement {
     }
     content.querySelector(".filter-empty")?.remove();
 
+    const wrap = document.createElement("div");
+    wrap.className = "table-scroll";
     const table = document.createElement("table");
     table.innerHTML = `
       <thead>
@@ -501,8 +576,8 @@ class DoormanUsersTab extends HTMLElement {
           ${this._sortHeader("last_access", "Last Used")}
           <th>HA User</th>
           <th title="Notifications" style="text-align:center">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle">
-              <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:middle" aria-hidden="true">
+              <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,0A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
             </svg>
           </th>
           <th></th>
@@ -516,30 +591,30 @@ class DoormanUsersTab extends HTMLElement {
           <tr data-uuid="${esc(u.uuid)}">
             <td><strong>${esc(u.name || "—")}</strong></td>
             <td><span class="badge ${access.cls}">${access.label}</span></td>
-            <td><span class="badge ${u.pin ? "badge-yes" : "badge-no"}">${u.pin ? "Set" : "None"}</span></td>
-            <td>${(u.card || []).filter(Boolean).length}</td>
-            <td>${(u.code || []).filter(Boolean).length}</td>
+            <td><span class="badge ${u.has_pin ? "badge-yes" : "badge-no"}">${u.has_pin ? "Set" : "None"}</span></td>
+            <td>${u.has_card ? (u.card_count || 1) : "None"}</td>
+            <td>${u.has_code ? (u.code_count || 1) : "None"}</td>
             <td>${formatDate(u.validTo)}</td>
             <td style="color:var(--secondary-text-color);font-size:13px">${u.last_access ? formatDateTime(u.last_access) : "—"}</td>
             <td>
               ${u.ha_user_id
-                ? `<span class="ha-link"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>${esc(this._haUserName(u.ha_user_id))}</span>`
+                ? `<span class="ha-link"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>${esc(this._haUserName(u.ha_user_id))}</span>`
                 : `<span style="color:var(--disabled-color,#bbb)">—</span>`}
             </td>
             <td style="text-align:center">
-              <svg viewBox="0 0 24 24" width="16" height="16"
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"
                 fill="${hasTargets ? "var(--primary-color)" : "var(--disabled-color,#ccc)"}"
                 title="${hasTargets ? esc((u.notification_targets || []).join(", ")) : "No notifications"}">
-                <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
+                <path d="M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,0A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21"/>
               </svg>
             </td>
             <td class="actions">
               ${this._writePermission ? `
-              <button class="icon-btn edit-btn" data-uuid="${esc(u.uuid)}" title="Edit">
-                <svg viewBox="0 0 24 24"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
+              <button class="icon-btn edit-btn" type="button" data-uuid="${esc(u.uuid)}" aria-label="Edit" title="Edit">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"/></svg>
               </button>
-              <button class="icon-btn del-btn" data-uuid="${esc(u.uuid)}" title="Delete">
-                <svg viewBox="0 0 24 24"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
+              <button class="icon-btn del-btn" type="button" data-uuid="${esc(u.uuid)}" aria-label="Delete" title="Delete">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
               </button>` : ``}
             </td>
           </tr>
@@ -547,7 +622,8 @@ class DoormanUsersTab extends HTMLElement {
         }).join("")}
       </tbody>
     `;
-    content.appendChild(table);
+    wrap.appendChild(table);
+    content.appendChild(wrap);
 
     table.querySelectorAll(".sortable").forEach(th => {
       th.addEventListener("click", () => {
@@ -572,8 +648,17 @@ class DoormanUsersTab extends HTMLElement {
     });
   }
 
-  _buildUserForm(user = {}) {
+  _buildUserForm(user = {}, { isEdit = false } = {}) {
     const enabled = user.enabled !== false;
+    const pinPh = isEdit
+      ? (user.has_pin ? "Leave blank to keep" : "Enter new value to set")
+      : "2–15 digits";
+    const cardPh = isEdit
+      ? (user.has_card ? "Leave blank to keep" : "Enter new value to set")
+      : "e.g. 1A2B3C4D";
+    const codePh = isEdit
+      ? (user.has_code ? "Leave blank to keep" : "Enter new value to set")
+      : "2–15 digits";
     const form = document.createElement("div");
     form.innerHTML = `
       <div class="field-group">
@@ -588,15 +673,38 @@ class DoormanUsersTab extends HTMLElement {
         <div class="section-title">Credentials <span class="optional-hint">(all optional)</span></div>
         <div class="field">
           <label>PIN code</label>
-          <input id="f-pin" type="text" value="" placeholder="2–15 digits" autocomplete="off" />
+          <input id="f-pin" type="text" value="" placeholder="${esc(pinPh)}" autocomplete="off" />
+          ${isEdit && user.has_pin ? `
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:normal;color:var(--secondary-text-color);cursor:pointer;margin-top:4px">
+            <input id="f-clear-pin" type="checkbox" style="width:14px;height:14px;cursor:pointer" />
+            Clear PIN
+          </label>` : ""}
         </div>
         <div class="field">
           <label>RFID card UID (hex)</label>
-          <input id="f-card" type="text" value="" placeholder="e.g. 1A2B3C4D" />
+          <input id="f-card" type="text" value="" placeholder="${esc(cardPh)}" />
+          ${isEdit && (user.card_count || 0) > 1 ? `
+          <div class="cred-warn" style="font-size:12px;color:var(--warning-color,#f57f17);margin-top:4px;line-height:1.4">
+            This user has ${user.card_count} cards; saving a new card replaces all cards on the device.
+          </div>` : ""}
+          ${isEdit && user.has_card ? `
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:normal;color:var(--secondary-text-color);cursor:pointer;margin-top:4px">
+            <input id="f-clear-card" type="checkbox" style="width:14px;height:14px;cursor:pointer" />
+            Clear card${(user.card_count || 0) > 1 ? "s" : ""}
+          </label>` : ""}
         </div>
         <div class="field">
           <label>Switch code</label>
-          <input id="f-code" type="text" value="" placeholder="2–15 digits" />
+          <input id="f-code" type="text" value="" placeholder="${esc(codePh)}" />
+          ${isEdit && (user.code_count || 0) > 1 ? `
+          <div class="cred-warn" style="font-size:12px;color:var(--warning-color,#f57f17);margin-top:4px;line-height:1.4">
+            This user has ${user.code_count} codes; saving a new code replaces all codes on the device.
+          </div>` : ""}
+          ${isEdit && user.has_code ? `
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:normal;color:var(--secondary-text-color);cursor:pointer;margin-top:4px">
+            <input id="f-clear-code" type="checkbox" style="width:14px;height:14px;cursor:pointer" />
+            Clear code${(user.code_count || 0) > 1 ? "s" : ""}
+          </label>` : ""}
         </div>
         <div class="section-title">Validity</div>
         <div class="field">
@@ -625,11 +733,28 @@ class DoormanUsersTab extends HTMLElement {
         <div id="form-error"></div>
       </div>
     `;
-    // Set credential input values safely via DOM properties (avoids XSS in attribute interpolation)
+    // Name only — credentials are never prefilled (secrets are not returned by list_users).
     form.querySelector("#f-name").value = user.name || "";
-    form.querySelector("#f-pin").value = user.pin || "";
-    form.querySelector("#f-card").value = (user.card || [])[0] || "";
-    form.querySelector("#f-code").value = (user.code || [])[0] || "";
+    // Typing a new value and "Clear" are mutually exclusive.
+    const wireClear = (inputId, clearId) => {
+      const input = form.querySelector(inputId);
+      const clear = form.querySelector(clearId);
+      if (!input || !clear) return;
+      clear.addEventListener("change", () => {
+        if (clear.checked) {
+          input.value = "";
+          input.disabled = true;
+        } else {
+          input.disabled = false;
+        }
+      });
+      input.addEventListener("input", () => {
+        if (input.value.trim()) clear.checked = false;
+      });
+    };
+    wireClear("#f-pin", "#f-clear-pin");
+    wireClear("#f-card", "#f-clear-card");
+    wireClear("#f-code", "#f-clear-code");
     // Populate HA user select safely (HA usernames are untrusted text)
     const haUserSel = form.querySelector("#f-ha-user");
     if (haUserSel) {
@@ -687,7 +812,7 @@ class DoormanUsersTab extends HTMLElement {
       const vt = form.querySelector("#f-valid-to")?.value;
       if (vt) data.valid_to = localDateTimeWithOffset(vt);
       try {
-        await svc(this._hass, "create_user", data, this._entryId);
+        await ws(this._hass, "doorman/create_user", data, this._entryId);
         this._drawer.close();
         this._load();
       } catch (e) {
@@ -701,20 +826,41 @@ class DoormanUsersTab extends HTMLElement {
       this._drawer = document.createElement("doorman-drawer");
       this.shadowRoot.appendChild(this._drawer);
     }
-    const form = this._buildUserForm(user);
+    const form = this._buildUserForm(user, { isEdit: true });
     this._drawer.open(`Edit: ${user.name || user.uuid}`, form, async () => {
       const data = { uuid: user.uuid };
       const name = form.querySelector("#f-name").value.trim();
       if (!name) { const errEl = form.querySelector("#form-error"); errEl.textContent = ""; const errDiv = document.createElement("div"); errDiv.className = "error"; errDiv.textContent = "Name is required."; errEl.appendChild(errDiv); return; }
       data.name = name; // always required by 2N API
       data.enabled = form.querySelector("#f-enabled").checked;
+      // Empty credential field = omit (keep existing). Clear checkbox = send "".
       const pin = form.querySelector("#f-pin").value.trim();
-      // Mirror card/code: send "" to clear a previously set PIN
-      if (pin !== (user.pin || "")) data.pin = pin;
+      const clearPin = form.querySelector("#f-clear-pin")?.checked;
+      if (clearPin) data.pin = "";
+      else if (pin) data.pin = pin;
       const card = form.querySelector("#f-card").value.trim();
-      if (card !== ((user.card || [])[0] || "")) data.card = card;
+      const clearCard = form.querySelector("#f-clear-card")?.checked;
+      if (clearCard) data.card = "";
+      else if (card) data.card = card;
       const code = form.querySelector("#f-code").value.trim();
-      if (code !== ((user.code || [])[0] || "")) data.code = code;
+      const clearCode = form.querySelector("#f-clear-code")?.checked;
+      if (clearCode) data.code = "";
+      else if (code) data.code = code;
+      if (card && (user.card_count || 0) > 1) {
+        if (!confirm(`This user has ${user.card_count} cards. Saving a new card replaces all of them on the device. Continue?`)) {
+          return;
+        }
+      }
+      if (code && (user.code_count || 0) > 1) {
+        if (!confirm(`This user has ${user.code_count} codes. Saving a new code replaces all of them on the device. Continue?`)) {
+          return;
+        }
+      }
+      if (clearCard && (user.card_count || 0) > 1) {
+        if (!confirm(`Clear all ${user.card_count} cards for this user?`)) {
+          return;
+        }
+      }
       const vf = form.querySelector("#f-valid-from")?.value;
       const vfCurrent = toDateTimeLocalValue(user.validFrom);
       // 0 clears the validity restriction (undefined would be dropped by JSON)
@@ -724,7 +870,7 @@ class DoormanUsersTab extends HTMLElement {
       if (vt !== vtCurrent) data.valid_to = vt ? localDateTimeWithOffset(vt) : 0;
       let updated = false;
       try {
-        await svc(this._hass, "update_user", data, this._entryId);
+        await ws(this._hass, "doorman/update_user", data, this._entryId);
         updated = true;
         // Handle HA user link change
         const haSelect = form.querySelector("#f-ha-user");
@@ -769,6 +915,8 @@ class DoormanUsersTab extends HTMLElement {
   _showError(message) {
     const msg = document.createElement("div");
     msg.className = "error";
+    msg.setAttribute("role", "status");
+    msg.setAttribute("aria-live", "polite");
     msg.style.cssText = "position:fixed;top:16px;right:16px;z-index:200;padding:12px 16px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15)";
     msg.textContent = message;
     this.shadowRoot.appendChild(msg);
@@ -779,7 +927,7 @@ class DoormanUsersTab extends HTMLElement {
     const user = this._users.find(u => u.uuid === uuid);
     if (!confirm(`Delete user "${user?.name || uuid}"? This cannot be undone.`)) return;
     try {
-      await svc(this._hass, "delete_user", { uuid }, this._entryId);
+      await ws(this._hass, "doorman/delete_user", { uuid }, this._entryId);
       this._load();
     } catch (e) {
       this._showError(`Delete failed: ${e.message}`);
@@ -800,6 +948,8 @@ class DoormanLogTab extends HTMLElement {
     this._error = null;
     this._entryId = null;
     this._unsubLive = null;
+    this._resyncing = false;
+    this._toastTimer = null;
   }
 
   set hass(h) { this._hass = h; }
@@ -852,29 +1002,44 @@ class DoormanLogTab extends HTMLElement {
     shadow.innerHTML = `
       <style>
         ${BASE_CSS}
-        .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-        .toolbar h2 { margin: 0; font-size: 16px; font-weight: 500; }
-        .success { color: #2e7d32; font-weight: 500; }
+        .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .toolbar h2 { margin: 0; font-size: 16px; font-weight: 500; flex: 1; }
+        .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .success { color: var(--success-color, #2e7d32); font-weight: 500; }
         .fail    { color: var(--error-color, #f44336); font-weight: 500; }
         .event-type { font-family: monospace; font-size: 12px; background: var(--secondary-background-color, #f5f5f5); padding: 2px 6px; border-radius: 3px; }
+        .toast {
+          position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+          background: #323232; color: white; padding: 10px 20px; border-radius: 4px;
+          font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100;
+        }
+        .toast.error { background: var(--error-color, #f44336); }
       </style>
       <div class="toolbar">
         <h2>Access Log</h2>
-        <button class="btn btn-outlined" id="refresh-btn">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
-          Refresh
-        </button>
+        <div class="toolbar-actions">
+          <button class="btn btn-outlined" id="resync-btn" type="button" ${this._resyncing ? "disabled" : ""}>
+            Resync history
+          </button>
+          <button class="btn btn-outlined" id="refresh-btn" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+            Refresh
+          </button>
+        </div>
       </div>
       <div id="content"></div>
     `;
 
     shadow.getElementById("refresh-btn").addEventListener("click", () => this._load());
+    shadow.getElementById("resync-btn").addEventListener("click", () => this._resync());
 
     const content = shadow.getElementById("content");
     if (this._loading) { content.innerHTML = `<div class="loading">Loading log…</div>`; return; }
-    if (this._error)   { content.innerHTML = `<div class="error">${esc(this._error)}</div>`; return; }
+    if (this._error)   { content.innerHTML = `<div class="error" role="alert">${esc(this._error)}</div>`; return; }
     if (!this._events?.length) { content.innerHTML = `<div class="empty">No log events found.</div>`; return; }
 
+    const wrap = document.createElement("div");
+    wrap.className = "table-scroll";
     const table = document.createElement("table");
     table.innerHTML = `
       <thead><tr><th>Time</th><th>Event</th><th>User / Card</th><th>Result</th></tr></thead>
@@ -900,9 +1065,43 @@ class DoormanLogTab extends HTMLElement {
       const note = document.createElement("p");
       note.style.cssText = "font-size:12px;color:var(--secondary-text-color);margin:0 0 8px";
       note.textContent = `Showing 100 of ${this._events.length} events`;
-      content.insertBefore(note, table);
+      content.appendChild(note);
     }
-    content.appendChild(table);
+    wrap.appendChild(table);
+    content.appendChild(wrap);
+  }
+
+  _showToast(text, error = false) {
+    let toast = this.shadowRoot.querySelector(".toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.className = "toast";
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
+      this.shadowRoot.appendChild(toast);
+    }
+    toast.classList.toggle("error", !!error);
+    toast.textContent = text;
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => toast.remove(), error ? 4000 : 2500);
+  }
+
+  async _resync() {
+    if (this._resyncing) return;
+    this._resyncing = true;
+    const btn = this.shadowRoot.getElementById("resync-btn");
+    if (btn) btn.disabled = true;
+    try {
+      await svc(this._hass, "resync_log_history", {}, this._entryId);
+      this._showToast("History resync complete");
+      await this._load();
+    } catch (e) {
+      this._showToast(e.message || "Resync failed", true);
+    } finally {
+      this._resyncing = false;
+      const b = this.shadowRoot.getElementById("resync-btn");
+      if (b) b.disabled = false;
+    }
   }
 }
 define("doorman-log-tab", DoormanLogTab);
@@ -1625,6 +1824,8 @@ class DoormanNotificationsTab extends HTMLElement {
     if (!toast) {
       toast = document.createElement("div");
       toast.className = "toast";
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
       this.shadowRoot.appendChild(toast);
     }
     toast.classList.toggle("error", !!error);
@@ -1711,16 +1912,30 @@ class DoormanPanel extends HTMLElement {
         } else {
           this._selectedEntryId = this._devices[0].entry_id;
         }
+      } else {
+        this._selectedEntryId = null;
       }
       this._renderShell();
     } catch (e) {
       this._devices = [];
+      this._selectedEntryId = null;
       this._loadError = e.message || "Could not connect to Doorman";
       this._renderShell();
     }
   }
 
   connectedCallback() { this._renderShell(); }
+
+  _selectTab(id, { focus = false } = {}) {
+    if (this._tab === id && !focus) return;
+    this._tab = id;
+    this._renderShell();
+    if (focus) {
+      requestAnimationFrame(() => {
+        this.shadowRoot.querySelector(`[role="tab"][data-tab="${id}"]`)?.focus();
+      });
+    }
+  }
 
   _renderShell() {
     const tabs = [
@@ -1729,6 +1944,10 @@ class DoormanPanel extends HTMLElement {
       { id: "notifications", label: "Notifications" },
       { id: "device",        label: "Device" },
     ];
+    const hasDevice = Boolean(this._selectedEntryId);
+    const showTabs = hasDevice && !this._loadError;
+    // _loadError is null only after a successful list_devices; undefined before first load.
+    const noDevices = this._loadError === null && this._devices.length === 0;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -1759,9 +1978,14 @@ class DoormanPanel extends HTMLElement {
         }
         .device-select option { color: var(--primary-text-color); background: var(--card-background-color); }
         .menu-btn { background: none; border: none; cursor: pointer; color: inherit; line-height: 0; padding: 4px; border-radius: 50%; }
+        .menu-btn:focus-visible, .tab:focus-visible, .device-select:focus-visible {
+          outline: 2px solid var(--app-header-text-color, white);
+          outline-offset: 2px;
+        }
+        .tab:focus-visible { outline-color: var(--primary-color); }
         .menu-btn svg { width: 24px; height: 24px; fill: currentColor; display: block; }
         .tabs {
-          display: flex;
+          display: ${showTabs ? "flex" : "none"};
           border-bottom: 1px solid var(--divider-color);
           background: var(--primary-background-color);
           padding: 0 16px;
@@ -1775,11 +1999,14 @@ class DoormanPanel extends HTMLElement {
           font-size: 14px;
           font-weight: 500;
           color: var(--secondary-text-color);
+          border: none;
+          background: transparent;
           border-bottom: 2px solid transparent;
           margin-bottom: -1px;
           user-select: none;
           letter-spacing: 0.25px;
           transition: color 0.15s;
+          font-family: inherit;
         }
         .tab.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
         .tab:hover:not(.active) { color: var(--primary-text-color); }
@@ -1808,36 +2035,78 @@ class DoormanPanel extends HTMLElement {
           cursor: pointer;
           text-decoration: underline;
         }
+        .unavailable-banner {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 12px 16px;
+          background: color-mix(in srgb, var(--error-color, #f44336) 12%, var(--card-background-color, white));
+          border: 1px solid color-mix(in srgb, var(--error-color, #f44336) 35%, transparent);
+          border-radius: 6px;
+          color: var(--error-color, #c62828);
+          font-size: 13px;
+          margin-bottom: 16px;
+          line-height: 1.5;
+        }
+        .unavailable-banner svg { flex-shrink: 0; margin-top: 1px; fill: var(--error-color, #c62828); }
+        .empty-state {
+          text-align: center;
+          padding: 48px 24px;
+          color: var(--primary-text-color);
+        }
+        .empty-state h2 {
+          margin: 0 0 8px;
+          font-size: 20px;
+          font-weight: 500;
+        }
+        .empty-state p {
+          margin: 0;
+          color: var(--secondary-text-color);
+          font-size: 14px;
+          line-height: 1.5;
+        }
       </style>
       <div class="header">
         ${this._narrow ? `
-          <button class="menu-btn" id="menu-btn">
-            <svg viewBox="0 0 24 24"><path d="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z"/></svg>
+          <button class="menu-btn" id="menu-btn" type="button" aria-label="Menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z"/></svg>
           </button>
         ` : ""}
-        <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" style="opacity:0.9">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" style="opacity:0.9" aria-hidden="true">
           <path d="M18,8H17V6A5,5 0 0,0 12,1A5,5 0 0,0 7,6V8H6A2,2 0 0,0 4,10V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V10A2,2 0 0,0 18,8M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17M15.1,8H8.9V6A3.1,3.1 0 0,1 12,2.9A3.1,3.1 0 0,1 15.1,6V8Z"/>
         </svg>
         <h1>Doorman</h1>
-        ${this._devices.length > 1 ? `<select class="device-select" id="device-select"></select>` : ""}
+        ${this._devices.length > 1 ? `<select class="device-select" id="device-select" aria-label="Device"></select>` : ""}
       </div>
-      <div class="tabs">
-        ${tabs.map(t => `<div class="tab${this._tab === t.id ? " active" : ""}" data-tab="${t.id}">${t.label}</div>`).join("")}
+      <div class="tabs" role="tablist" aria-label="Doorman sections">
+        ${tabs.map(t => {
+          const selected = this._tab === t.id;
+          return `<button type="button" class="tab${selected ? " active" : ""}" role="tab"
+            id="tab-${t.id}" data-tab="${t.id}"
+            aria-selected="${selected ? "true" : "false"}"
+            aria-controls="tab-content"
+            tabindex="${selected ? "0" : "-1"}">${t.label}</button>`;
+        }).join("")}
       </div>
       <div class="content">
         ${this._staleVersion ? `
-          <div class="update-banner">
-            <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
+          <div class="update-banner" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
             <span>Doorman was updated to ${esc(this._backendVersion)} — this page is still
             running ${esc(PANEL_VERSION)}. <button id="reload-page" type="button">Reload this page</button>
             to finish updating.</span>
           </div>` : ""}
         ${this._loadError ? `
-          <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 16px;background:#fff3f3;border:1px solid #ffcdd2;border-radius:6px;color:#c62828;font-size:13px;margin-bottom:16px;line-height:1.5">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="#c62828" style="flex-shrink:0;margin-top:1px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          <div class="unavailable-banner" role="alert">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
             <span><strong>Doorman is unavailable</strong> — ${esc(this._loadError)}</span>
           </div>` : ""}
-        <div id="tab-content"></div>
+        ${noDevices ? `
+          <div class="empty-state" role="status">
+            <h2>No devices configured</h2>
+            <p>Add a Doorman integration via Settings → Integrations to manage users, access logs, and notifications.</p>
+          </div>` : ""}
+        <div id="tab-content" role="tabpanel" aria-labelledby="tab-${esc(this._tab)}"></div>
       </div>
     `;
 
@@ -1847,10 +2116,18 @@ class DoormanPanel extends HTMLElement {
     this.shadowRoot.getElementById("menu-btn")?.addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
     });
-    this.shadowRoot.querySelectorAll(".tab").forEach(el => {
-      el.addEventListener("click", () => {
-        this._tab = el.dataset.tab;
-        this._renderShell();
+    this.shadowRoot.querySelectorAll('[role="tab"]').forEach(el => {
+      el.addEventListener("click", () => this._selectTab(el.dataset.tab));
+      el.addEventListener("keydown", (ev) => {
+        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+        ev.preventDefault();
+        const list = [...this.shadowRoot.querySelectorAll('[role="tab"]')];
+        const i = list.indexOf(ev.currentTarget);
+        if (i < 0) return;
+        const next = ev.key === "ArrowRight"
+          ? list[(i + 1) % list.length]
+          : list[(i - 1 + list.length) % list.length];
+        this._selectTab(next.dataset.tab, { focus: true });
       });
     });
 
@@ -1876,7 +2153,10 @@ class DoormanPanel extends HTMLElement {
 
   _mountTab() {
     const container = this.shadowRoot.getElementById("tab-content");
+    if (!container) return;
     container.innerHTML = "";
+    // Tabs need an entryId; do not mount when none is selected (zero devices / load error).
+    if (!this._selectedEntryId) return;
     const tagMap = {
       users:         "doorman-users-tab",
       log:           "doorman-log-tab",
@@ -1885,7 +2165,7 @@ class DoormanPanel extends HTMLElement {
     };
     const el = document.createElement(tagMap[this._tab]);
     if (this._hass) el.hass = this._hass;
-    if (this._selectedEntryId) el.entryId = this._selectedEntryId;
+    el.entryId = this._selectedEntryId;
     container.appendChild(el);
   }
 }

@@ -15,6 +15,7 @@ from custom_components.doorman.const import (
     CONF_USE_SSL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    DEFAULT_USE_SSL,
     DOMAIN,
 )
 
@@ -49,6 +50,9 @@ async def test_config_flow_success(hass: HomeAssistant, mock_2n_client) -> None:
     assert result["type"] == "create_entry"
     assert result["title"] == MOCK_DEVICE_INFO["deviceName"]
     assert result["data"][CONF_HOST] == VALID_INPUT[CONF_HOST]
+    # Schema default when the field is omitted from the form submit.
+    assert result["data"][CONF_USE_SSL] is True
+    assert DEFAULT_USE_SSL is True
 
 
 @pytest.mark.asyncio

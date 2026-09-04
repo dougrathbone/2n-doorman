@@ -16,7 +16,7 @@ async def test_camera_entity_created_when_device_has_camera(
     mock_2n_client,
 ) -> None:
     """A camera entity is registered when camera/caps reports resolutions."""
-    state = hass.states.get("camera.doorman_camera")
+    state = hass.states.get("camera.doorman_1012345678_camera")
     assert state is not None
     mock_2n_client.get_camera_caps.assert_called()
 
@@ -33,7 +33,7 @@ async def test_camera_no_entity_without_camera(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert hass.states.get("camera.doorman_camera") is None
+    assert hass.states.get("camera.doorman_1012345678_camera") is None
 
 
 @pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def test_camera_returns_jpeg_snapshot(
     mock_2n_client,
 ) -> None:
     """async_get_image returns the snapshot bytes from the device."""
-    image = await async_get_image(hass, "camera.doorman_camera")
+    image = await async_get_image(hass, "camera.doorman_1012345678_camera")
     assert image.content == MOCK_JPEG
     mock_2n_client.get_camera_snapshot.assert_called_with(640, 480)
 
@@ -62,5 +62,5 @@ async def test_camera_snapshot_prefers_supported_resolution(
     await hass.config_entries.async_setup(doorman_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    await async_get_image(hass, "camera.doorman_camera")
+    await async_get_image(hass, "camera.doorman_1012345678_camera")
     mock_2n_client.get_camera_snapshot.assert_called_with(320, 240)

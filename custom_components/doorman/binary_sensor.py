@@ -2,11 +2,11 @@
 
 Two flavours:
 
-- ``binary_sensor.doorman_door`` is event-driven: the 2N device emits
-  ``DoorStateChanged`` log events when a door contact is configured
-  (Hardware → Digital Inputs → Door State). There is no HTTP endpoint to
-  poll for it, so the sensor listens on the ``doorman_access`` bus and
-  stays ``unknown`` until the first event arrives.
+- The door sensor is event-driven: the 2N device emits ``DoorStateChanged``
+  log events when a door contact is configured (Hardware → Digital Inputs →
+  Door State). There is no HTTP endpoint to poll for it, so the sensor
+  listens on the ``doorman_access`` bus and stays ``unknown`` until the
+  first event arrives.
 - One sensor per hardware input port from ``/api/io/caps`` (e.g. a REX
   button or an external contact), state polled via ``/api/io/status`` and
   updated instantly by ``InputChanged`` events through the coordinator.
@@ -20,23 +20,12 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
-
-
-def _device_info(coordinator: DoormanCoordinator, entry: ConfigEntry) -> DeviceInfo:
-    """Shared device registry info for all Doorman entities."""
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=entry.title,
-        manufacturer="2N",
-        model=coordinator.device_info.get("hwVersion"),
-        sw_version=coordinator.device_info.get("swVersion"),
-    )
+from .helpers import build_device_info, pinned_entity_id
 
 
 async def async_setup_entry(
@@ -72,9 +61,9 @@ class DoormanDoorSensor(BinarySensorEntity):
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_door"
         # Pin the entity ID explicitly (see switch.py for why).
-        self.entity_id = "binary_sensor.doorman_door"
+        self.entity_id = pinned_entity_id("binary_sensor", "door", coordinator, entry)
         self._entry_id = entry.entry_id
-        self._attr_device_info = _device_info(coordinator, entry)
+        self._attr_device_info = build_device_info(coordinator, entry)
         self._attr_is_on = None  # unknown until the first DoorStateChanged
 
     async def async_added_to_hass(self) -> None:
@@ -105,8 +94,10 @@ class DoormanInputSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEnti
         self._port = port
         self._attr_unique_id = f"{entry.entry_id}_input_{port}"
         self._attr_name = f"Doorman Input {port}"
-        self.entity_id = f"binary_sensor.doorman_input_{port}"
-        self._attr_device_info = _device_info(coordinator, entry)
+        self.entity_id = pinned_entity_id(
+            "binary_sensor", f"input_{port}", coordinator, entry
+        )
+        self._attr_device_info = build_device_info(coordinator, entry)
 
     @property
     def is_on(self) -> bool | None:
@@ -133,8 +124,10 @@ class DoormanSipRegisteredSensor(CoordinatorEntity[DoormanCoordinator], BinarySe
     ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_sip_registered"
-        self.entity_id = "binary_sensor.doorman_sip_registered"
-        self._attr_device_info = _device_info(coordinator, entry)
+        self.entity_id = pinned_entity_id(
+            "binary_sensor", "sip_registered", coordinator, entry
+        )
+        self._attr_device_info = build_device_info(coordinator, entry)
 
     @property
     def is_on(self) -> bool | None:

@@ -27,7 +27,7 @@ CONF_DOORBELL_KEY_CODE = "doorbell_key_code"
 CONF_DOORBELL_TARGETS = "doorbell_targets"
 
 DEFAULT_POLL_INTERVAL = 30
-DEFAULT_USE_SSL = False
+DEFAULT_USE_SSL = True
 DEFAULT_VERIFY_SSL = True
 # 2N Verso's factory "quick dial 1" button emits key='%1' in KeyPressed
 # events. Other models (Force, IP Style) share the same convention.

@@ -75,7 +75,8 @@ Nothing is lost by waiting to restart: the new version simply is not active unti
 
 1. Go to **Settings → Integrations → Add integration** and search for **Doorman**
 2. Enter your 2N device's IP address, API username, and password
-3. The **Doorman** panel appears in the left sidebar
+3. Prefer **Use HTTPS** when the device supports it — directory operations use Digest authentication, and HTTPS keeps credentials off the wire in cleartext
+4. The **Doorman** panel appears in the left sidebar
 
 ### 2N device setup
 
@@ -102,7 +103,15 @@ After setup, go to **Settings → Integrations → Doorman → Configure** to ad
 
 ### Multiple devices
 
-Add a separate integration entry for each 2N device (**Settings → Integrations → Add integration → Doorman**). The sidebar panel shows a device selector in the header when more than one device is configured. Services accept an optional `device` field (the config entry ID) to target a specific device; without it, calls are routed automatically when only one device is configured.
+Add a separate integration entry for each 2N device (**Settings → Integrations → Add integration → Doorman**). The sidebar panel shows a device selector in the header when more than one device is configured. Services accept an optional `device` field (the config entry ID) to target a specific device; without it, calls are routed automatically when only one device is configured. Entity IDs are device-scoped (`*.doorman_<serial_slug>_…`, falling back to an entry-id slug) so multiple intercoms do not collide.
+
+### Removing Doorman
+
+1. **Settings → Devices & Services → Doorman** → delete each config entry
+2. Remove the integration in HACS (or delete `custom_components/doorman/` for a manual install)
+3. Restart Home Assistant
+
+Stored links, notification settings, and access-log history under `.storage/doorman*` can be deleted manually if you want a clean slate.
 
 ---
 
@@ -110,12 +119,13 @@ Add a separate integration entry for each 2N device (**Settings → Integrations
 
 ### Sidebar panel
 
-The Doorman panel has three tabs:
+The Doorman panel has four tabs:
 
 | Tab | Description |
 |-----|-------------|
 | **Users** | View all directory entries; add, edit, or delete users and their credentials |
 | **Access Log** | Browse recent access events. The log is stored by Home Assistant, so it survives restarts, and events recorded by the intercom while HA was down are pulled in at startup (silently — historical events never trigger notifications) |
+| **Notifications** | Configure access and doorbell notify targets, iOS sounds, and Android channels. Set the doorbell key code (default `%1` for the Verso quick-dial / call button; use `%2`, `%3`, … for other buttons). Leave the doorbell key empty to disable doorbell notifications on that device |
 | **Device** | View device information and trigger immediate access |
 
 ### Linking 2N users to HA accounts
@@ -151,7 +161,7 @@ No configuration is required. To verify it's working:
 
 ### Automations
 
-The `doorman_access` event fires on every access attempt:
+The `doorman_access` event fires on every access attempt and on doorbell presses:
 
 ```yaml
 trigger:
@@ -165,7 +175,19 @@ action:
       message: "{{ trigger.event.data.params.user.name }} entered"
 ```
 
-Available `event_type` values: `UserAuthenticated`, `UserRejected`, `CodeEntered`, `CardEntered`, `FingerEntered`, `MobKeyEntered`.
+```yaml
+trigger:
+  - platform: event
+    event_type: doorman_access
+    event_data:
+      event_type: DoorbellPressed
+action:
+  - service: notify.mobile_app_phone
+    data:
+      message: "Someone is at the door"
+```
+
+Available `event_type` values include `UserAuthenticated`, `UserRejected`, `CodeEntered`, `CardEntered`, `FingerEntered`, `MobKeyEntered`, and the synthetic `DoorbellPressed` (when a matching doorbell key is configured).
 
 ---
 

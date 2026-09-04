@@ -7,10 +7,13 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
 
+from .api_client import DoormanApiError
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
 from .ios_sounds import catalog_for_ws
+from .sanitize import CARD, PIN_OR_CODE, sanitize_directory_user
 from .storage import DoormanStore
 
 # The panel's <select> uses this sentinel to mean "reveal a free-text field".
@@ -64,6 +67,9 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     hass.data[f"{DOMAIN}_websocket_registered"] = True
     websocket_api.async_register_command(hass, ws_list_devices)
     websocket_api.async_register_command(hass, ws_list_users)
+    websocket_api.async_register_command(hass, ws_create_user)
+    websocket_api.async_register_command(hass, ws_update_user)
+    websocket_api.async_register_command(hass, ws_delete_user)
     websocket_api.async_register_command(hass, ws_get_device_info)
     websocket_api.async_register_command(hass, ws_get_access_log)
     websocket_api.async_register_command(hass, ws_list_ha_users)
@@ -96,14 +102,25 @@ def _store(hass: HomeAssistant) -> DoormanStore | None:
 def _require_admin(connection: websocket_api.ActiveConnection, msg: dict) -> bool:
     """Return True if the caller is an admin; otherwise send an error and return False.
 
-    These commands expose door credentials (PINs, cards, codes), the access log
-    and device details, so they must not be reachable by non-admin HA users even
-    though the WebSocket connection itself is authenticated.
+    These commands expose the directory, access log, device details, and
+    credential write paths, so they must not be reachable by non-admin HA
+    users even though the WebSocket connection itself is authenticated.
     """
     if not connection.user.is_admin:
         connection.send_error(msg["id"], "unauthorized", "Admin access required")
         return False
     return True
+
+
+def _validity_timestamp(value: object) -> int:
+    """Convert a validated valid_from/valid_to value to a Unix timestamp.
+
+    ``0`` clears the restriction (the 2N API represents "no restriction" as
+    validFrom/validTo ``0``). A datetime becomes ``int(timestamp())``.
+    """
+    if isinstance(value, int):
+        return value
+    return int(value.timestamp())  # type: ignore[union-attr]
 
 
 # ------------------------------------------------------------------ #
@@ -163,7 +180,7 @@ def ws_list_users(
     last_access = (coordinator.data or {}).get("last_access", {})
     users = [
         {
-            **user,
+            **sanitize_directory_user(user),
             "ha_user_id": links.get(user.get("uuid")),
             "notification_targets": store.get_notification_targets(user.get("uuid", "")) if store else [],
             "last_access": last_access.get(user.get("uuid")),
@@ -174,6 +191,149 @@ def ws_list_users(
         "users": users,
         "write_permission": coordinator.has_write_permission,
     })
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/create_user",
+        vol.Optional("entry_id"): str,
+        vol.Required("name"): cv.string,
+        vol.Optional("enabled"): cv.boolean,
+        vol.Optional("pin"): PIN_OR_CODE,
+        vol.Optional("card"): CARD,
+        vol.Optional("code"): PIN_OR_CODE,
+        vol.Optional("valid_from"): cv.datetime,
+        vol.Optional("valid_to"): cv.datetime,
+    }
+)
+@websocket_api.async_response
+async def ws_create_user(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Create a 2N directory user (admin panel path; mirrors doorman.create_user)."""
+    if not _require_admin(connection, msg):
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    user: dict = {"name": msg["name"]}
+    if "enabled" in msg:
+        user["enabled"] = msg["enabled"]
+    if pin := msg.get("pin"):
+        user["pin"] = pin
+    if card := msg.get("card"):
+        user["card"] = [card]
+    if code := msg.get("code"):
+        user["code"] = [code]
+    if "valid_from" in msg:
+        user["validFrom"] = _validity_timestamp(msg["valid_from"])
+    if "valid_to" in msg:
+        user["validTo"] = _validity_timestamp(msg["valid_to"])
+    try:
+        await coordinator.client.create_user(user)
+    except DoormanApiError as err:
+        connection.send_error(
+            msg["id"], "2n_api_error", f"create_user failed on the 2N device: {err}"
+        )
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/update_user",
+        vol.Optional("entry_id"): str,
+        vol.Required("uuid"): cv.string,
+        vol.Optional("name"): cv.string,
+        vol.Optional("enabled"): cv.boolean,
+        vol.Optional("pin"): PIN_OR_CODE,
+        vol.Optional("card"): CARD,
+        vol.Optional("code"): PIN_OR_CODE,
+        # A datetime sets the restriction; 0 clears it.
+        vol.Optional("valid_from"): vol.Any(cv.datetime, 0),
+        vol.Optional("valid_to"): vol.Any(cv.datetime, 0),
+    }
+)
+@websocket_api.async_response
+async def ws_update_user(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Update a 2N directory user (admin panel path; mirrors doorman.update_user)."""
+    if not _require_admin(connection, msg):
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    user: dict = {"uuid": msg["uuid"]}
+    if "name" in msg and msg["name"]:
+        user["name"] = msg["name"]
+    # An explicitly empty string clears the PIN, mirroring card/code below.
+    if "pin" in msg:
+        user["pin"] = msg["pin"]
+    if "enabled" in msg:
+        user["enabled"] = msg["enabled"]
+    if "card" in msg:
+        user["card"] = [msg["card"]] if msg["card"] else []
+    if "code" in msg:
+        user["code"] = [msg["code"]] if msg["code"] else []
+    if "valid_from" in msg:
+        user["validFrom"] = _validity_timestamp(msg["valid_from"])
+    if "valid_to" in msg:
+        user["validTo"] = _validity_timestamp(msg["valid_to"])
+    try:
+        await coordinator.client.update_user(user)
+    except DoormanApiError as err:
+        connection.send_error(
+            msg["id"], "2n_api_error", f"update_user failed on the 2N device: {err}"
+        )
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/delete_user",
+        vol.Optional("entry_id"): str,
+        vol.Required("uuid"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_user(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Delete a 2N directory user and drop local link/notify state."""
+    if not _require_admin(connection, msg):
+        return
+    coordinator = _coordinator(hass, msg.get("entry_id"))
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_configured", "Doorman is not configured")
+        return
+
+    try:
+        await coordinator.client.delete_user(msg["uuid"])
+    except DoormanApiError as err:
+        connection.send_error(
+            msg["id"], "2n_api_error", f"delete_user failed on the 2N device: {err}"
+        )
+        return
+    store = _store(hass)
+    if store:
+        await store.unlink_user(msg["uuid"])
+        await store.clear_notification_targets(msg["uuid"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"success": True})
 
 
 # ------------------------------------------------------------------ #

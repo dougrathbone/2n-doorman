@@ -51,6 +51,12 @@ if _PAHCC_AVAILABLE:
         "serialNumber": "10-12345678",
         "hwVersion": "535v1",
     }
+    # Sanitized MOCK_DEVICE_INFO["serialNumber"] — matches helpers.device_slug
+    MOCK_DEVICE_SLUG = "1012345678"
+
+    def doorman_eid(platform: str, object_id: str, slug: str = MOCK_DEVICE_SLUG) -> str:
+        """Build a device-scoped Doorman entity ID for assertions."""
+        return f"{platform}.doorman_{slug}_{object_id}"
 
     MOCK_USERS = [
         {

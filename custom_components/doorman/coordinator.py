@@ -21,6 +21,7 @@ from .const import (
     LOG_BACKFILL_MAX_PULLS,
     LOG_BACKFILL_SECONDS,
 )
+from .sanitize import sanitize_log_event
 from .storage import AccessLogStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -249,7 +250,11 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return BackfillResult(len(history), 0)
 
-        added = self.log_store.add_events(history)
+        # Sanitize before persist so the durable store never holds PIN
+        # keystrokes or params.pin / params.code.
+        added = self.log_store.add_events(
+            [sanitize_log_event(e) for e in history if isinstance(e, dict)]
+        )
         if added:
             _LOGGER.debug("Doorman: backfilled %d historical log event(s)", added)
             # Push the merged history to the panel/entities straight away
@@ -370,9 +375,14 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not events:
                     continue
 
-                self._fire_new_access_events(events)
+                # Redact PIN keystrokes / credential params before bus + store
+                # so neither the HA event bus nor AccessLogStore retains secrets.
+                sanitized = [
+                    sanitize_log_event(e) for e in events if isinstance(e, dict)
+                ]
+                self._fire_new_access_events(sanitized)
                 # Debounced: a burst from one pull costs a single disk write.
-                self.log_store.add_events(events)
+                self.log_store.add_events(sanitized)
 
                 # Persist last_access entries collected by _fire_new_access_events.
                 # Coalesce into a single disk write rather than one per event.

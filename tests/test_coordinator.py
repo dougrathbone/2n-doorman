@@ -1117,3 +1117,70 @@ async def test_backfill_pushes_new_events_to_listeners(hass: HomeAssistant) -> N
 
     assert [e["id"] for e in coordinator.data["log_events"]] == [1]
     assert coordinator.data["users"] == []
+
+
+@pytest.mark.asyncio
+async def test_log_ingest_redacts_keypressed_digits(hass: HomeAssistant, monkeypatch) -> None:
+    """Live pull + backfill strip PIN keystrokes before they hit AccessLogStore."""
+    import asyncio
+
+    import custom_components.doorman.coordinator as coord_mod
+
+    digit_event = {
+        "id": "kp-digit",
+        "event": "KeyPressed",
+        "utcTime": 1743250000,
+        "params": {"key": "5"},
+    }
+    code_event = {
+        "id": "code-1",
+        "event": "CodeEntered",
+        "utcTime": 1743250001,
+        "params": {"code": "1234", "uuid": "uuid-jane", "valid": True},
+    }
+    doorbell_event = {
+        "id": "kp-db",
+        "event": "KeyPressed",
+        "utcTime": 1743250002,
+        "params": {"key": "%1"},
+    }
+
+    pull_calls = 0
+
+    async def fake_pull_log(server_timeout: int = 0) -> list[dict]:
+        nonlocal pull_calls
+        pull_calls += 1
+        if pull_calls == 1:
+            return [digit_event, code_event, doorbell_event]
+        raise asyncio.CancelledError
+
+    client = MagicMock()
+    client.pull_log = fake_pull_log
+    client.fetch_log_history = AsyncMock(
+        return_value=[
+            {
+                "id": "hist-1",
+                "event": "KeyPressed",
+                "utcTime": 1743240000,
+                "params": {"key": "9", "digit": "9"},
+            }
+        ]
+    )
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_load_access_log()
+    coordinator.data = {"users": [], "switches": [], "log_events": [], "last_access": {}}
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", AsyncMock())
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await coordinator._log_listener_loop()
+
+    stored = {e["id"]: e for e in coordinator.log_store.events}
+    assert "key" not in stored["kp-digit"]["params"]
+    assert "code" not in stored["code-1"]["params"]
+    assert stored["code-1"]["params"]["uuid"] == "uuid-jane"
+    assert stored["kp-db"]["params"]["key"] == "%1"
+
+    await coordinator.async_resync_access_log()
+    hist = next(e for e in coordinator.log_store.events if e["id"] == "hist-1")
+    assert "key" not in hist["params"]
+    assert "digit" not in hist["params"]

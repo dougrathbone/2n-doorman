@@ -95,6 +95,7 @@ The test suite uses `pytest-homeassistant-custom-component` which spins up a rea
 - CI runs lint, all unit tests, a 60% coverage gate, and HACS validation automatically
 - Fill in the PR template — especially the testing section
 - One logical change per PR where practical
+- Brand assets: `brand/` has square icons + `logo.svg`; landscape `logo.png` / `logo@2x.png` for a `home-assistant/brands` submission are not generated yet — do not invent placeholder PNGs
 
 ---
 
