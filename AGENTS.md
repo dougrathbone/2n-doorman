@@ -264,8 +264,9 @@ entry was not loaded — the usual case, since credentials rejected at startup
 raise `ConfigEntryAuthFailed` before `add_update_listener` is reached. Calling
 both unconditionally gave one reauth two full teardown/rebuild cycles; dropping
 the explicit call entirely would leave a `SETUP_ERROR` entry unrecovered.
-`OptionsFlowWithReload` / `async_update_reload_and_abort` express this natively
-but postdate the `homeassistant: 2024.1.0` minimum pinned in `hacs.json`.
+`OptionsFlowWithReload` expresses the options-reload path natively; reauth
+keeps an explicit reload decision for the same-credentials / SETUP_ERROR cases
+(see the comment in `async_step_reauth_confirm`).
 
 ### WebSocket API surface
 The panel talks to the backend through a hybrid of WebSocket commands and
@@ -539,7 +540,7 @@ When HA introduces a replacement for something we call:
 This is also why ruff's `target-version` in `pyproject.toml` is `py312` while CI
 runs Python 3.14. `target-version` governs what syntax the `UP` rules will
 rewrite *our shipped source* into, and that source has to import cleanly on the
-oldest server we claim to support (HA 2024.1.0 → Python 3.11). Bumping it to
+oldest server we claim to support (HA 2024.11.0 → Python 3.12). Bumping it to
 match the runner would let ruff auto-rewrite the integration into syntax an
 older HA cannot parse — a backwards-compatibility break introduced by a linter.
 The two numbers are supposed to differ; don't "fix" them into agreement.

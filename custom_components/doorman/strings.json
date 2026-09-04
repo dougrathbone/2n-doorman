@@ -12,7 +12,8 @@
           "verify_ssl": "Verify SSL certificate"
         },
         "data_description": {
-          "use_ssl": "Recommended. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords)."
+          "use_ssl": "On by default. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords).",
+          "verify_ssl": "On by default. Turn off if the intercom presents a self-signed certificate."
         }
       },
       "reauth_confirm": {
@@ -34,7 +35,8 @@
           "verify_ssl": "Verify SSL certificate"
         },
         "data_description": {
-          "use_ssl": "Recommended. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords)."
+          "use_ssl": "On by default. Plain HTTP is less safe for directory credential traffic (PINs, cards, and API passwords).",
+          "verify_ssl": "On by default. Turn off if the intercom presents a self-signed certificate."
         }
       }
     },

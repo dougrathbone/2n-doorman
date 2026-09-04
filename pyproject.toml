@@ -11,8 +11,8 @@ markers = [
 [tool.ruff]
 # Deliberately NOT tracking the CI runner's Python (3.14). `target-version` is
 # the oldest interpreter the *shipped* integration has to run on, which is set
-# by the oldest Home Assistant we claim to support — hacs.json says 2024.1.0,
-# and that HA requires Python >= 3.11. Raising this to py313/py314 would let the
+# by the oldest Home Assistant we claim to support — hacs.json says 2024.11.0,
+# and that HA requires Python >= 3.12. Raising this to py313/py314 would let the
 # UP rules rewrite this source into syntax that cannot even be imported on an
 # older server, so it stays conservative and only moves when the declared HA
 # floor moves. See "Home Assistant version compatibility" in AGENTS.md.

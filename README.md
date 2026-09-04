@@ -1,7 +1,7 @@
 # Doorman
 
 [![CI](https://github.com/dougrathbone/2n-doorman/actions/workflows/ci.yml/badge.svg)](https://github.com/dougrathbone/2n-doorman/actions/workflows/ci.yml)
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/default)
 [![GitHub release](https://img.shields.io/github/v/release/dougrathbone/2n-doorman?display_name=tag)](https://github.com/dougrathbone/2n-doorman/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -18,14 +18,19 @@ A Home Assistant integration for managing users and access credentials on **2N I
 - **Credential control** — set and update PINs, RFID cards, and switch codes per user
 - **Enable / disable users** — toggle access without deleting the user
 - **Validity windows** — configure time-limited access (valid from / valid to)
-- **Access log** — browse the most recent access events (authentications, denials, card taps)
+- **Access log** — browse persisted access events (authentications, denials, card taps); history backfills at startup without notifying
 - **Push-like event delivery** — access events surface within ~1 s via long-polling (no extra config required)
+- **Doorbell notifications** — optional notify targets when a configured quick-dial key is pressed
+- **Camera** — still-image camera entity (JPEG snapshots from the intercom)
+- **Door / I/O / SIP sensors** — door contact, hardware inputs, and SIP registration health
+- **Device restart** — button entity to reboot the intercom
 - **Multi-device support** — manage multiple 2N intercoms from a single HA instance
 - **Multiple access points** — grant access to any access point, not just the first one
 - **HA user linking** — associate 2N directory users with Home Assistant accounts for presence automations
 - **Access notifications** — send a notification to any HA notify service when a linked user authenticates
 - **Access events** — fires `doorman_access` HA events on every access attempt, usable in automations
 - **Relay switches** — control door relays directly as HA switch entities
+- **Call control** — hang up, answer, or dial via services
 - **Configurable poll interval** — adjust how often users and switches are refreshed (Settings → Integrations → Configure)
 - **Local only** — communicates directly with the device; no cloud dependency
 
@@ -33,7 +38,7 @@ A Home Assistant integration for managing users and access credentials on **2N I
 
 ## Requirements
 
-- Home Assistant 2024.1.0 or later
+- Home Assistant **2024.11.0** or later
 - A 2N IP intercom with the HTTP API enabled (Services → HTTP API)
 - An API user on the device with **Directory** permission
 
@@ -45,9 +50,9 @@ A Home Assistant integration for managing users and access credentials on **2N I
 
 ### Via HACS (recommended)
 
-1. Open HACS → Integrations → ⋮ → Custom repositories
-2. Add `https://github.com/dougrathbone/2n-doorman` with category **Integration**
-3. Install **Doorman** and restart Home Assistant
+1. Open HACS → Integrations
+2. Search for **Doorman** (it is in the [HACS default](https://github.com/hacs/default) store — no custom repository needed)
+3. Download **Doorman** and restart Home Assistant
 
 ### Manual
 
@@ -75,7 +80,7 @@ Nothing is lost by waiting to restart: the new version simply is not active unti
 
 1. Go to **Settings → Integrations → Add integration** and search for **Doorman**
 2. Enter your 2N device's IP address, API username, and password
-3. Prefer **Use HTTPS** when the device supports it — directory operations use Digest authentication, and HTTPS keeps credentials off the wire in cleartext
+3. **Use HTTPS** defaults on (recommended — directory traffic carries PINs, cards, and API passwords). Turn **Verify SSL certificate** off if the intercom uses a self-signed certificate
 4. The **Doorman** panel appears in the left sidebar
 
 ### 2N device setup
@@ -138,7 +143,7 @@ In the Users tab, open any user and use the **Link to HA User** dropdown to asso
 
 ### Services
 
-All services accept an optional `device` field (config entry ID) to target a specific device when multiple are configured.
+All services are **admin-gated**: calls from a signed-in non-admin user are rejected. Automations and scripts (no user context) still run — that is Home Assistant's admin-service contract. Each service accepts an optional `device` field (config entry ID) when multiple devices are configured.
 
 | Service | Key fields | Description |
 |---------|-----------|-------------|
@@ -147,6 +152,8 @@ All services accept an optional `device` field (config entry ID) to target a spe
 | `doorman.delete_user` | `uuid` | Remove a user from the 2N directory |
 | `doorman.grant_access` | `access_point_id` (default 1), `user_uuid` | Open an access point immediately |
 | `doorman.hangup_calls` | — | Hang up all active call sessions |
+| `doorman.answer_call` | — | Answer an incoming call |
+| `doorman.dial` | `number` | Place an outgoing call |
 | `doorman.resync_log_history` | — | Re-read the device's on-box access log history and merge anything missing into Doorman's log (no duplicates, no notifications). The number of events added is written to the Home Assistant log |
 
 ### Push-like event delivery
@@ -194,11 +201,11 @@ Available `event_type` values include `UserAuthenticated`, `UserRejected`, `Code
 ## Development
 
 ```bash
-# Install test dependencies
+# Install test dependencies (current HA pin)
 pip install -r requirements_test.txt
 
-# Run tests
-pytest tests/ -v
+# Unit tests (skip Docker/Podman integration suite)
+pytest tests/ --ignore=tests/integration -v
 
 # Lint
 ruff check custom_components/ tests/
