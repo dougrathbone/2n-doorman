@@ -101,7 +101,10 @@ async def test_relay_name_and_entity_id_are_device_scoped(
     entity_id = doorman_eid("switch", "relay_1")
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.name == "Doorman Relay 1"
+    # HA 2026.8+ always prefixes friendly_name with the device name when the
+    # entity is attached to a device (even with has_entity_name=False). The
+    # integration-owned name is still "Doorman Relay 1".
+    assert state.name.endswith("Doorman Relay 1")
     assert MOCK_DEVICE_SLUG in entity_id
 
     from homeassistant.helpers import entity_registry as er
@@ -110,6 +113,7 @@ async def test_relay_name_and_entity_id_are_device_scoped(
     entity = registry.async_get(entity_id)
     assert entity is not None
     assert entity.has_entity_name is False
+    assert entity.original_name == "Doorman Relay 1"
 
 
 @pytest.mark.asyncio

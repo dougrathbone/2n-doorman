@@ -65,8 +65,9 @@ async def test_sensor_user_count_exists(ha: HaClient) -> None:
     """User-count sensor exists and reflects the mock server's initial user."""
     state = await ha.wait_for_state(eid("sensor", "user_count"), timeout=30)
     assert state["state"] == "1", f"Expected 1 user, got: {state['state']}"
-    assert "users" in state["attributes"]
-    assert state["attributes"]["users"][0]["name"] == "Test User"
+    # Directory contents live in the panel / WS list_users — not on the sensor
+    # (avoids recorder/history PII bloat).
+    assert "users" not in state["attributes"]
 
 
 @pytest.mark.asyncio
