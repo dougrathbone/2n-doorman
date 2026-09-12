@@ -66,13 +66,19 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
     @callback
     def _on_access_event(event: Event) -> None:
         event_type: str = event.data.get("event_type", "")
+        if event_type not in (
+            "UserAuthenticated",
+            DOORBELL_EVENT_TYPE,
+            CALL_RINGING_EVENT_TYPE,
+        ):
+            return
         entry = _lookup_entry(hass, event.data.get("entry_id"))
 
         if event_type == "UserAuthenticated":
             _handle_user_authenticated(hass, event, entry)
         elif event_type == DOORBELL_EVENT_TYPE:
             _handle_doorbell_notify(hass, event, entry, kind="doorbell")
-        elif event_type == CALL_RINGING_EVENT_TYPE:
+        else:
             _handle_call_ringing_notify(hass, event, entry)
 
     @callback
@@ -119,7 +125,7 @@ def _coordinator_for(hass: HomeAssistant, entry_id: str):
     return hass.data.get(DOMAIN, {}).get(entry_id)
 
 
-def _camera_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+def camera_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     """Return the Doorman camera entity id when the device has a camera."""
     coordinator = _coordinator_for(hass, entry.entry_id)
     if coordinator is None or not coordinator.camera_caps:
@@ -165,7 +171,6 @@ def _build_data(
     if ios_sound:
         push["sound"] = ios_sound
     if time_sensitive:
-        # iOS time-sensitive; Android high-priority delivery.
         push["interruption-level"] = "time-sensitive"
         data["ttl"] = 0
         data["priority"] = "high"
@@ -193,35 +198,18 @@ def build_test_doorbell_data(
     Action buttons use a no-op action id so tapping them cannot unlock or
     answer — Preview is for layout/sound/snapshot verification only.
     """
-    camera_entity_id = None
+    camera = None
     if settings.get(CONF_DOORBELL_ATTACH_CAMERA, True):
-        camera_entity_id = _camera_entity_id(hass, entry)
-
-    actions: list[dict[str, Any]] = []
-    if settings.get(CONF_DOORBELL_UNLOCK_ACTION):
-        actions.append(
-            {
-                "action": "DOORMAN_PREVIEW_NOOP",
-                "title": "Unlock (preview)",
-                "authenticationRequired": True,
-                "destructive": True,
-            }
-        )
-    if settings.get(CONF_DOORBELL_ANSWER_ACTION):
-        coordinator = _coordinator_for(hass, entry.entry_id)
-        if coordinator is not None and getattr(
-            coordinator, "call_status_available", False
-        ):
-            actions.append(
-                {"action": "DOORMAN_PREVIEW_NOOP", "title": "Answer (preview)"}
-            )
-
+        camera = camera_entity_id(hass, entry)
     return _build_data(
         "doorman_test",
         ios_sound=settings.get(CONF_DOORBELL_SOUND_IOS, "") or "",
         android_channel=settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or "",
-        camera_entity_id=camera_entity_id,
-        actions=actions or None,
+        camera_entity_id=camera,
+        actions=_doorbell_actions(
+            hass, entry, settings, kind="call", preview=True
+        )
+        or None,
         time_sensitive=bool(settings.get(CONF_DOORBELL_TIME_SENSITIVE)),
     )
 
@@ -231,7 +219,8 @@ def _doorbell_actions(
     entry: ConfigEntry,
     settings: dict,
     *,
-    include_answer: bool,
+    kind: str,
+    preview: bool = False,
 ) -> list[dict[str, Any]]:
     """Build Companion action buttons for Unlock / Answer."""
     actions: list[dict[str, Any]] = []
@@ -239,21 +228,27 @@ def _doorbell_actions(
     if settings.get(CONF_DOORBELL_UNLOCK_ACTION):
         actions.append(
             {
-                "action": f"{ACTION_UNLOCK_PREFIX}{entry.entry_id}|{issued}",
-                "title": "Unlock",
+                "action": (
+                    "DOORMAN_PREVIEW_NOOP"
+                    if preview
+                    else f"{ACTION_UNLOCK_PREFIX}{entry.entry_id}|{issued}"
+                ),
+                "title": "Unlock (preview)" if preview else "Unlock",
                 "authenticationRequired": True,
                 "destructive": True,
             }
         )
-    if include_answer and settings.get(CONF_DOORBELL_ANSWER_ACTION):
+    if kind == "call" and settings.get(CONF_DOORBELL_ANSWER_ACTION):
         coordinator = _coordinator_for(hass, entry.entry_id)
-        if coordinator is not None and getattr(
-            coordinator, "call_status_available", False
-        ):
+        if coordinator is not None and coordinator.call_status_available:
             actions.append(
                 {
-                    "action": f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}",
-                    "title": "Answer",
+                    "action": (
+                        "DOORMAN_PREVIEW_NOOP"
+                        if preview
+                        else f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}"
+                    ),
+                    "title": "Answer (preview)" if preview else "Answer",
                 }
             )
     return actions
@@ -337,13 +332,9 @@ def _handle_call_ringing_notify(
     # Outgoing ringing is the common doorbell-dial path (no softphone Answer).
     # Incoming (or unknown) gets intercom-call wording plus Answer when enabled.
     if direction == "outgoing":
-        _handle_doorbell_notify(
-            hass, event, entry, kind="doorbell", include_answer=False
-        )
+        _handle_doorbell_notify(hass, event, entry, kind="doorbell")
     else:
-        _handle_doorbell_notify(
-            hass, event, entry, kind="call", include_answer=True
-        )
+        _handle_doorbell_notify(hass, event, entry, kind="call")
 
 
 def _handle_doorbell_notify(
@@ -352,7 +343,6 @@ def _handle_doorbell_notify(
     entry: ConfigEntry | None,
     *,
     kind: str,
-    include_answer: bool = False,
 ) -> None:
     if entry is None:
         # Doorbell targets are stored per config entry — without an entry
@@ -381,11 +371,9 @@ def _handle_doorbell_notify(
             else "Someone rang the doorbell"
         )
 
-    ios_sound = settings.get(CONF_DOORBELL_SOUND_IOS, "") or ""
-    android_channel = settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or ""
-    camera_entity_id = None
+    camera = None
     if settings.get(CONF_DOORBELL_ATTACH_CAMERA, True):
-        camera_entity_id = _camera_entity_id(hass, entry)
+        camera = camera_entity_id(hass, entry)
 
     _dispatch(
         hass,
@@ -394,11 +382,11 @@ def _handle_doorbell_notify(
         message,
         data=_build_data(
             _doorbell_tag(entry.entry_id),
-            ios_sound=ios_sound,
-            android_channel=android_channel,
-            camera_entity_id=camera_entity_id,
+            ios_sound=settings.get(CONF_DOORBELL_SOUND_IOS, "") or "",
+            android_channel=settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or "",
+            camera_entity_id=camera,
             actions=_doorbell_actions(
-                hass, entry, settings, include_answer=include_answer
+                hass, entry, settings, kind=kind
             )
             or None,
             time_sensitive=bool(settings.get(CONF_DOORBELL_TIME_SENSITIVE)),
@@ -549,22 +537,13 @@ def _clear_doorbell_notifications(
     hass: HomeAssistant, entry: ConfigEntry, settings: dict
 ) -> None:
     """Dismiss the actionable doorbell push on every configured phone."""
-    targets = settings.get(CONF_DOORBELL_TARGETS) or []
-    if not targets:
-        return
-    tag = _doorbell_tag(entry.entry_id)
-    for target in targets:
-        service = target.removeprefix("notify.")
-        if not hass.services.has_service("notify", service):
-            continue
-        hass.async_create_task(
-            hass.services.async_call(
-                "notify",
-                service,
-                {"message": "clear_notification", "data": {"tag": tag}},
-                blocking=False,
-            )
-        )
+    _dispatch(
+        hass,
+        settings.get(CONF_DOORBELL_TARGETS) or [],
+        "",
+        "clear_notification",
+        data={"tag": _doorbell_tag(entry.entry_id)},
+    )
 
 
 def _dispatch(
@@ -586,11 +565,14 @@ def _dispatch(
                 target,
             )
             continue
+        payload: dict[str, Any] = {"message": message, "data": data}
+        if title:
+            payload["title"] = title
         hass.async_create_task(
             hass.services.async_call(
                 "notify",
                 service,
-                {"title": title, "message": message, "data": data},
+                payload,
                 blocking=False,
             )
         )

@@ -24,7 +24,6 @@ class DoormanNotificationsTab extends HTMLElement {
     this._loading = true;
     this._error = null;
     this._entryId = null;
-    this._deviceName = "";
     this._settings = null;
     this._catalog = [];
     this._notifyServices = [];
@@ -57,11 +56,6 @@ class DoormanNotificationsTab extends HTMLElement {
       const res = await ws(
         this._hass, "doorman/get_notification_settings", {}, this._entryId,
       );
-      // Kept unescaped on purpose: the only consumers are the notify
-      // `message` strings in _sendPreview, which are plain text on the
-      // phone — esc()-ing here would push "Bob&#39;s Door" to the user.
-      // It is device-controlled, so esc() it at any future HTML sink.
-      this._deviceName = res.device_name || "";
       this._settings = res.settings || {};
       this._catalog = res.ios_sound_catalog || [];
       this._notifyServices = res.notify_services || [];
@@ -684,7 +678,7 @@ class DoormanNotificationsTab extends HTMLElement {
     return "";
   }
 
-  _readDoorbellCompanionOverrides() {
+  _readCompanionChecks() {
     return {
       doorbell_attach_camera:
         !!this.shadowRoot.getElementById("db-attach-camera")?.checked,
@@ -694,6 +688,8 @@ class DoormanNotificationsTab extends HTMLElement {
         !!this.shadowRoot.getElementById("db-answer")?.checked,
       doorbell_time_sensitive:
         !!this.shadowRoot.getElementById("db-time-sensitive")?.checked,
+      doorbell_notify_on_call_ringing:
+        !!this.shadowRoot.getElementById("db-call-ringing")?.checked,
     };
   }
 
@@ -701,21 +697,23 @@ class DoormanNotificationsTab extends HTMLElement {
     const soundPrefix = flow === "doorbell" ? "db" : "ac";
     const ios = this._readSoundValue(soundPrefix);
     const channel = this._readChannelValue(soundPrefix);
-    const title = flow === "doorbell" ? "Doorbell" : "Doorman";
-    const message = flow === "doorbell"
-      ? `${this._deviceName || "Test"}: someone rang the doorbell`
-      : `Test — someone opened ${this._deviceName || "the door"}`;
     try {
       const payload = {
         type: "doorman/send_test_notification",
-        target, title, message,
+        target,
+        title: "Doorman test",
+        message: "Doorman test",
         ios_sound: ios,
         android_channel: channel,
       };
       if (doorbellPreview) {
         payload.doorbell_preview = true;
         if (this._entryId) payload.entry_id = this._entryId;
-        Object.assign(payload, this._readDoorbellCompanionOverrides());
+        const checks = this._readCompanionChecks();
+        payload.doorbell_attach_camera = checks.doorbell_attach_camera;
+        payload.doorbell_unlock_action = checks.doorbell_unlock_action;
+        payload.doorbell_answer_action = checks.doorbell_answer_action;
+        payload.doorbell_time_sensitive = checks.doorbell_time_sensitive;
       }
       await this._hass.callWS(payload);
       this._showToast(
@@ -764,6 +762,7 @@ class DoormanNotificationsTab extends HTMLElement {
         );
         return;
       }
+      const companion = this._readCompanionChecks();
       const settings = {
         // Sent verbatim: "" is a meaningful value (no doorbell button on this
         // device), so don't silently substitute the default for an empty field.
@@ -771,10 +770,8 @@ class DoormanNotificationsTab extends HTMLElement {
         doorbell_targets: this._readCheckedTargets(),
         doorbell_sound_ios: this._readSoundValue("db"),
         doorbell_channel_android: this._readChannelValue("db"),
-        doorbell_attach_camera:
-          !!this.shadowRoot.getElementById("db-attach-camera")?.checked,
-        doorbell_answer_action:
-          !!this.shadowRoot.getElementById("db-answer")?.checked,
+        doorbell_attach_camera: companion.doorbell_attach_camera,
+        doorbell_answer_action: companion.doorbell_answer_action,
         doorbell_unlock_action: unlockOn,
         doorbell_unlock_user_uuid: unlockOn
           ? unlockUuid
@@ -782,10 +779,8 @@ class DoormanNotificationsTab extends HTMLElement {
         doorbell_unlock_access_point_id: unlockOn
           ? unlockAp
           : (this._settings?.doorbell_unlock_access_point_id ?? 1),
-        doorbell_notify_on_call_ringing:
-          !!this.shadowRoot.getElementById("db-call-ringing")?.checked,
-        doorbell_time_sensitive:
-          !!this.shadowRoot.getElementById("db-time-sensitive")?.checked,
+        doorbell_notify_on_call_ringing: companion.doorbell_notify_on_call_ringing,
+        doorbell_time_sensitive: companion.doorbell_time_sensitive,
         access_sound_ios: this._readSoundValue("ac"),
         access_channel_android: this._readChannelValue("ac"),
       };

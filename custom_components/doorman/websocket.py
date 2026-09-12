@@ -13,7 +13,7 @@ from .api_client import DoormanApiError
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
 from .ios_sounds import catalog_for_ws
-from .notifications import _camera_entity_id, build_test_doorbell_data
+from .notifications import build_test_doorbell_data, camera_entity_id
 from .sanitize import CARD, PIN_OR_CODE, sanitize_directory_user
 from .storage import DoormanStore
 
@@ -56,6 +56,11 @@ def _registered_notify_targets(hass: HomeAssistant) -> set[str]:
         for name in hass.services.async_services().get("notify", {})
         if name not in ("notify", "send_message")
     }
+
+
+def _list_notify_targets(hass: HomeAssistant) -> list[str]:
+    """Stable ordered list of registered ``notify.*`` targets for the panel."""
+    return sorted(_registered_notify_targets(hass))
 
 
 def _validate_notify_targets(
@@ -535,9 +540,7 @@ def ws_list_notify_services(
     """Return all registered notify.* service targets."""
     if not _require_admin(connection, msg):
         return
-    notify_services = list(hass.services.async_services().get("notify", {}).keys())
-    targets = [f"notify.{s}" for s in notify_services if s not in ("notify", "send_message")]
-    connection.send_result(msg["id"], {"services": targets})
+    connection.send_result(msg["id"], {"services": _list_notify_targets(hass)})
 
 
 @websocket_api.websocket_command(
@@ -604,11 +607,7 @@ def ws_get_notification_settings(
         return
 
     entry = coordinator.config_entry
-    notify_services = sorted(
-        f"notify.{s}"
-        for s in hass.services.async_services().get("notify", {})
-        if s not in ("notify", "send_message")
-    )
+    notify_services = _list_notify_targets(hass)
     settings = store.get_notification_settings(entry.entry_id)
     registered = set(notify_services)
     stale_targets = [
@@ -619,7 +618,6 @@ def ws_get_notification_settings(
         for u in (coordinator.data or {}).get("users", [])
         if u.get("uuid")
     ]
-    camera_entity_id = _camera_entity_id(hass, entry)
     connection.send_result(
         msg["id"],
         {
@@ -632,8 +630,8 @@ def ws_get_notification_settings(
             "stale_targets": stale_targets,
             "users": users,
             "access_points": coordinator.access_points or [],
-            "call_status_available": bool(coordinator.call_status_available),
-            "camera_entity_id": camera_entity_id,
+            "call_status_available": coordinator.call_status_available,
+            "camera_entity_id": camera_entity_id(hass, entry),
         },
     )
 
@@ -702,16 +700,15 @@ async def ws_set_notification_settings(
         settings["doorbell_targets"] = validated
 
     unlock_on = settings.get("doorbell_unlock_action")
+    current = store.get_notification_settings(coordinator.config_entry.entry_id)
     if unlock_on is None:
-        unlock_on = store.get_notification_settings(
-            coordinator.config_entry.entry_id
-        ).get("doorbell_unlock_action")
+        unlock_on = current.get("doorbell_unlock_action")
     if unlock_on:
-        uuid = (settings.get("doorbell_unlock_user_uuid")
-                if "doorbell_unlock_user_uuid" in settings
-                else store.get_notification_settings(
-                    coordinator.config_entry.entry_id
-                ).get("doorbell_unlock_user_uuid", ""))
+        uuid = (
+            settings["doorbell_unlock_user_uuid"]
+            if "doorbell_unlock_user_uuid" in settings
+            else current.get("doorbell_unlock_user_uuid", "")
+        )
         uuid = (uuid or "").strip()
         known_uuids = {
             u.get("uuid")

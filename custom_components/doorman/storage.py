@@ -235,7 +235,10 @@ class DoormanStore:
         settings[CONF_DOORBELL_TARGETS] = list(settings[CONF_DOORBELL_TARGETS] or [])
         self._data.setdefault("notification_settings", {})[entry_id] = settings
         await self._store.async_save(self._data)
-        return self.get_notification_settings(entry_id)
+        # Hand back a copy — same contract as get_notification_settings.
+        out = dict(settings)
+        out[CONF_DOORBELL_TARGETS] = list(settings[CONF_DOORBELL_TARGETS])
+        return out
 
     async def clear_entry(
         self,
