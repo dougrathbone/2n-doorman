@@ -27,7 +27,9 @@ custom_components/doorman/
   storage.py           — DoormanStore: persists UUID↔HA-user links, notify targets,
                          and per-entry notification settings
                          AccessLogStore: durable per-entry access-log history
-  notifications.py     — Listens for doorman_access bus events, dispatches notify.* calls
+  notifications.py     — Listens for doorman_access bus events, dispatches notify.*
+                         calls (doorbell can attach a camera snapshot plus Unlock /
+                         Answer Companion actions; optional CallRinging notify)
   ios_sounds.py        — Static catalog of iOS Companion notification sounds for the panel
   websocket.py         — 16 WebSocket commands exposed to the frontend panel
                          (incl. subscribe_events; user CRUD create/update/delete)
@@ -225,11 +227,11 @@ being linked to any HA account. The `notifications.py` module reads these
 targets when a `UserAuthenticated` event fires.
 
 ### Notification settings live in DoormanStore, not entry.options
-The six per-flow notification settings (`access_sound_ios`,
-`access_channel_android`, `doorbell_sound_ios`, `doorbell_channel_android`,
-`doorbell_key_code`, `doorbell_targets`) are persisted in `DoormanStore`
-under `notification_settings`, keyed by config `entry_id`. Two reasons, both
-load-bearing:
+Per-entry notification settings (access/doorbell sounds and channels,
+`doorbell_key_code`, `doorbell_targets`, plus Companion doorbell enrichments
+`doorbell_attach_camera` / unlock+answer actions / `doorbell_notify_on_call_ringing`)
+are persisted in `DoormanStore` under `notification_settings`, keyed by config
+`entry_id`. Two reasons, both load-bearing:
 
 1. **The options flow would wipe them.** `DoormanOptionsFlow` renders only
    `poll_interval` and finishes with `async_create_entry(data=user_input)`,

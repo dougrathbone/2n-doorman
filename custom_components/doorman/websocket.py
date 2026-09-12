@@ -632,6 +632,14 @@ def ws_get_notification_settings(
             vol.Optional("doorbell_channel_android"): _PRESENTATION,
             vol.Optional("doorbell_key_code"): vol.All(str, _doorbell_key_code),
             vol.Optional("doorbell_targets"): [str],
+            vol.Optional("doorbell_attach_camera"): bool,
+            vol.Optional("doorbell_unlock_action"): bool,
+            vol.Optional("doorbell_unlock_user_uuid"): str,
+            vol.Optional("doorbell_unlock_access_point_id"): vol.All(
+                vol.Coerce(int), vol.Range(min=1)
+            ),
+            vol.Optional("doorbell_answer_action"): bool,
+            vol.Optional("doorbell_notify_on_call_ringing"): bool,
         },
     }
 )

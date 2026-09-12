@@ -25,6 +25,18 @@ CONF_DOORBELL_CHANNEL_ANDROID = "doorbell_channel_android"
 # Doorbell dispatch.
 CONF_DOORBELL_KEY_CODE = "doorbell_key_code"
 CONF_DOORBELL_TARGETS = "doorbell_targets"
+# Companion doorbell enrichments (snapshot + actionable buttons).
+CONF_DOORBELL_ATTACH_CAMERA = "doorbell_attach_camera"
+CONF_DOORBELL_UNLOCK_ACTION = "doorbell_unlock_action"
+CONF_DOORBELL_UNLOCK_USER_UUID = "doorbell_unlock_user_uuid"
+CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID = "doorbell_unlock_access_point_id"
+CONF_DOORBELL_ANSWER_ACTION = "doorbell_answer_action"
+CONF_DOORBELL_NOTIFY_ON_CALL_RINGING = "doorbell_notify_on_call_ringing"
+
+# Companion notification action prefixes. The entry_id is appended after `|`
+# so multi-device installs route Unlock/Answer to the right intercom.
+ACTION_UNLOCK_PREFIX = "DOORMAN_UNLOCK|"
+ACTION_ANSWER_PREFIX = "DOORMAN_ANSWER|"
 
 DEFAULT_POLL_INTERVAL = 30
 DEFAULT_USE_SSL = True

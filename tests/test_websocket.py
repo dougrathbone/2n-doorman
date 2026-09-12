@@ -580,6 +580,12 @@ async def test_ws_get_notification_settings_returns_defaults(
         "doorbell_channel_android": "",
         "doorbell_key_code": "%1",
         "doorbell_targets": [],
+        "doorbell_attach_camera": True,
+        "doorbell_unlock_action": False,
+        "doorbell_unlock_user_uuid": "",
+        "doorbell_unlock_access_point_id": 1,
+        "doorbell_answer_action": True,
+        "doorbell_notify_on_call_ringing": False,
     }
     # Catalog is grouped; sanity-check the shape
     assert len(result["ios_sound_catalog"]) >= 1
@@ -604,6 +610,12 @@ async def test_ws_set_notification_settings_round_trips_via_the_store(
         "doorbell_channel_android": "doorman_doorbell",
         "doorbell_key_code": "%2",
         "doorbell_targets": ["notify.mobile_app"],
+        "doorbell_attach_camera": False,
+        "doorbell_unlock_action": True,
+        "doorbell_unlock_user_uuid": "uuid-visitor",
+        "doorbell_unlock_access_point_id": 2,
+        "doorbell_answer_action": False,
+        "doorbell_notify_on_call_ringing": True,
     }
     client = await hass_ws_client(hass)
     await client.send_json_auto_id(
@@ -734,6 +746,8 @@ async def test_ws_set_notification_settings_rejects_bad_input(
         {"access_channel_android": "__custom__"},
         # doorbell_targets is a list of strings, not a bare string.
         {"doorbell_targets": "notify.mobile_app"},
+        # Access point must be a positive integer.
+        {"doorbell_unlock_access_point_id": 0},
         # Unknown keys are rejected rather than silently dropped.
         {"totally_unknown": "x"},
     ]

@@ -193,6 +193,12 @@ async def test_notification_settings_defaults(hass: HomeAssistant) -> None:
         "doorbell_channel_android": "",
         "doorbell_key_code": "%1",
         "doorbell_targets": [],
+        "doorbell_attach_camera": True,
+        "doorbell_unlock_action": False,
+        "doorbell_unlock_user_uuid": "",
+        "doorbell_unlock_access_point_id": 1,
+        "doorbell_answer_action": True,
+        "doorbell_notify_on_call_ringing": False,
     }
 
 

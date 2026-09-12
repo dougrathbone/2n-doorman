@@ -20,7 +20,7 @@ A Home Assistant integration for managing users and access credentials on **2N I
 - **Validity windows** — configure time-limited access (valid from / valid to)
 - **Access log** — browse persisted access events (authentications, denials, card taps); history backfills at startup without notifying
 - **Push-like event delivery** — access events surface within ~1 s via long-polling (no extra config required)
-- **Doorbell notifications** — optional notify targets when a configured quick-dial key is pressed
+- **Doorbell notifications** — optional Companion notify when a quick-dial key is pressed, with optional camera snapshot and Unlock / Answer action buttons
 - **Camera** — still-image camera entity (JPEG snapshots from the intercom)
 - **Door / I/O / SIP sensors** — door contact, hardware inputs, and SIP registration health
 - **Call ringing / active sensors** — `binary_sensor.doorman_*_call_ringing` and `_call_active` for conditional dashboard cards
@@ -131,7 +131,7 @@ The Doorman panel has four tabs:
 |-----|-------------|
 | **Users** | View all directory entries; add, edit, or delete users and their credentials |
 | **Access Log** | Browse recent access events. The log is stored by Home Assistant, so it survives restarts, and events recorded by the intercom while HA was down are pulled in at startup (silently — historical events never trigger notifications) |
-| **Notifications** | Configure access and doorbell notify targets, iOS sounds, and Android channels. Set the doorbell key code (default `%1` for the Verso quick-dial / call button; use `%2`, `%3`, … for other buttons). Leave the doorbell key empty to disable doorbell notifications on that device |
+| **Notifications** | Configure access and doorbell notify targets, iOS sounds, and Android channels. Doorbell notifies can attach a camera snapshot and Unlock / Answer Companion actions. Set the doorbell key code (default `%1` for the Verso quick-dial / call button; use `%2`, `%3`, … for other buttons). Leave the doorbell key empty to disable doorbell notifications on that device |
 | **Device** | View device information and trigger immediate access |
 
 ### Linking 2N users to HA accounts
