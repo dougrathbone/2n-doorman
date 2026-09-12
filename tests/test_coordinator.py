@@ -60,6 +60,7 @@ async def test_coordinator_fetch_returns_users_and_switches(
     client.get_io_caps = AsyncMock(return_value=[])
     client.get_phone_status = AsyncMock(return_value=[])
     client.get_system_status = AsyncMock(return_value={})
+    client.get_call_status = AsyncMock(return_value=[])
     client.query_users = AsyncMock(return_value=MOCK_USERS)
     client.get_switch_status = AsyncMock(return_value=MOCK_SWITCHES)
 
@@ -71,6 +72,8 @@ async def test_coordinator_fetch_returns_users_and_switches(
     assert coordinator.data["switches"] == MOCK_SWITCHES
     assert coordinator.device_info == MOCK_DEVICE_INFO
     assert coordinator.data["has_write_permission"] is True
+    assert coordinator.call_status_available is True
+    assert coordinator.data["call_sessions"] == []
 
 
 @pytest.mark.asyncio
@@ -281,8 +284,11 @@ async def test_call_state_ringing_fires_call_ringing_synthetic(
     await hass.async_block_till_done()
 
     types = [e.data["event_type"] for e in fired]
-    assert types == ["CallStateChanged", "CallRinging"]
-    assert fired[1].data["params"] == params
+    assert types.count("CallStateChanged") == 1
+    assert types.count("CallRinging") == 1
+    assert len(types) == 2
+    ringing = next(e for e in fired if e.data["event_type"] == "CallRinging")
+    assert ringing.data["params"] == params
 
 
 @pytest.mark.asyncio

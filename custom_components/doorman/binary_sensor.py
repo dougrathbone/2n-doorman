@@ -1,6 +1,6 @@
-"""Binary sensors for Doorman — door state and hardware inputs.
+"""Binary sensors for Doorman — door state, hardware inputs, SIP, and calls.
 
-Two flavours:
+Flavours:
 
 - The door sensor is event-driven: the 2N device emits ``DoorStateChanged``
   log events when a door contact is configured (Hardware → Digital Inputs →
@@ -10,6 +10,8 @@ Two flavours:
 - One sensor per hardware input port from ``/api/io/caps`` (e.g. a REX
   button or an external contact), state polled via ``/api/io/status`` and
   updated instantly by ``InputChanged`` events through the coordinator.
+- Call ringing / call active sensors track ``/api/call/status`` sessions,
+  updated instantly by ``CallStateChanged`` and reconciled on each poll.
 """
 from __future__ import annotations
 
@@ -43,6 +45,9 @@ async def async_setup_entry(
     )
     if coordinator.phone_status_available:
         entities.append(DoormanSipRegisteredSensor(coordinator, entry))
+    if coordinator.call_status_available:
+        entities.append(DoormanCallRingingSensor(coordinator, entry))
+        entities.append(DoormanCallActiveSensor(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -153,3 +158,72 @@ class DoormanSipRegisteredSensor(CoordinatorEntity[DoormanCoordinator], BinarySe
                 for a in (self.coordinator.data or {}).get("phone_accounts", [])
             ]
         }
+
+
+def _call_sessions(coordinator: DoormanCoordinator) -> list[dict]:
+    return list((coordinator.data or {}).get("call_sessions") or [])
+
+
+class DoormanCallRingingSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEntity):
+    """On while any call session is in state ``ringing``.
+
+    Drive conditional Lovelace cards (show Answer/Unlock only while ringing)
+    without an ``input_boolean`` helper. Instant via ``CallStateChanged``;
+    reconciled on each poll of ``/api/call/status``.
+    """
+
+    _attr_name = "Doorman Call Ringing"
+    _attr_has_entity_name = False
+    _attr_icon = "mdi:phone-ring"
+
+    def __init__(
+        self, coordinator: DoormanCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_call_ringing"
+        self.entity_id = pinned_entity_id(
+            "binary_sensor", "call_ringing", coordinator, entry
+        )
+        self._attr_device_info = build_device_info(coordinator, entry)
+
+    @property
+    def is_on(self) -> bool:
+        return any(s.get("state") == "ringing" for s in _call_sessions(self.coordinator))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        ringing = [s for s in _call_sessions(self.coordinator) if s.get("state") == "ringing"]
+        first = ringing[0] if ringing else {}
+        return {
+            "session": first.get("session"),
+            "direction": first.get("direction"),
+            "peer": first.get("peer"),
+            "sessions": ringing,
+        }
+
+
+class DoormanCallActiveSensor(CoordinatorEntity[DoormanCoordinator], BinarySensorEntity):
+    """On while any call session is active (ringing, connected, …)."""
+
+    _attr_name = "Doorman Call Active"
+    _attr_has_entity_name = False
+    _attr_icon = "mdi:phone-in-talk"
+
+    def __init__(
+        self, coordinator: DoormanCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_call_active"
+        self.entity_id = pinned_entity_id(
+            "binary_sensor", "call_active", coordinator, entry
+        )
+        self._attr_device_info = build_device_info(coordinator, entry)
+
+    @property
+    def is_on(self) -> bool:
+        return bool(_call_sessions(self.coordinator))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        sessions = _call_sessions(self.coordinator)
+        return {"sessions": sessions, "session_count": len(sessions)}

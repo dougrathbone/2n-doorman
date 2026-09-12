@@ -163,3 +163,91 @@ async def test_event_entity_skips_unmapped_types(
     _fire(hass, setup_doorman.entry_id, "KeyPressed", {"key": "5"})
     await hass.async_block_till_done()
     assert hass.states.get("event.doorman_1012345678_access").state == previous
+
+
+@pytest.mark.asyncio
+async def test_call_ringing_sensor_follows_call_state(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """CallStateChanged ringing/terminated drives call_ringing and call_active."""
+    ringing = hass.states.get("binary_sensor.doorman_1012345678_call_ringing")
+    active = hass.states.get("binary_sensor.doorman_1012345678_call_active")
+    assert ringing is not None and ringing.state == "off"
+    assert active is not None and active.state == "off"
+
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
+    coordinator._fire_new_access_events(
+        [{
+            "event": "CallStateChanged",
+            "utcTime": 1743242400,
+            "params": {
+                "session": 7,
+                "state": "ringing",
+                "direction": "incoming",
+                "peer": "sip:visitor@x",
+            },
+        }]
+    )
+    coordinator.async_set_updated_data(dict(coordinator.data))
+    await hass.async_block_till_done()
+
+    ringing = hass.states.get("binary_sensor.doorman_1012345678_call_ringing")
+    active = hass.states.get("binary_sensor.doorman_1012345678_call_active")
+    assert ringing.state == "on"
+    assert active.state == "on"
+    assert ringing.attributes.get("session") == 7
+    assert ringing.attributes.get("direction") == "incoming"
+    assert ringing.attributes.get("peer") == "sip:visitor@x"
+
+    coordinator._fire_new_access_events(
+        [{
+            "event": "CallStateChanged",
+            "utcTime": 1743242460,
+            "params": {"session": 7, "state": "terminated"},
+        }]
+    )
+    coordinator.async_set_updated_data(dict(coordinator.data))
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_ringing").state == "off"
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_active").state == "off"
+
+
+@pytest.mark.asyncio
+async def test_call_connected_is_active_but_not_ringing(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+) -> None:
+    """Connected call keeps call_active on and call_ringing off."""
+    coordinator = hass.data[DOMAIN][setup_doorman.entry_id]
+    coordinator._fire_new_access_events(
+        [{
+            "event": "CallStateChanged",
+            "utcTime": 1743242400,
+            "params": {"session": 3, "state": "connected", "direction": "incoming"},
+        }]
+    )
+    coordinator.async_set_updated_data(dict(coordinator.data))
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_ringing").state == "off"
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_active").state == "on"
+
+
+@pytest.mark.asyncio
+async def test_no_call_sensors_when_call_status_unavailable(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Firmware without /api/call/status does not create call binary sensors."""
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.get_call_status.side_effect = DoormanApiError("code 2: invalid path")
+    doorman_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_ringing") is None
+    assert hass.states.get("binary_sensor.doorman_1012345678_call_active") is None

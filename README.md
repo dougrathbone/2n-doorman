@@ -23,6 +23,7 @@ A Home Assistant integration for managing users and access credentials on **2N I
 - **Doorbell notifications** — optional notify targets when a configured quick-dial key is pressed
 - **Camera** — still-image camera entity (JPEG snapshots from the intercom)
 - **Door / I/O / SIP sensors** — door contact, hardware inputs, and SIP registration health
+- **Call ringing / active sensors** — `binary_sensor.doorman_*_call_ringing` and `_call_active` for conditional dashboard cards
 - **Device restart** — button entity to reboot the intercom
 - **Multi-device support** — manage multiple 2N intercoms from a single HA instance
 - **Multiple access points** — grant access to any access point, not just the first one
@@ -195,6 +196,48 @@ action:
 ```
 
 Available `event_type` values include `UserAuthenticated`, `UserRejected`, `CodeEntered`, `CardEntered`, `FingerEntered`, `MobKeyEntered`, and the synthetic `DoorbellPressed` (when a matching doorbell key is configured).
+
+### Dashboard card — answer while ringing
+
+When the visitor starts a call, `binary_sensor.doorman_<serial>_call_ringing` turns on. Use a conditional card so Answer / Unlock only appear while ringing (replace the slug and optional `user_uuid`):
+
+```yaml
+type: conditional
+conditions:
+  - condition: state
+    entity: binary_sensor.doorman_YOURSLUG_call_ringing
+    state: "on"
+card:
+  type: vertical-stack
+  cards:
+    - type: picture-entity
+      entity: camera.doorman_YOURSLUG_camera
+      show_state: false
+    - type: horizontal-stack
+      cards:
+        - type: button
+          name: Answer
+          icon: mdi:phone
+          tap_action:
+            action: call-service
+            service: doorman.answer_call
+        - type: button
+          name: Unlock
+          icon: mdi:door-open
+          tap_action:
+            action: call-service
+            service: doorman.grant_access
+            data:
+              access_point_id: 1
+        - type: button
+          name: Hang up
+          icon: mdi:phone-hangup
+          tap_action:
+            action: call-service
+            service: doorman.hangup_calls
+```
+
+`doorman.answer_call` answers on the intercom (not softphone audio in the browser). The camera entity is still JPEG only.
 
 ---
 

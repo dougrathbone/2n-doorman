@@ -123,6 +123,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.io_ports: list[dict[str, Any]] = []
         self.phone_status_available: bool = False
         self.system_status_available: bool = False
+        self.call_status_available: bool = False
         self.has_write_permission: bool = True
         # Durable access-log history for this entry — survives restarts and
         # reloads, unlike the in-memory buffer it replaces.
@@ -151,6 +152,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Phone/system health probes — polled each cycle only when available.
         self.phone_status_available: bool = await self._probe(self.client.get_phone_status)
         self.system_status_available: bool = await self._probe(self.client.get_system_status)
+        self.call_status_available: bool = await self._probe(self.client.get_call_status)
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "
@@ -459,6 +461,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 optional["phone_accounts"] = self.client.get_phone_status()
             if self.system_status_available:
                 optional["system_status"] = self.client.get_system_status()
+            if self.call_status_available:
+                optional["call_sessions"] = self.client.get_call_status()
             users, switches, *opt_results = await asyncio.gather(
                 self.client.query_users(),
                 self.client.get_switch_status(),
@@ -487,6 +491,7 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "io": opt_data.get("io", []),
             "phone_accounts": opt_data.get("phone_accounts", []),
             "system_status": opt_data.get("system_status", {}),
+            "call_sessions": opt_data.get("call_sessions", []),
             "log_events": self.log_store.events,
             "has_write_permission": self.has_write_permission,
             "last_access": self._last_access,
@@ -604,3 +609,37 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if p.get("port") == port:
                     p["state"] = int(bool(params.get("state")))
                     break
+        elif event_type == "CallStateChanged":
+            self._apply_call_state(params)
+
+    def _apply_call_state(self, params: dict[str, Any]) -> None:
+        """Upsert or drop a call session from coordinator data.
+
+        ``CallStateChanged`` is the live path; the next poll of
+        ``/api/call/status`` reconciles if an event was missed.
+        """
+        if self.data is None:
+            return
+        session_id = params.get("session")
+        if session_id is None:
+            return
+        sessions = list(self.data.get("call_sessions") or [])
+        state = params.get("state")
+        if state in ("terminated", "destroyed", "finished"):
+            sessions = [s for s in sessions if s.get("session") != session_id]
+        else:
+            updated = {
+                "session": session_id,
+                "state": state,
+                "direction": params.get("direction"),
+                "peer": params.get("peer"),
+            }
+            replaced = False
+            for i, existing in enumerate(sessions):
+                if existing.get("session") == session_id:
+                    sessions[i] = {**existing, **{k: v for k, v in updated.items() if v is not None}}
+                    replaced = True
+                    break
+            if not replaced:
+                sessions.append(updated)
+        self.data["call_sessions"] = sessions
