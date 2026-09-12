@@ -609,6 +609,11 @@ def ws_get_notification_settings(
         for s in hass.services.async_services().get("notify", {})
         if s not in ("notify", "send_message")
     )
+    settings = store.get_notification_settings(entry.entry_id)
+    registered = set(notify_services)
+    stale_targets = [
+        t for t in (settings.get("doorbell_targets") or []) if t not in registered
+    ]
     users = [
         {"uuid": u.get("uuid"), "name": u.get("name") or u.get("uuid") or ""}
         for u in (coordinator.data or {}).get("users", [])
@@ -621,9 +626,10 @@ def ws_get_notification_settings(
             "device_name": entry.title,
             # The DoormanStore keys are the wire keys (see const.py), and the
             # store fills in defaults, so the stored dict is the payload.
-            "settings": store.get_notification_settings(entry.entry_id),
+            "settings": settings,
             "ios_sound_catalog": catalog_for_ws(),
             "notify_services": notify_services,
+            "stale_targets": stale_targets,
             "users": users,
             "access_points": coordinator.access_points or [],
             "call_status_available": bool(coordinator.call_status_available),
@@ -695,6 +701,43 @@ async def ws_set_notification_settings(
             return
         settings["doorbell_targets"] = validated
 
+    unlock_on = settings.get("doorbell_unlock_action")
+    if unlock_on is None:
+        unlock_on = store.get_notification_settings(
+            coordinator.config_entry.entry_id
+        ).get("doorbell_unlock_action")
+    if unlock_on:
+        uuid = (settings.get("doorbell_unlock_user_uuid")
+                if "doorbell_unlock_user_uuid" in settings
+                else store.get_notification_settings(
+                    coordinator.config_entry.entry_id
+                ).get("doorbell_unlock_user_uuid", ""))
+        uuid = (uuid or "").strip()
+        known_uuids = {
+            u.get("uuid")
+            for u in (coordinator.data or {}).get("users", [])
+            if u.get("uuid")
+        }
+        if uuid and known_uuids and uuid not in known_uuids:
+            connection.send_error(
+                msg["id"],
+                "invalid_unlock_user",
+                f"Unlock user {uuid!r} is not in the 2N directory",
+            )
+            return
+
+        access_points = coordinator.access_points or []
+        if "doorbell_unlock_access_point_id" in settings and access_points:
+            ap_id = settings["doorbell_unlock_access_point_id"]
+            known_aps = {int(p["id"]) for p in access_points if "id" in p}
+            if known_aps and int(ap_id) not in known_aps:
+                connection.send_error(
+                    msg["id"],
+                    "invalid_unlock_ap",
+                    f"Access point {ap_id} is not configured on this device",
+                )
+                return
+
     settings = await store.set_notification_settings(
         coordinator.config_entry.entry_id, settings
     )
@@ -711,6 +754,10 @@ async def ws_set_notification_settings(
         vol.Optional("android_channel", default=""): _PRESENTATION,
         vol.Optional("entry_id"): str,
         vol.Optional("doorbell_preview", default=False): bool,
+        vol.Optional("doorbell_attach_camera"): bool,
+        vol.Optional("doorbell_unlock_action"): bool,
+        vol.Optional("doorbell_answer_action"): bool,
+        vol.Optional("doorbell_time_sensitive"): bool,
     }
 )
 @websocket_api.async_response
@@ -763,15 +810,18 @@ async def ws_send_test_notification(
             )
             return
         entry = coordinator.config_entry
-        settings = store.get_notification_settings(entry.entry_id)
-        # Prefer the sound/channel currently shown in the form (may be unsaved).
-        if msg.get("ios_sound") is not None:
-            settings = {**settings, "doorbell_sound_ios": msg.get("ios_sound") or ""}
-        if msg.get("android_channel") is not None:
-            settings = {
-                **settings,
-                "doorbell_channel_android": msg.get("android_channel") or "",
-            }
+        settings = dict(store.get_notification_settings(entry.entry_id))
+        # Prefer values currently shown in the form (may be unsaved).
+        settings["doorbell_sound_ios"] = msg.get("ios_sound") or ""
+        settings["doorbell_channel_android"] = msg.get("android_channel") or ""
+        for key in (
+            "doorbell_attach_camera",
+            "doorbell_unlock_action",
+            "doorbell_answer_action",
+            "doorbell_time_sensitive",
+        ):
+            if key in msg:
+                settings[key] = msg[key]
         data = build_test_doorbell_data(hass, entry, settings)
         message = f"{entry.title}: doorbell preview (buttons are inert)"
     else:

@@ -30,6 +30,7 @@ class DoormanNotificationsTab extends HTMLElement {
     this._notifyServices = [];
     this._users = [];
     this._accessPoints = [];
+    this._staleTargets = [];
     this._callStatusAvailable = false;
     this._cameraEntityId = null;
     // Dirty-tracking so the "Save" button reflects unsaved edits without
@@ -66,6 +67,7 @@ class DoormanNotificationsTab extends HTMLElement {
       this._notifyServices = res.notify_services || [];
       this._users = res.users || [];
       this._accessPoints = res.access_points || [];
+      this._staleTargets = res.stale_targets || [];
       this._callStatusAvailable = !!res.call_status_available;
       this._cameraEntityId = res.camera_entity_id || null;
       this._dirty = false;
@@ -312,13 +314,28 @@ class DoormanNotificationsTab extends HTMLElement {
 
           <div class="row">
             <label>Send doorbell notifications to</label>
+            ${this._staleTargets.length ? `
+              <p class="ns-help" style="color:var(--warning-color, #f57f17)">
+                ${this._staleTargets.length} unregistered target(s) are still
+                stored and will be removed when you Save:
+                ${this._staleTargets.map(t => esc(t)).join(", ")}.
+              </p>
+            ` : ""}
             <div class="targets" id="db-targets">
-              ${this._notifyServices.length === 0 ? `
+              ${this._notifyServices.length === 0 && this._staleTargets.length === 0 ? `
                 <span class="empty">No notify.* services are registered. Install the Home Assistant Companion app on a phone to add one.</span>
-              ` : this._notifyServices.map(svcName => {
-                const checked = (s.doorbell_targets || []).includes(svcName) ? " checked" : "";
-                return `<label><input type="checkbox" value="${esc(svcName)}"${checked}> ${esc(svcName)}</label>`;
-              }).join("")}
+              ` : `
+                ${this._notifyServices.map(svcName => {
+                  const checked = (s.doorbell_targets || []).includes(svcName) ? " checked" : "";
+                  return `<label><input type="checkbox" value="${esc(svcName)}"${checked}> ${esc(svcName)}</label>`;
+                }).join("")}
+                ${this._staleTargets.map(svcName => `
+                  <label style="opacity:0.7" title="Service is no longer registered">
+                    <input type="checkbox" value="${esc(svcName)}" checked disabled>
+                    ${esc(svcName)} (unregistered)
+                  </label>
+                `).join("")}
+              `}
             </div>
           </div>
 
@@ -389,11 +406,17 @@ class DoormanNotificationsTab extends HTMLElement {
                 <label for="db-unlock-uuid">Attribute unlock to 2N user (access log)</label>
                 <select class="ns-select" id="db-unlock-uuid">
                   <option value="">(none — anonymous in access log)</option>
-                  ${this._users.map(u => {
-                    const selected = (s.doorbell_unlock_user_uuid || "") === u.uuid
-                      ? " selected" : "";
-                    return `<option value="${esc(u.uuid)}"${selected}>${esc(u.name || u.uuid)}</option>`;
-                  }).join("")}
+                  ${(() => {
+                    const current = s.doorbell_unlock_user_uuid || "";
+                    const known = new Set(this._users.map(u => u.uuid));
+                    const orphan = current && !known.has(current)
+                      ? `<option value="${esc(current)}" selected>(removed user) ${esc(current)}</option>`
+                      : "";
+                    return orphan + this._users.map(u => {
+                      const selected = current === u.uuid ? " selected" : "";
+                      return `<option value="${esc(u.uuid)}"${selected}>${esc(u.name || u.uuid)}</option>`;
+                    }).join("");
+                  })()}
                 </select>
               </div>
               <div class="row">
@@ -661,6 +684,19 @@ class DoormanNotificationsTab extends HTMLElement {
     return "";
   }
 
+  _readDoorbellCompanionOverrides() {
+    return {
+      doorbell_attach_camera:
+        !!this.shadowRoot.getElementById("db-attach-camera")?.checked,
+      doorbell_unlock_action:
+        !!this.shadowRoot.getElementById("db-unlock")?.checked,
+      doorbell_answer_action:
+        !!this.shadowRoot.getElementById("db-answer")?.checked,
+      doorbell_time_sensitive:
+        !!this.shadowRoot.getElementById("db-time-sensitive")?.checked,
+    };
+  }
+
   async _sendPreview(flow, target, doorbellPreview = false) {
     const soundPrefix = flow === "doorbell" ? "db" : "ac";
     const ios = this._readSoundValue(soundPrefix);
@@ -679,6 +715,7 @@ class DoormanNotificationsTab extends HTMLElement {
       if (doorbellPreview) {
         payload.doorbell_preview = true;
         if (this._entryId) payload.entry_id = this._entryId;
+        Object.assign(payload, this._readDoorbellCompanionOverrides());
       }
       await this._hass.callWS(payload);
       this._showToast(
@@ -712,6 +749,21 @@ class DoormanNotificationsTab extends HTMLElement {
         this._showToast("Access point ID must be a positive integer", true);
         return;
       }
+      const unlockUuid = unlockOn
+        ? (this.shadowRoot.getElementById("db-unlock-uuid")?.value.trim() ?? "")
+        : (this._settings?.doorbell_unlock_user_uuid || "");
+      if (
+        unlockOn
+        && unlockUuid
+        && this._users.length > 0
+        && !this._users.some(u => u.uuid === unlockUuid)
+      ) {
+        this._showToast(
+          "Unlock user is no longer in the directory — pick another or none",
+          true,
+        );
+        return;
+      }
       const settings = {
         // Sent verbatim: "" is a meaningful value (no doorbell button on this
         // device), so don't silently substitute the default for an empty field.
@@ -725,7 +777,7 @@ class DoormanNotificationsTab extends HTMLElement {
           !!this.shadowRoot.getElementById("db-answer")?.checked,
         doorbell_unlock_action: unlockOn,
         doorbell_unlock_user_uuid: unlockOn
-          ? (this.shadowRoot.getElementById("db-unlock-uuid")?.value.trim() ?? "")
+          ? unlockUuid
           : (this._settings?.doorbell_unlock_user_uuid || ""),
         doorbell_unlock_access_point_id: unlockOn
           ? unlockAp
@@ -737,6 +789,7 @@ class DoormanNotificationsTab extends HTMLElement {
         access_sound_ios: this._readSoundValue("ac"),
         access_channel_android: this._readChannelValue("ac"),
       };
+
       const res = await ws(
         this._hass, "doorman/set_notification_settings",
         { settings }, this._entryId,
@@ -747,6 +800,15 @@ class DoormanNotificationsTab extends HTMLElement {
       // edits and (per the reported bug) revert selects if the response
       // happened to be missing a field.
       this._settings = res.settings || settings;
+      if (this._staleTargets.length) {
+        this._staleTargets = [];
+        this.shadowRoot.querySelectorAll(
+          "#db-targets input[disabled]"
+        ).forEach(el => el.closest("label")?.remove());
+        this.shadowRoot.querySelectorAll(".ns-help").forEach(el => {
+          if (el.textContent?.includes("unregistered target")) el.remove();
+        });
+      }
       // Only the edits we actually sent are clean. If the user changed
       // something while the request was in flight, stay dirty — otherwise the
       // bar would claim "All changes saved" for a value that was never

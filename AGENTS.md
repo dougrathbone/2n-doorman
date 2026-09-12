@@ -229,7 +229,9 @@ targets when a `UserAuthenticated` event fires.
 ### Notification settings live in DoormanStore, not entry.options
 Per-entry notification settings (access/doorbell sounds and channels,
 `doorbell_key_code`, `doorbell_targets`, plus Companion doorbell enrichments
-`doorbell_attach_camera` / unlock+answer actions / `doorbell_notify_on_call_ringing`)
+`doorbell_attach_camera` / unlock+answer actions /
+`doorbell_unlock_user_uuid` / `doorbell_unlock_access_point_id` /
+`doorbell_notify_on_call_ringing` / `doorbell_time_sensitive`)
 are persisted in `DoormanStore` under `notification_settings`, keyed by config
 `entry_id`. Two reasons, both load-bearing:
 

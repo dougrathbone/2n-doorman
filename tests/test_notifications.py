@@ -876,3 +876,87 @@ async def test_companion_unlock_failure_notifies_targets(
         and c.data.get("data", {}).get("tag") == f"doorman_doorbell_{entry.entry_id}"
         for c in calls
     )
+
+
+async def test_companion_answer_failure_notifies_targets(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    coordinator.client.answer_ringing_call = AsyncMock(
+        side_effect=RuntimeError("busy")
+    )
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ANSWER_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
+    )
+    await hass.async_block_till_done()
+
+    assert any("Answer failed" in (c.data.get("message") or "") for c in calls)
+
+
+async def test_companion_answer_no_ringing_notifies_targets(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    coordinator.client.answer_ringing_call = AsyncMock(return_value=False)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ANSWER_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
+    )
+    await hass.async_block_till_done()
+
+    assert any("No ringing" in (c.data.get("message") or "") for c in calls)
+
+
+async def test_companion_answer_success_clears_notification(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ANSWER_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
+    )
+    await hass.async_block_till_done()
+
+    coordinator.client.answer_ringing_call.assert_awaited_once()
+    assert any(
+        c.data.get("message") == "clear_notification"
+        and c.data.get("data", {}).get("tag") == f"doorman_doorbell_{entry.entry_id}"
+        for c in calls
+    )

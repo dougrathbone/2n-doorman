@@ -613,8 +613,8 @@ async def test_ws_set_notification_settings_round_trips_via_the_store(
         "doorbell_targets": ["notify.mobile_app"],
         "doorbell_attach_camera": False,
         "doorbell_unlock_action": True,
-        "doorbell_unlock_user_uuid": "uuid-visitor",
-        "doorbell_unlock_access_point_id": 2,
+        "doorbell_unlock_user_uuid": "uuid-jane",
+        "doorbell_unlock_access_point_id": 1,
         "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": True,
         "doorbell_time_sensitive": True,
@@ -886,6 +886,96 @@ async def test_ws_send_test_notification_doorbell_preview_is_inert(
     actions = calls[0].data["data"]["actions"]
     assert actions[0]["action"] == "DOORMAN_PREVIEW_NOOP"
     assert "Unlock" in actions[0]["title"]
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_preview_uses_form_overrides(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Unsaved Companion toggles on Preview override stored settings."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_settings(
+        setup_doorman.entry_id,
+        {
+            "doorbell_attach_camera": False,
+            "doorbell_unlock_action": False,
+            "doorbell_answer_action": False,
+            "doorbell_time_sensitive": False,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/send_test_notification",
+            "target": "notify.mobile_app",
+            "title": "ignored",
+            "message": "ignored",
+            "doorbell_preview": True,
+            "doorbell_unlock_action": True,
+            "doorbell_time_sensitive": True,
+        }
+    )
+    res = await client.receive_json()
+
+    assert res["success"], res
+    data = calls[0].data["data"]
+    assert data["actions"][0]["action"] == "DOORMAN_PREVIEW_NOOP"
+    assert data["push"]["interruption-level"] == "time-sensitive"
+    assert data["priority"] == "high"
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_get_notification_settings_reports_stale_targets(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Stored notify targets that are no longer registered are flagged."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_settings(
+        setup_doorman.entry_id,
+        {"doorbell_targets": ["notify.gone_phone", "notify.mobile_app"]},
+    )
+    hass.services.async_register("notify", "mobile_app", lambda call: None)
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "doorman/get_notification_settings"})
+    res = await client.receive_json()
+
+    assert res["success"], res
+    assert res["result"]["stale_targets"] == ["notify.gone_phone"]
+    assert "notify.mobile_app" in res["result"]["notify_services"]
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_set_notification_settings_rejects_unknown_unlock_user(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Unlock user UUID must exist in the live directory when users are known."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/set_notification_settings",
+            "settings": {
+                "doorbell_unlock_action": True,
+                "doorbell_unlock_user_uuid": "not-a-real-user",
+            },
+        }
+    )
+    res = await client.receive_json()
+
+    assert not res["success"]
+    assert res["error"]["code"] == "invalid_unlock_user"
 
 
 @pytest.mark.real_http
