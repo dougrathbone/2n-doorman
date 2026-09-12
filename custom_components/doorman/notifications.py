@@ -36,6 +36,7 @@ from .const import (
     CONF_DOORBELL_NOTIFY_ON_CALL_RINGING,
     CONF_DOORBELL_SOUND_IOS,
     CONF_DOORBELL_TARGETS,
+    CONF_DOORBELL_TIME_SENSITIVE,
     CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID,
     CONF_DOORBELL_UNLOCK_ACTION,
     CONF_DOORBELL_UNLOCK_USER_UUID,
@@ -151,6 +152,7 @@ def _build_data(
     android_channel: str = "",
     camera_entity_id: str | None = None,
     actions: list[dict[str, Any]] | None = None,
+    time_sensitive: bool = False,
 ) -> dict[str, Any]:
     """Build the ``notify.data`` payload with per-platform presentation.
 
@@ -159,8 +161,16 @@ def _build_data(
     overwrite that with an empty override.
     """
     data: dict[str, Any] = {"tag": tag}
+    push: dict[str, Any] = {}
     if ios_sound:
-        data["push"] = {"sound": ios_sound}
+        push["sound"] = ios_sound
+    if time_sensitive:
+        # iOS time-sensitive; Android high-priority delivery.
+        push["interruption-level"] = "time-sensitive"
+        data["ttl"] = 0
+        data["priority"] = "high"
+    if push:
+        data["push"] = push
     if android_channel:
         data["channel"] = android_channel
     if camera_entity_id:
@@ -173,6 +183,47 @@ def _build_data(
         # Android auto-dismiss; pairs with the issued-at check on Unlock.
         data["timeout"] = ACTION_TTL_SECONDS
     return data
+
+
+def build_test_doorbell_data(
+    hass: HomeAssistant, entry: ConfigEntry, settings: dict
+) -> dict[str, Any]:
+    """Build a Preview payload mirroring live doorbell extras.
+
+    Action buttons use a no-op action id so tapping them cannot unlock or
+    answer — Preview is for layout/sound/snapshot verification only.
+    """
+    camera_entity_id = None
+    if settings.get(CONF_DOORBELL_ATTACH_CAMERA, True):
+        camera_entity_id = _camera_entity_id(hass, entry)
+
+    actions: list[dict[str, Any]] = []
+    if settings.get(CONF_DOORBELL_UNLOCK_ACTION):
+        actions.append(
+            {
+                "action": "DOORMAN_PREVIEW_NOOP",
+                "title": "Unlock (preview)",
+                "authenticationRequired": True,
+                "destructive": True,
+            }
+        )
+    if settings.get(CONF_DOORBELL_ANSWER_ACTION):
+        coordinator = _coordinator_for(hass, entry.entry_id)
+        if coordinator is not None and getattr(
+            coordinator, "call_status_available", False
+        ):
+            actions.append(
+                {"action": "DOORMAN_PREVIEW_NOOP", "title": "Answer (preview)"}
+            )
+
+    return _build_data(
+        "doorman_test",
+        ios_sound=settings.get(CONF_DOORBELL_SOUND_IOS, "") or "",
+        android_channel=settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or "",
+        camera_entity_id=camera_entity_id,
+        actions=actions or None,
+        time_sensitive=bool(settings.get(CONF_DOORBELL_TIME_SENSITIVE)),
+    )
 
 
 def _doorbell_actions(
@@ -350,6 +401,7 @@ def _handle_doorbell_notify(
                 hass, entry, settings, include_answer=include_answer
             )
             or None,
+            time_sensitive=bool(settings.get(CONF_DOORBELL_TIME_SENSITIVE)),
         ),
     )
     if kind == "doorbell":
@@ -403,12 +455,18 @@ async def _async_unlock(
         _LOGGER.warning(
             "Doorman Unlock: invalid access point %r on %s", raw_ap, entry.title
         )
+        _notify_action_failure(
+            hass, entry, settings, f"Unlock failed on {entry.title}: bad access point"
+        )
         return
     if access_point_id < 1:
         _LOGGER.warning(
             "Doorman Unlock: access point %s out of range on %s",
             access_point_id,
             entry.title,
+        )
+        _notify_action_failure(
+            hass, entry, settings, f"Unlock failed on {entry.title}: bad access point"
         )
         return
 
@@ -417,6 +475,9 @@ async def _async_unlock(
         await coordinator.client.grant_access(access_point_id, user_uuid)
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("Doorman Unlock failed on %s: %s", entry.title, err)
+        _notify_action_failure(
+            hass, entry, settings, f"Unlock failed on {entry.title}"
+        )
         return
     _LOGGER.info(
         "Doorman Unlock via notification on %s (access point %s, ha_user=%s)",
@@ -445,6 +506,9 @@ async def _async_answer(
         answered = await coordinator.client.answer_ringing_call()
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("Doorman Answer failed on %s: %s", entry.title, err)
+        _notify_action_failure(
+            hass, entry, settings, f"Answer failed on {entry.title}"
+        )
         return
     if answered:
         _LOGGER.info(
@@ -457,6 +521,28 @@ async def _async_answer(
         _LOGGER.info(
             "Doorman Answer: no ringing incoming call on %s", entry.title
         )
+        _notify_action_failure(
+            hass,
+            entry,
+            settings,
+            f"No ringing incoming call on {entry.title}",
+        )
+
+
+def _notify_action_failure(
+    hass: HomeAssistant, entry: ConfigEntry, settings: dict, message: str
+) -> None:
+    """Replace the actionable doorbell push with a short failure notice."""
+    targets = settings.get(CONF_DOORBELL_TARGETS) or []
+    if not targets:
+        return
+    _dispatch(
+        hass,
+        targets,
+        "Doorman",
+        message,
+        data={"tag": _doorbell_tag(entry.entry_id)},
+    )
 
 
 def _clear_doorbell_notifications(

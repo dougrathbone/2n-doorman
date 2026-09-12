@@ -28,6 +28,10 @@ class DoormanNotificationsTab extends HTMLElement {
     this._settings = null;
     this._catalog = [];
     this._notifyServices = [];
+    this._users = [];
+    this._accessPoints = [];
+    this._callStatusAvailable = false;
+    this._cameraEntityId = null;
     // Dirty-tracking so the "Save" button reflects unsaved edits without
     // demanding the whole form on every keystroke. _dirtyGen is bumped by
     // every edit; _save() captures it at send time and only clears the dirty
@@ -60,6 +64,10 @@ class DoormanNotificationsTab extends HTMLElement {
       this._settings = res.settings || {};
       this._catalog = res.ios_sound_catalog || [];
       this._notifyServices = res.notify_services || [];
+      this._users = res.users || [];
+      this._accessPoints = res.access_points || [];
+      this._callStatusAvailable = !!res.call_status_available;
+      this._cameraEntityId = res.camera_entity_id || null;
       this._dirty = false;
       this._dirtyGen = 0;
     } catch (e) {
@@ -328,8 +336,9 @@ class DoormanNotificationsTab extends HTMLElement {
             <label>Mobile notification options (Companion app)</label>
             <p class="ns-help">
               Snapshot is fetched when the phone displays the notification
-              (not when the doorbell rings). Unlock and Answer only appear on
-              real doorbell pushes — Preview below tests sound/channel only.
+              (not when the doorbell rings). Use Preview with extras to
+              verify snapshot and button layout — preview Unlock/Answer
+              buttons are inert and will not open the door.
             </p>
             <div class="checks">
               <label>
@@ -338,18 +347,29 @@ class DoormanNotificationsTab extends HTMLElement {
                 Attach camera snapshot (JPEG still)
               </label>
               <p class="ns-help" style="margin-left:24px">
-                Requires the Doorman camera entity on this device. Skipped
-                silently when no camera is available.
+                ${this._cameraEntityId
+                  ? `Using <code>${esc(this._cameraEntityId)}</code>.`
+                  : "No Doorman camera entity is available yet — notifications will send without an image until one appears."}
+              </p>
+              <label>
+                <input type="checkbox" id="db-time-sensitive"
+                  ${s.doorbell_time_sensitive ? " checked" : ""}>
+                Time-sensitive / high-priority delivery
+              </label>
+              <p class="ns-help" style="margin-left:24px">
+                iOS interruption-level time-sensitive and Android high priority.
+                Does not bypass Focus/Do Not Disturb as a critical alert would.
               </p>
               <label>
                 <input type="checkbox" id="db-answer"
-                  ${s.doorbell_answer_action ? " checked" : ""}>
+                  ${s.doorbell_answer_action ? " checked" : ""}
+                  ${this._callStatusAvailable ? "" : " disabled"}>
                 Show Answer button
               </label>
               <p class="ns-help" style="margin-left:24px">
                 Answers on the 2N intercom (door speaker) — not a softphone
                 call to your phone. Only offered on incoming Call ringing
-                notifies when call status is available.
+                notifies${this._callStatusAvailable ? "" : " (call status unavailable on this device)"}.
               </p>
               <label>
                 <input type="checkbox" id="db-unlock"
@@ -366,15 +386,32 @@ class DoormanNotificationsTab extends HTMLElement {
                 enable for phones you trust.
               </p>
               <div class="row">
-                <label for="db-unlock-uuid">2N user UUID (optional, for the access log)</label>
-                <input type="text" id="db-unlock-uuid"
-                  placeholder="Directory UUID from the Users tab"
-                  value="${esc(s.doorbell_unlock_user_uuid || "")}" />
+                <label for="db-unlock-uuid">Attribute unlock to 2N user (access log)</label>
+                <select class="ns-select" id="db-unlock-uuid">
+                  <option value="">(none — anonymous in access log)</option>
+                  ${this._users.map(u => {
+                    const selected = (s.doorbell_unlock_user_uuid || "") === u.uuid
+                      ? " selected" : "";
+                    return `<option value="${esc(u.uuid)}"${selected}>${esc(u.name || u.uuid)}</option>`;
+                  }).join("")}
+                </select>
               </div>
               <div class="row">
-                <label for="db-unlock-ap">Access point ID</label>
-                <input type="number" id="db-unlock-ap" min="1" step="1"
-                  value="${esc(String(s.doorbell_unlock_access_point_id ?? 1))}" />
+                <label for="db-unlock-ap">Access point</label>
+                ${this._accessPoints.length > 0 ? `
+                  <select class="ns-select" id="db-unlock-ap">
+                    ${this._accessPoints.map(ap => {
+                      const id = Number(ap.id);
+                      const selected = Number(s.doorbell_unlock_access_point_id ?? 1) === id
+                        ? " selected" : "";
+                      const label = ap.name || `Access point ${ap.id}`;
+                      return `<option value="${esc(String(ap.id))}"${selected}>${esc(label)}</option>`;
+                    }).join("")}
+                  </select>
+                ` : `
+                  <input type="number" id="db-unlock-ap" min="1" step="1"
+                    value="${esc(String(s.doorbell_unlock_access_point_id ?? 1))}" />
+                `}
               </div>
             </div>
             <div class="checks" style="margin-top:8px">
@@ -396,7 +433,7 @@ class DoormanNotificationsTab extends HTMLElement {
             <div class="preview-row">
               <button class="btn btn-outlined" data-preview="doorbell">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
-                Preview sound
+                Preview
               </button>
             </div>
             <div id="db-preview"></div>
@@ -503,7 +540,9 @@ class DoormanNotificationsTab extends HTMLElement {
         if (!on) {
           const uuid = root.getElementById("db-unlock-uuid");
           const ap = root.getElementById("db-unlock-ap");
-          if (uuid) uuid.value = this._settings?.doorbell_unlock_user_uuid || "";
+          if (uuid) {
+            uuid.value = this._settings?.doorbell_unlock_user_uuid || "";
+          }
           if (ap) {
             ap.value = String(this._settings?.doorbell_unlock_access_point_id ?? 1);
           }
@@ -559,12 +598,19 @@ class DoormanNotificationsTab extends HTMLElement {
 
     const targets = this._targetsForPreview(flow);
     const defaultTarget = targets[0] || "";
+    const extrasToggle = flow === "doorbell" ? `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;width:100%">
+        <input type="checkbox" id="preview-extras" checked>
+        Include snapshot / action layout (buttons are inert)
+      </label>
+    ` : "";
     container.innerHTML = `
       <div class="preview-popover">
         <select id="preview-target">
           ${targets.length === 0 ? `<option value="">(no notify targets available)</option>` :
             targets.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
         </select>
+        ${extrasToggle}
         <button class="btn btn-primary" id="preview-send" ${targets.length === 0 ? "disabled" : ""}>Send</button>
         <button class="btn btn-outlined" id="preview-cancel">Cancel</button>
       </div>
@@ -576,9 +622,11 @@ class DoormanNotificationsTab extends HTMLElement {
     container.querySelector("#preview-send").addEventListener("click", async () => {
       const target = container.querySelector("#preview-target").value;
       if (!target) return;
+      const extras = flow === "doorbell"
+        && !!container.querySelector("#preview-extras")?.checked;
       // Stay open after Send so the user can hear the result and quickly
       // pick a different target / try again. Only Cancel closes it.
-      await this._sendPreview(flow, target);
+      await this._sendPreview(flow, target, extras);
     });
   }
 
@@ -613,7 +661,7 @@ class DoormanNotificationsTab extends HTMLElement {
     return "";
   }
 
-  async _sendPreview(flow, target) {
+  async _sendPreview(flow, target, doorbellPreview = false) {
     const soundPrefix = flow === "doorbell" ? "db" : "ac";
     const ios = this._readSoundValue(soundPrefix);
     const channel = this._readChannelValue(soundPrefix);
@@ -622,13 +670,22 @@ class DoormanNotificationsTab extends HTMLElement {
       ? `${this._deviceName || "Test"}: someone rang the doorbell`
       : `Test — someone opened ${this._deviceName || "the door"}`;
     try {
-      await this._hass.callWS({
+      const payload = {
         type: "doorman/send_test_notification",
         target, title, message,
         ios_sound: ios,
         android_channel: channel,
-      });
-      this._showToast("Test notification sent");
+      };
+      if (doorbellPreview) {
+        payload.doorbell_preview = true;
+        if (this._entryId) payload.entry_id = this._entryId;
+      }
+      await this._hass.callWS(payload);
+      this._showToast(
+        doorbellPreview
+          ? "Test notification sent (preview buttons are inert)"
+          : "Test notification sent",
+      );
     } catch (e) {
       this._showToast(`Preview failed: ${e.message || e}`, true);
     }
@@ -675,6 +732,8 @@ class DoormanNotificationsTab extends HTMLElement {
           : (this._settings?.doorbell_unlock_access_point_id ?? 1),
         doorbell_notify_on_call_ringing:
           !!this.shadowRoot.getElementById("db-call-ringing")?.checked,
+        doorbell_time_sensitive:
+          !!this.shadowRoot.getElementById("db-time-sensitive")?.checked,
         access_sound_ios: this._readSoundValue("ac"),
         access_channel_android: this._readChannelValue("ac"),
       };

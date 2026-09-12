@@ -32,6 +32,7 @@ CONF_DOORBELL_UNLOCK_USER_UUID = "doorbell_unlock_user_uuid"
 CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID = "doorbell_unlock_access_point_id"
 CONF_DOORBELL_ANSWER_ACTION = "doorbell_answer_action"
 CONF_DOORBELL_NOTIFY_ON_CALL_RINGING = "doorbell_notify_on_call_ringing"
+CONF_DOORBELL_TIME_SENSITIVE = "doorbell_time_sensitive"
 
 # Companion notification action prefixes. The entry_id (and for Unlock a
 # issued-at epoch) is appended after `|` so multi-device installs route to

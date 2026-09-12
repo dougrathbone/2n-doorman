@@ -131,7 +131,7 @@ The Doorman panel has four tabs:
 |-----|-------------|
 | **Users** | View all directory entries; add, edit, or delete users and their credentials |
 | **Access Log** | Browse recent access events. The log is stored by Home Assistant, so it survives restarts, and events recorded by the intercom while HA was down are pulled in at startup (silently — historical events never trigger notifications) |
-| **Notifications** | Configure access and doorbell notify targets, iOS sounds, and Android channels. Doorbell notifies can attach a camera snapshot and Unlock / Answer Companion actions. Set the doorbell key code (default `%1` for the Verso quick-dial / call button; use `%2`, `%3`, … for other buttons). Leave the doorbell key empty to disable doorbell notifications on that device |
+| **Notifications** | Configure access and doorbell notify targets, iOS sounds, and Android channels. Doorbell notifies can attach a camera snapshot, Unlock / Answer Companion actions, and optional time-sensitive delivery. Set the doorbell key code (default `%1` for the Verso quick-dial / call button; use `%2`, `%3`, … for other buttons). Leave the doorbell key empty to disable doorbell notifications on that device |
 | **Device** | View device information and trigger immediate access |
 
 ### Linking 2N users to HA accounts

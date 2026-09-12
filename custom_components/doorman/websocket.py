@@ -13,6 +13,7 @@ from .api_client import DoormanApiError
 from .const import DOMAIN
 from .coordinator import DoormanCoordinator
 from .ios_sounds import catalog_for_ws
+from .notifications import _camera_entity_id, build_test_doorbell_data
 from .sanitize import CARD, PIN_OR_CODE, sanitize_directory_user
 from .storage import DoormanStore
 
@@ -608,6 +609,12 @@ def ws_get_notification_settings(
         for s in hass.services.async_services().get("notify", {})
         if s not in ("notify", "send_message")
     )
+    users = [
+        {"uuid": u.get("uuid"), "name": u.get("name") or u.get("uuid") or ""}
+        for u in (coordinator.data or {}).get("users", [])
+        if u.get("uuid")
+    ]
+    camera_entity_id = _camera_entity_id(hass, entry)
     connection.send_result(
         msg["id"],
         {
@@ -617,6 +624,10 @@ def ws_get_notification_settings(
             "settings": store.get_notification_settings(entry.entry_id),
             "ios_sound_catalog": catalog_for_ws(),
             "notify_services": notify_services,
+            "users": users,
+            "access_points": coordinator.access_points or [],
+            "call_status_available": bool(coordinator.call_status_available),
+            "camera_entity_id": camera_entity_id,
         },
     )
 
@@ -640,6 +651,7 @@ def ws_get_notification_settings(
             ),
             vol.Optional("doorbell_answer_action"): bool,
             vol.Optional("doorbell_notify_on_call_ringing"): bool,
+            vol.Optional("doorbell_time_sensitive"): bool,
         },
     }
 )
@@ -697,6 +709,8 @@ async def ws_set_notification_settings(
         vol.Required("message"): str,
         vol.Optional("ios_sound", default=""): _PRESENTATION,
         vol.Optional("android_channel", default=""): _PRESENTATION,
+        vol.Optional("entry_id"): str,
+        vol.Optional("doorbell_preview", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -710,6 +724,10 @@ async def ws_send_test_notification(
     Uses the same payload shape as the real dispatch (``data.push.sound``
     on iOS, ``data.channel`` on Android) so what the user hears in
     preview matches what they'll hear live.
+
+    When ``doorbell_preview`` is true, the payload also mirrors live
+    doorbell extras (snapshot + no-op Unlock/Answer buttons, time-sensitive
+    flags) from the store. Preview action buttons never unlock the door.
 
     The call is ``blocking=True`` on purpose. The whole point of Preview is to
     report whether the notification actually went out, so a failure from the
@@ -735,11 +753,33 @@ async def ws_send_test_notification(
     title = "Doorman test"
     message = "This is a Doorman test notification."
 
-    data: dict = {"tag": "doorman_test"}
-    if msg.get("ios_sound"):
-        data["push"] = {"sound": msg["ios_sound"]}
-    if msg.get("android_channel"):
-        data["channel"] = msg["android_channel"]
+    data: dict
+    if msg.get("doorbell_preview"):
+        coordinator = _coordinator(hass, msg.get("entry_id"))
+        store = _store(hass)
+        if coordinator is None or store is None:
+            connection.send_error(
+                msg["id"], "not_configured", "Doorman is not configured"
+            )
+            return
+        entry = coordinator.config_entry
+        settings = store.get_notification_settings(entry.entry_id)
+        # Prefer the sound/channel currently shown in the form (may be unsaved).
+        if msg.get("ios_sound") is not None:
+            settings = {**settings, "doorbell_sound_ios": msg.get("ios_sound") or ""}
+        if msg.get("android_channel") is not None:
+            settings = {
+                **settings,
+                "doorbell_channel_android": msg.get("android_channel") or "",
+            }
+        data = build_test_doorbell_data(hass, entry, settings)
+        message = f"{entry.title}: doorbell preview (buttons are inert)"
+    else:
+        data = {"tag": "doorman_test"}
+        if msg.get("ios_sound"):
+            data["push"] = {"sound": msg["ios_sound"]}
+        if msg.get("android_channel"):
+            data["channel"] = msg["android_channel"]
 
     try:
         await hass.services.async_call(

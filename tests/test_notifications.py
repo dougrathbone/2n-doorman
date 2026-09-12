@@ -809,3 +809,70 @@ async def test_doorbell_omits_camera_when_entity_missing(
     await hass.async_block_till_done()
 
     assert "image" not in calls[0].data["data"]
+
+
+async def test_doorbell_time_sensitive_adds_priority_flags(
+    hass: HomeAssistant, mock_store
+):
+    from custom_components.doorman.const import CONF_DOORBELL_TIME_SENSITIVE
+
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ATTACH_CAMERA: False,
+            CONF_DOORBELL_TIME_SENSITIVE: True,
+            CONF_DOORBELL_SOUND_IOS: "a.wav",
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    data = calls[0].data["data"]
+    assert data["push"]["sound"] == "a.wav"
+    assert data["push"]["interruption-level"] == "time-sensitive"
+    assert data["ttl"] == 0
+    assert data["priority"] == "high"
+
+
+async def test_companion_unlock_failure_notifies_targets(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    coordinator.client.grant_access = AsyncMock(side_effect=RuntimeError("denied"))
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_UNLOCK_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}|{int(time.time())}"},
+    )
+    await hass.async_block_till_done()
+
+    assert any(
+        "Unlock failed" in (c.data.get("message") or "")
+        and c.data.get("data", {}).get("tag") == f"doorman_doorbell_{entry.entry_id}"
+        for c in calls
+    )

@@ -586,6 +586,7 @@ async def test_ws_get_notification_settings_returns_defaults(
         "doorbell_unlock_access_point_id": 1,
         "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": False,
+        "doorbell_time_sensitive": False,
     }
     # Catalog is grouped; sanity-check the shape
     assert len(result["ios_sound_catalog"]) >= 1
@@ -616,6 +617,7 @@ async def test_ws_set_notification_settings_round_trips_via_the_store(
         "doorbell_unlock_access_point_id": 2,
         "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": True,
+        "doorbell_time_sensitive": True,
     }
     client = await hass_ws_client(hass)
     await client.send_json_auto_id(
@@ -845,6 +847,64 @@ async def test_ws_send_test_notification_dispatches_with_sound(
     assert calls[0].data["message"] == "This is a Doorman test notification."
     assert calls[0].data["data"]["push"] == {"sound": "US-EN-Alexa-Mail-Has-Arrived.wav"}
     assert calls[0].data["data"]["channel"] == "doorbell"
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_send_test_notification_doorbell_preview_is_inert(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Doorbell preview can include snapshot layout with no-op action buttons."""
+    store = hass.data[f"{DOMAIN}_store"]
+    await store.set_notification_settings(
+        setup_doorman.entry_id,
+        {
+            "doorbell_attach_camera": False,
+            "doorbell_unlock_action": True,
+            "doorbell_answer_action": False,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": "doorman/send_test_notification",
+            "target": "notify.mobile_app",
+            "title": "ignored",
+            "message": "ignored",
+            "doorbell_preview": True,
+        }
+    )
+    res = await client.receive_json()
+
+    assert res["success"], res
+    assert "preview" in calls[0].data["message"].lower()
+    actions = calls[0].data["data"]["actions"]
+    assert actions[0]["action"] == "DOORMAN_PREVIEW_NOOP"
+    assert "Unlock" in actions[0]["title"]
+
+
+@pytest.mark.real_http
+@pytest.mark.asyncio
+async def test_ws_get_notification_settings_includes_unlock_pickers(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    hass_ws_client,
+) -> None:
+    """Users and access points are returned for Unlock dropdowns."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "doorman/get_notification_settings"})
+    res = await client.receive_json()
+
+    assert res["success"], res
+    assert isinstance(res["result"]["users"], list)
+    assert isinstance(res["result"]["access_points"], list)
+    assert "call_status_available" in res["result"]
+    assert "camera_entity_id" in res["result"]
 
 
 @pytest.mark.real_http

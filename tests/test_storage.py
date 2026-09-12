@@ -199,6 +199,7 @@ async def test_notification_settings_defaults(hass: HomeAssistant) -> None:
         "doorbell_unlock_access_point_id": 1,
         "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": False,
+        "doorbell_time_sensitive": False,
     }
 
 
@@ -369,6 +370,7 @@ async def test_get_notification_settings_fills_companion_defaults_on_old_blob(
     assert settings["doorbell_unlock_action"] is False
     assert settings["doorbell_answer_action"] is False
     assert settings["doorbell_notify_on_call_ringing"] is False
+    assert settings["doorbell_time_sensitive"] is False
     assert settings["doorbell_unlock_access_point_id"] == 1
 
 
