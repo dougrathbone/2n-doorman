@@ -197,7 +197,7 @@ async def test_notification_settings_defaults(hass: HomeAssistant) -> None:
         "doorbell_unlock_action": False,
         "doorbell_unlock_user_uuid": "",
         "doorbell_unlock_access_point_id": 1,
-        "doorbell_answer_action": True,
+        "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": False,
     }
 
@@ -333,6 +333,43 @@ async def test_async_load_adds_new_keys_to_an_older_store_file(
     assert store.notification_settings == {}
     assert store.last_access == {}
     assert store.get_notification_settings("entry-1")["doorbell_key_code"] == "%1"
+
+
+@pytest.mark.asyncio
+async def test_get_notification_settings_fills_companion_defaults_on_old_blob(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """Pre-Companion per-entry blobs keep old values and gain new defaults."""
+    hass_storage["doorman.storage"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "doorman.storage",
+        "data": {
+            "user_links": {},
+            "notification_targets": {},
+            "last_access": {},
+            "notification_settings": {
+                "entry-1": {
+                    "doorbell_key_code": "%2",
+                    "doorbell_targets": ["notify.phone"],
+                    "access_sound_ios": "old.wav",
+                }
+            },
+        },
+    }
+
+    store = DoormanStore(hass)
+    await store.async_load()
+
+    settings = store.get_notification_settings("entry-1")
+    assert settings["doorbell_key_code"] == "%2"
+    assert settings["doorbell_targets"] == ["notify.phone"]
+    assert settings["access_sound_ios"] == "old.wav"
+    assert settings["doorbell_attach_camera"] is True
+    assert settings["doorbell_unlock_action"] is False
+    assert settings["doorbell_answer_action"] is False
+    assert settings["doorbell_notify_on_call_ringing"] is False
+    assert settings["doorbell_unlock_access_point_id"] == 1
 
 
 # ─── AccessLogStore ──────────────────────────────────────────────────────────

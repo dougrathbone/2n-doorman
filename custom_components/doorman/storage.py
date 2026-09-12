@@ -72,7 +72,7 @@ def _default_notification_settings() -> dict:
         CONF_DOORBELL_UNLOCK_ACTION: False,
         CONF_DOORBELL_UNLOCK_USER_UUID: "",
         CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID: 1,
-        CONF_DOORBELL_ANSWER_ACTION: True,
+        CONF_DOORBELL_ANSWER_ACTION: False,
         CONF_DOORBELL_NOTIFY_ON_CALL_RINGING: False,
     }
 

@@ -584,7 +584,7 @@ async def test_ws_get_notification_settings_returns_defaults(
         "doorbell_unlock_action": False,
         "doorbell_unlock_user_uuid": "",
         "doorbell_unlock_access_point_id": 1,
-        "doorbell_answer_action": True,
+        "doorbell_answer_action": False,
         "doorbell_notify_on_call_ringing": False,
     }
     # Catalog is grouped; sanity-check the shape

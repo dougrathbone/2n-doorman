@@ -325,26 +325,46 @@ class DoormanNotificationsTab extends HTMLElement {
           </div>
 
           <div class="row">
-            <label>Companion doorbell extras</label>
+            <label>Mobile notification options (Companion app)</label>
+            <p class="ns-help">
+              Snapshot is fetched when the phone displays the notification
+              (not when the doorbell rings). Unlock and Answer only appear on
+              real doorbell pushes — Preview below tests sound/channel only.
+            </p>
             <div class="checks">
               <label>
                 <input type="checkbox" id="db-attach-camera"
                   ${s.doorbell_attach_camera !== false ? " checked" : ""}>
                 Attach camera snapshot (JPEG still)
               </label>
+              <p class="ns-help" style="margin-left:24px">
+                Requires the Doorman camera entity on this device. Skipped
+                silently when no camera is available.
+              </p>
               <label>
                 <input type="checkbox" id="db-answer"
-                  ${s.doorbell_answer_action !== false ? " checked" : ""}>
-                Show Answer button — answers on the intercom, not as a phone softphone
+                  ${s.doorbell_answer_action ? " checked" : ""}>
+                Show Answer button
               </label>
+              <p class="ns-help" style="margin-left:24px">
+                Answers on the 2N intercom (door speaker) — not a softphone
+                call to your phone. Only offered on incoming Call ringing
+                notifies when call status is available.
+              </p>
               <label>
                 <input type="checkbox" id="db-unlock"
                   ${s.doorbell_unlock_action ? " checked" : ""}>
-                Show Unlock button — opens the access point via grant access
+                Show Unlock button
               </label>
             </div>
             <div class="unlock-fields" id="db-unlock-fields"
-              style="${s.doorbell_unlock_action ? "" : "display:none"}">
+              style="${s.doorbell_unlock_action ? "" : "display:none"}"
+              aria-hidden="${s.doorbell_unlock_action ? "false" : "true"}">
+              <p class="ns-help" style="color:var(--error-color, #f44336)">
+                Unlock opens the door immediately from the notification
+                (device unlock required when the phone supports it). Only
+                enable for phones you trust.
+              </p>
               <div class="row">
                 <label for="db-unlock-uuid">2N user UUID (optional, for the access log)</label>
                 <input type="text" id="db-unlock-uuid"
@@ -353,7 +373,7 @@ class DoormanNotificationsTab extends HTMLElement {
               </div>
               <div class="row">
                 <label for="db-unlock-ap">Access point ID</label>
-                <input type="text" id="db-unlock-ap" inputmode="numeric"
+                <input type="number" id="db-unlock-ap" min="1" step="1"
                   value="${esc(String(s.doorbell_unlock_access_point_id ?? 1))}" />
               </div>
             </div>
@@ -361,8 +381,14 @@ class DoormanNotificationsTab extends HTMLElement {
               <label>
                 <input type="checkbox" id="db-call-ringing"
                   ${s.doorbell_notify_on_call_ringing ? " checked" : ""}>
-                Also notify on incoming Call ringing (same targets, snapshot, and actions)
+                Also notify on Call ringing
               </label>
+              <p class="ns-help" style="margin-left:24px">
+                Same phones, snapshot, and Unlock button for intercom call
+                ringing — not only the doorbell key. A Call ringing that
+                follows a doorbell press within a few seconds is suppressed
+                so you are not double-chimed.
+              </p>
             </div>
           </div>
 
@@ -370,7 +396,7 @@ class DoormanNotificationsTab extends HTMLElement {
             <div class="preview-row">
               <button class="btn btn-outlined" data-preview="doorbell">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
-                Preview
+                Preview sound
               </button>
             </div>
             <div id="db-preview"></div>
@@ -465,12 +491,23 @@ class DoormanNotificationsTab extends HTMLElement {
       });
     }
 
-    // Show/hide Unlock UUID + access-point fields with the Unlock checkbox
+    // Show/hide Unlock fields; restore last-saved values when unchecked so
+    // edits made then cancelled are not silently persisted on Save.
     const unlock = root.getElementById("db-unlock");
     const unlockFields = root.getElementById("db-unlock-fields");
     if (unlock && unlockFields) {
       unlock.addEventListener("change", () => {
-        unlockFields.style.display = unlock.checked ? "" : "none";
+        const on = unlock.checked;
+        unlockFields.style.display = on ? "" : "none";
+        unlockFields.setAttribute("aria-hidden", on ? "false" : "true");
+        if (!on) {
+          const uuid = root.getElementById("db-unlock-uuid");
+          const ap = root.getElementById("db-unlock-ap");
+          if (uuid) uuid.value = this._settings?.doorbell_unlock_user_uuid || "";
+          if (ap) {
+            ap.value = String(this._settings?.doorbell_unlock_access_point_id ?? 1);
+          }
+        }
       });
     }
 
@@ -609,9 +646,15 @@ class DoormanNotificationsTab extends HTMLElement {
     // edits are NOT in this payload and must stay marked unsaved.
     const sentGen = this._dirtyGen;
     try {
+      const unlockOn =
+        !!this.shadowRoot.getElementById("db-unlock")?.checked;
       const unlockApRaw =
-        this.shadowRoot.getElementById("db-unlock-ap")?.value.trim() || "1";
+        this.shadowRoot.getElementById("db-unlock-ap")?.value.trim() ?? "";
       const unlockAp = Number.parseInt(unlockApRaw, 10);
+      if (unlockOn && (!Number.isFinite(unlockAp) || unlockAp < 1)) {
+        this._showToast("Access point ID must be a positive integer", true);
+        return;
+      }
       const settings = {
         // Sent verbatim: "" is a meaningful value (no doorbell button on this
         // device), so don't silently substitute the default for an empty field.
@@ -623,12 +666,13 @@ class DoormanNotificationsTab extends HTMLElement {
           !!this.shadowRoot.getElementById("db-attach-camera")?.checked,
         doorbell_answer_action:
           !!this.shadowRoot.getElementById("db-answer")?.checked,
-        doorbell_unlock_action:
-          !!this.shadowRoot.getElementById("db-unlock")?.checked,
-        doorbell_unlock_user_uuid:
-          this.shadowRoot.getElementById("db-unlock-uuid")?.value.trim() ?? "",
-        doorbell_unlock_access_point_id:
-          Number.isFinite(unlockAp) && unlockAp >= 1 ? unlockAp : 1,
+        doorbell_unlock_action: unlockOn,
+        doorbell_unlock_user_uuid: unlockOn
+          ? (this.shadowRoot.getElementById("db-unlock-uuid")?.value.trim() ?? "")
+          : (this._settings?.doorbell_unlock_user_uuid || ""),
+        doorbell_unlock_access_point_id: unlockOn
+          ? unlockAp
+          : (this._settings?.doorbell_unlock_access_point_id ?? 1),
         doorbell_notify_on_call_ringing:
           !!this.shadowRoot.getElementById("db-call-ringing")?.checked,
         access_sound_ios: this._readSoundValue("ac"),

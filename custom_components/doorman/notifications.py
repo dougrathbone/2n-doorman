@@ -17,15 +17,16 @@ entry_id), not from ``entry.options`` — see storage.py for why.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     ACTION_ANSWER_PREFIX,
+    ACTION_TTL_SECONDS,
     ACTION_UNLOCK_PREFIX,
     CONF_ACCESS_CHANNEL_ANDROID,
     CONF_ACCESS_SOUND_IOS,
@@ -39,6 +40,7 @@ from .const import (
     CONF_DOORBELL_UNLOCK_ACTION,
     CONF_DOORBELL_UNLOCK_USER_UUID,
     DOMAIN,
+    DOORBELL_CALL_DEBOUNCE_SECONDS,
 )
 from .coordinator import CALL_RINGING_EVENT_TYPE, DOORBELL_EVENT_TYPE
 from .helpers import pinned_entity_id
@@ -50,6 +52,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Companion fires this when the user taps a notification action button.
 _MOBILE_APP_ACTION_EVENT = "mobile_app_notification_action"
+_NOTIFY_AT_KEY = f"{DOMAIN}_doorbell_notify_at"
 
 
 @callback
@@ -69,12 +72,16 @@ def async_setup_notifications(hass: HomeAssistant) -> None:
         elif event_type == DOORBELL_EVENT_TYPE:
             _handle_doorbell_notify(hass, event, entry, kind="doorbell")
         elif event_type == CALL_RINGING_EVENT_TYPE:
-            settings = _settings_for(hass, entry)
-            if settings.get(CONF_DOORBELL_NOTIFY_ON_CALL_RINGING):
-                _handle_doorbell_notify(hass, event, entry, kind="call")
+            _handle_call_ringing_notify(hass, event, entry)
 
     @callback
     def _on_notification_action(event: Event) -> None:
+        action = event.data.get("action") or ""
+        if not (
+            action.startswith(ACTION_UNLOCK_PREFIX)
+            or action.startswith(ACTION_ANSWER_PREFIX)
+        ):
+            return
         hass.async_create_task(_async_handle_notification_action(hass, event))
 
     hass.data[f"{DOMAIN}_notifications_unsub"] = hass.bus.async_listen(
@@ -117,9 +124,24 @@ def _camera_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     if coordinator is None or not coordinator.camera_caps:
         return None
     entity_id = pinned_entity_id("camera", "camera", coordinator, entry)
-    if hass.states.get(entity_id) is None:
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unavailable", "unknown"):
         return None
     return entity_id
+
+
+def _doorbell_tag(entry_id: str) -> str:
+    return f"doorman_doorbell_{entry_id}"
+
+
+def _mark_doorbell_notified(hass: HomeAssistant, entry_id: str) -> None:
+    hass.data.setdefault(_NOTIFY_AT_KEY, {})[entry_id] = time.time()
+
+
+def _call_notify_suppressed(hass: HomeAssistant, entry_id: str) -> bool:
+    """True when a DoorbellPressed notify just fired for this entry."""
+    at = hass.data.get(_NOTIFY_AT_KEY, {}).get(entry_id)
+    return at is not None and (time.time() - at) < DOORBELL_CALL_DEBOUNCE_SECONDS
 
 
 def _build_data(
@@ -128,7 +150,7 @@ def _build_data(
     ios_sound: str = "",
     android_channel: str = "",
     camera_entity_id: str | None = None,
-    actions: list[dict[str, str]] | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the ``notify.data`` payload with per-platform presentation.
 
@@ -142,33 +164,65 @@ def _build_data(
     if android_channel:
         data["channel"] = android_channel
     if camera_entity_id:
-        # Companion uses entity_id for a live snapshot; image is the
-        # camera_proxy URL many clients also understand.
-        data["entity_id"] = camera_entity_id
+        # JPEG still via camera_proxy — works on iOS and Android. Do not set
+        # ``entity_id``: Companion treats that as an iOS dynamic *stream*
+        # attachment, and DoormanCamera has no stream.
         data["image"] = f"/api/camera_proxy/{camera_entity_id}"
     if actions:
         data["actions"] = actions
+        # Android auto-dismiss; pairs with the issued-at check on Unlock.
+        data["timeout"] = ACTION_TTL_SECONDS
     return data
 
 
-def _doorbell_actions(entry: ConfigEntry, settings: dict) -> list[dict[str, str]]:
+def _doorbell_actions(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    settings: dict,
+    *,
+    include_answer: bool,
+) -> list[dict[str, Any]]:
     """Build Companion action buttons for Unlock / Answer."""
-    actions: list[dict[str, str]] = []
+    actions: list[dict[str, Any]] = []
+    issued = int(time.time())
     if settings.get(CONF_DOORBELL_UNLOCK_ACTION):
         actions.append(
             {
-                "action": f"{ACTION_UNLOCK_PREFIX}{entry.entry_id}",
+                "action": f"{ACTION_UNLOCK_PREFIX}{entry.entry_id}|{issued}",
                 "title": "Unlock",
+                "authenticationRequired": True,
+                "destructive": True,
             }
         )
-    if settings.get(CONF_DOORBELL_ANSWER_ACTION):
-        actions.append(
-            {
-                "action": f"{ACTION_ANSWER_PREFIX}{entry.entry_id}",
-                "title": "Answer",
-            }
-        )
+    if include_answer and settings.get(CONF_DOORBELL_ANSWER_ACTION):
+        coordinator = _coordinator_for(hass, entry.entry_id)
+        if coordinator is not None and getattr(
+            coordinator, "call_status_available", False
+        ):
+            actions.append(
+                {
+                    "action": f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}",
+                    "title": "Answer",
+                }
+            )
     return actions
+
+
+def _parse_action_payload(action: str, prefix: str) -> tuple[str, int] | None:
+    """Split ``PREFIX{entry_id}|{issued_at}``; reject legacy two-segment IDs."""
+    remainder = action.removeprefix(prefix)
+    entry_id, sep, issued_raw = remainder.partition("|")
+    if not sep or not entry_id or not issued_raw:
+        return None
+    try:
+        issued_at = int(issued_raw)
+    except ValueError:
+        return None
+    return entry_id, issued_at
+
+
+def _action_expired(issued_at: int) -> bool:
+    return (time.time() - issued_at) > ACTION_TTL_SECONDS
 
 
 def _handle_user_authenticated(
@@ -214,12 +268,40 @@ def _handle_user_authenticated(
     )
 
 
+def _handle_call_ringing_notify(
+    hass: HomeAssistant, event: Event, entry: ConfigEntry | None
+) -> None:
+    settings = _settings_for(hass, entry)
+    if not settings.get(CONF_DOORBELL_NOTIFY_ON_CALL_RINGING):
+        return
+    if entry is not None and _call_notify_suppressed(hass, entry.entry_id):
+        _LOGGER.debug(
+            "Skipping CallRinging notify for %s — doorbell already notified",
+            entry.entry_id,
+        )
+        return
+
+    params: dict = event.data.get("params") or {}
+    direction = params.get("direction")
+    # Outgoing ringing is the common doorbell-dial path (no softphone Answer).
+    # Incoming (or unknown) gets intercom-call wording plus Answer when enabled.
+    if direction == "outgoing":
+        _handle_doorbell_notify(
+            hass, event, entry, kind="doorbell", include_answer=False
+        )
+    else:
+        _handle_doorbell_notify(
+            hass, event, entry, kind="call", include_answer=True
+        )
+
+
 def _handle_doorbell_notify(
     hass: HomeAssistant,
     event: Event,
     entry: ConfigEntry | None,
     *,
     kind: str,
+    include_answer: bool = False,
 ) -> None:
     if entry is None:
         # Doorbell targets are stored per config entry — without an entry
@@ -260,27 +342,49 @@ def _handle_doorbell_notify(
         title,
         message,
         data=_build_data(
-            f"doorman_doorbell_{entry.entry_id}",
+            _doorbell_tag(entry.entry_id),
             ios_sound=ios_sound,
             android_channel=android_channel,
             camera_entity_id=camera_entity_id,
-            actions=_doorbell_actions(entry, settings) or None,
+            actions=_doorbell_actions(
+                hass, entry, settings, include_answer=include_answer
+            )
+            or None,
         ),
     )
+    if kind == "doorbell":
+        _mark_doorbell_notified(hass, entry.entry_id)
 
 
 async def _async_handle_notification_action(hass: HomeAssistant, event: Event) -> None:
     """Run Unlock / Answer when the user taps a Companion notification button."""
     action = event.data.get("action") or ""
+    user_id = event.context.user_id if event.context else None
     if action.startswith(ACTION_UNLOCK_PREFIX):
-        entry_id = action.removeprefix(ACTION_UNLOCK_PREFIX)
-        await _async_unlock(hass, entry_id)
+        parsed = _parse_action_payload(action, ACTION_UNLOCK_PREFIX)
+        if parsed is None:
+            _LOGGER.info("Doorman Unlock ignored — malformed or legacy action id")
+            return
+        entry_id, issued_at = parsed
+        if _action_expired(issued_at):
+            _LOGGER.info("Doorman Unlock ignored — action expired for %s", entry_id)
+            return
+        await _async_unlock(hass, entry_id, user_id=user_id)
     elif action.startswith(ACTION_ANSWER_PREFIX):
-        entry_id = action.removeprefix(ACTION_ANSWER_PREFIX)
-        await _async_answer(hass, entry_id)
+        parsed = _parse_action_payload(action, ACTION_ANSWER_PREFIX)
+        if parsed is None:
+            _LOGGER.info("Doorman Answer ignored — malformed or legacy action id")
+            return
+        entry_id, issued_at = parsed
+        if _action_expired(issued_at):
+            _LOGGER.info("Doorman Answer ignored — action expired for %s", entry_id)
+            return
+        await _async_answer(hass, entry_id, user_id=user_id)
 
 
-async def _async_unlock(hass: HomeAssistant, entry_id: str) -> None:
+async def _async_unlock(
+    hass: HomeAssistant, entry_id: str, *, user_id: str | None = None
+) -> None:
     entry = _lookup_entry(hass, entry_id)
     coordinator = _coordinator_for(hass, entry_id)
     if entry is None or coordinator is None:
@@ -292,7 +396,22 @@ async def _async_unlock(hass: HomeAssistant, entry_id: str) -> None:
         _LOGGER.debug("Doorman Unlock ignored — action disabled for %s", entry_id)
         return
 
-    access_point_id = int(settings.get(CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID) or 1)
+    raw_ap = settings.get(CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID, 1)
+    try:
+        access_point_id = int(raw_ap)
+    except (TypeError, ValueError):
+        _LOGGER.warning(
+            "Doorman Unlock: invalid access point %r on %s", raw_ap, entry.title
+        )
+        return
+    if access_point_id < 1:
+        _LOGGER.warning(
+            "Doorman Unlock: access point %s out of range on %s",
+            access_point_id,
+            entry.title,
+        )
+        return
+
     user_uuid = (settings.get(CONF_DOORBELL_UNLOCK_USER_UUID) or "").strip() or None
     try:
         await coordinator.client.grant_access(access_point_id, user_uuid)
@@ -300,13 +419,17 @@ async def _async_unlock(hass: HomeAssistant, entry_id: str) -> None:
         _LOGGER.error("Doorman Unlock failed on %s: %s", entry.title, err)
         return
     _LOGGER.info(
-        "Doorman Unlock via notification on %s (access point %s)",
+        "Doorman Unlock via notification on %s (access point %s, ha_user=%s)",
         entry.title,
         access_point_id,
+        user_id,
     )
+    _clear_doorbell_notifications(hass, entry, settings)
 
 
-async def _async_answer(hass: HomeAssistant, entry_id: str) -> None:
+async def _async_answer(
+    hass: HomeAssistant, entry_id: str, *, user_id: str | None = None
+) -> None:
     entry = _lookup_entry(hass, entry_id)
     coordinator = _coordinator_for(hass, entry_id)
     if entry is None or coordinator is None:
@@ -314,20 +437,47 @@ async def _async_answer(hass: HomeAssistant, entry_id: str) -> None:
         return
 
     settings = _settings_for(hass, entry)
-    if not settings.get(CONF_DOORBELL_ANSWER_ACTION, True):
+    if not settings.get(CONF_DOORBELL_ANSWER_ACTION):
         _LOGGER.debug("Doorman Answer ignored — action disabled for %s", entry_id)
         return
 
     try:
         answered = await coordinator.client.answer_ringing_call()
-    except (HomeAssistantError, Exception) as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
         _LOGGER.error("Doorman Answer failed on %s: %s", entry.title, err)
         return
     if answered:
-        _LOGGER.info("Doorman Answer via notification on %s", entry.title)
+        _LOGGER.info(
+            "Doorman Answer via notification on %s (ha_user=%s)",
+            entry.title,
+            user_id,
+        )
+        _clear_doorbell_notifications(hass, entry, settings)
     else:
         _LOGGER.info(
             "Doorman Answer: no ringing incoming call on %s", entry.title
+        )
+
+
+def _clear_doorbell_notifications(
+    hass: HomeAssistant, entry: ConfigEntry, settings: dict
+) -> None:
+    """Dismiss the actionable doorbell push on every configured phone."""
+    targets = settings.get(CONF_DOORBELL_TARGETS) or []
+    if not targets:
+        return
+    tag = _doorbell_tag(entry.entry_id)
+    for target in targets:
+        service = target.removeprefix("notify.")
+        if not hass.services.has_service("notify", service):
+            continue
+        hass.async_create_task(
+            hass.services.async_call(
+                "notify",
+                service,
+                {"message": "clear_notification", "data": {"tag": tag}},
+                blocking=False,
+            )
         )
 
 

@@ -1,6 +1,7 @@
 """Tests for Doorman push notification dispatch."""
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -435,7 +436,12 @@ async def test_doorbell_targets_are_isolated_per_entry(hass: HomeAssistant, mock
 
 # ─── Companion snapshot + action buttons ─────────────────────────────────────
 
-def _entry_with_coordinator(hass: HomeAssistant, *, serial: str = "12345678"):
+def _entry_with_coordinator(
+    hass: HomeAssistant,
+    *,
+    serial: str = "12345678",
+    call_status_available: bool = True,
+):
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Front Door",
@@ -446,6 +452,7 @@ def _entry_with_coordinator(hass: HomeAssistant, *, serial: str = "12345678"):
     coordinator.camera_caps = {"jpegResolution": [{"width": 640, "height": 480}]}
     coordinator.device_info = {"serialNumber": serial}
     coordinator.config_entry = entry
+    coordinator.call_status_available = call_status_available
     coordinator.client = MagicMock()
     coordinator.client.grant_access = AsyncMock()
     coordinator.client.answer_ringing_call = AsyncMock(return_value=True)
@@ -453,10 +460,10 @@ def _entry_with_coordinator(hass: HomeAssistant, *, serial: str = "12345678"):
     return entry, coordinator
 
 
-async def test_doorbell_includes_camera_and_answer_by_default(
+async def test_doorbell_includes_camera_snapshot_by_default(
     hass: HomeAssistant, mock_store
 ):
-    """Default doorbell notify attaches the camera still and an Answer button."""
+    """Default doorbell notify attaches a JPEG still; Answer is opt-in."""
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, _coordinator = _entry_with_coordinator(hass)
     await mock_store.set_notification_settings(
@@ -480,14 +487,12 @@ async def test_doorbell_includes_camera_and_answer_by_default(
     await hass.async_block_till_done()
 
     data = calls[0].data["data"]
-    assert data["entity_id"] == camera_id
     assert data["image"] == f"/api/camera_proxy/{camera_id}"
-    assert data["actions"] == [
-        {"action": f"DOORMAN_ANSWER|{entry.entry_id}", "title": "Answer"},
-    ]
+    assert "entity_id" not in data
+    assert "actions" not in data
 
 
-async def test_doorbell_unlock_action_included_when_enabled(
+async def test_doorbell_unlock_action_requires_auth_and_ttl(
     hass: HomeAssistant, mock_store
 ):
     hass.data[f"{DOMAIN}_store"] = mock_store
@@ -498,7 +503,6 @@ async def test_doorbell_unlock_action_included_when_enabled(
             CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
             CONF_DOORBELL_ATTACH_CAMERA: False,
             CONF_DOORBELL_UNLOCK_ACTION: True,
-            CONF_DOORBELL_ANSWER_ACTION: True,
         },
     )
     calls = []
@@ -515,14 +519,16 @@ async def test_doorbell_unlock_action_included_when_enabled(
     )
     await hass.async_block_till_done()
 
-    assert calls[0].data["data"]["actions"] == [
-        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}", "title": "Unlock"},
-        {"action": f"DOORMAN_ANSWER|{entry.entry_id}", "title": "Answer"},
-    ]
-    assert "entity_id" not in calls[0].data["data"]
+    actions = calls[0].data["data"]["actions"]
+    assert len(actions) == 1
+    assert actions[0]["title"] == "Unlock"
+    assert actions[0]["authenticationRequired"] is True
+    assert actions[0]["destructive"] is True
+    assert actions[0]["action"].startswith(f"DOORMAN_UNLOCK|{entry.entry_id}|")
+    assert calls[0].data["data"]["timeout"] == 120
 
 
-async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock_store):
+async def test_incoming_call_ringing_can_include_answer(hass: HomeAssistant, mock_store):
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, _coordinator = _entry_with_coordinator(hass)
     await mock_store.set_notification_settings(
@@ -530,7 +536,8 @@ async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock
         {
             CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
             CONF_DOORBELL_ATTACH_CAMERA: False,
-            CONF_DOORBELL_ANSWER_ACTION: False,
+            CONF_DOORBELL_NOTIFY_ON_CALL_RINGING: True,
+            CONF_DOORBELL_ANSWER_ACTION: True,
         },
     )
     calls = []
@@ -542,7 +549,70 @@ async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock
         {
             "entry_id": entry.entry_id,
             "event_type": "CallRinging",
-            "params": {"state": "ringing"},
+            "params": {"state": "ringing", "direction": "incoming"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls[0].data["title"] == "Intercom call"
+    assert calls[0].data["data"]["actions"][0]["title"] == "Answer"
+    assert calls[0].data["data"]["actions"][0]["action"].startswith(
+        f"DOORMAN_ANSWER|{entry.entry_id}|"
+    )
+
+
+async def test_outgoing_call_ringing_uses_doorbell_wording_without_answer(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ATTACH_CAMERA: False,
+            CONF_DOORBELL_NOTIFY_ON_CALL_RINGING: True,
+            CONF_DOORBELL_ANSWER_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "CallRinging",
+            "params": {"state": "ringing", "direction": "outgoing"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert calls[0].data["title"] == "Doorbell"
+    assert "actions" not in calls[0].data["data"]
+
+
+async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock_store):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ATTACH_CAMERA: False,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "CallRinging",
+            "params": {"state": "ringing", "direction": "incoming"},
         },
     )
     await hass.async_block_till_done()
@@ -556,7 +626,7 @@ async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock
         {
             "entry_id": entry.entry_id,
             "event_type": "CallRinging",
-            "params": {"state": "ringing"},
+            "params": {"state": "ringing", "direction": "incoming"},
         },
     )
     await hass.async_block_till_done()
@@ -566,37 +636,116 @@ async def test_call_ringing_notifies_only_when_enabled(hass: HomeAssistant, mock
     assert calls[0].data["message"] == "Front Door: incoming call"
 
 
-async def test_companion_unlock_action_grants_access(hass: HomeAssistant, mock_store):
+async def test_doorbell_and_call_ringing_do_not_double_notify(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ATTACH_CAMERA: False,
+            CONF_DOORBELL_NOTIFY_ON_CALL_RINGING: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "CallRinging",
+            "params": {"state": "ringing", "direction": "outgoing"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
+    assert calls[0].data["title"] == "Doorbell"
+
+
+async def test_companion_unlock_action_grants_access_and_clears(
+    hass: HomeAssistant, mock_store
+):
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, coordinator = _entry_with_coordinator(hass)
     await mock_store.set_notification_settings(
         entry.entry_id,
         {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
             CONF_DOORBELL_UNLOCK_ACTION: True,
             CONF_DOORBELL_UNLOCK_USER_UUID: "uuid-visitor",
             CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID: 2,
         },
     )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
     async_setup_notifications(hass)
 
+    issued = int(time.time())
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}|{issued}"},
+    )
+    await hass.async_block_till_done()
+
+    coordinator.client.grant_access.assert_awaited_once_with(2, "uuid-visitor")
+    assert any(
+        c.data.get("message") == "clear_notification"
+        and c.data.get("data", {}).get("tag") == f"doorman_doorbell_{entry.entry_id}"
+        for c in calls
+    )
+
+
+async def test_companion_unlock_rejects_expired_and_legacy_actions(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_DOORBELL_UNLOCK_ACTION: True}
+    )
+    async_setup_notifications(hass)
+
+    # Legacy two-segment action (pre-TTL) is rejected.
     hass.bus.async_fire(
         "mobile_app_notification_action",
         {"action": f"DOORMAN_UNLOCK|{entry.entry_id}"},
     )
     await hass.async_block_till_done()
+    coordinator.client.grant_access.assert_not_called()
 
-    coordinator.client.grant_access.assert_awaited_once_with(2, "uuid-visitor")
+    # Expired issued-at is rejected.
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}|{int(time.time()) - 999}"},
+    )
+    await hass.async_block_till_done()
+    coordinator.client.grant_access.assert_not_called()
 
 
 async def test_companion_answer_action_answers_call(hass: HomeAssistant, mock_store):
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, coordinator = _entry_with_coordinator(hass)
-    # Answer is enabled by default.
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_DOORBELL_ANSWER_ACTION: True}
+    )
     async_setup_notifications(hass)
 
     hass.bus.async_fire(
         "mobile_app_notification_action",
-        {"action": f"DOORMAN_ANSWER|{entry.entry_id}"},
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
     )
     await hass.async_block_till_done()
 
@@ -606,13 +755,57 @@ async def test_companion_answer_action_answers_call(hass: HomeAssistant, mock_st
 async def test_companion_unlock_ignored_when_disabled(hass: HomeAssistant, mock_store):
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, coordinator = _entry_with_coordinator(hass)
-    # unlock_action defaults to False
     async_setup_notifications(hass)
 
     hass.bus.async_fire(
         "mobile_app_notification_action",
-        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}"},
+        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}|{int(time.time())}"},
     )
     await hass.async_block_till_done()
 
     coordinator.client.grant_access.assert_not_called()
+
+
+async def test_companion_unlock_skipped_when_coordinator_missing(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_DOORBELL_UNLOCK_ACTION: True}
+    )
+    hass.data[DOMAIN].pop(entry.entry_id)
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
+        {"action": f"DOORMAN_UNLOCK|{entry.entry_id}|{int(time.time())}"},
+    )
+    await hass.async_block_till_done()
+
+    coordinator.client.grant_access.assert_not_called()
+
+
+async def test_doorbell_omits_camera_when_entity_missing(
+    hass: HomeAssistant, mock_store
+):
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_DOORBELL_TARGETS: ["notify.mobile_app"]}
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "DoorbellPressed",
+            "params": {"key": "%1"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert "image" not in calls[0].data["data"]

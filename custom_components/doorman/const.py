@@ -33,10 +33,17 @@ CONF_DOORBELL_UNLOCK_ACCESS_POINT_ID = "doorbell_unlock_access_point_id"
 CONF_DOORBELL_ANSWER_ACTION = "doorbell_answer_action"
 CONF_DOORBELL_NOTIFY_ON_CALL_RINGING = "doorbell_notify_on_call_ringing"
 
-# Companion notification action prefixes. The entry_id is appended after `|`
-# so multi-device installs route Unlock/Answer to the right intercom.
+# Companion notification action prefixes. The entry_id (and for Unlock a
+# issued-at epoch) is appended after `|` so multi-device installs route to
+# the right intercom and stale Unlock taps can be rejected.
 ACTION_UNLOCK_PREFIX = "DOORMAN_UNLOCK|"
 ACTION_ANSWER_PREFIX = "DOORMAN_ANSWER|"
+
+# How long an Unlock / Answer button on a Companion push stays valid.
+ACTION_TTL_SECONDS = 120
+# Suppress a CallRinging notify that follows a DoorbellPressed for the same
+# physical press (same tag would otherwise double-chime).
+DOORBELL_CALL_DEBOUNCE_SECONDS = 5
 
 DEFAULT_POLL_INTERVAL = 30
 DEFAULT_USE_SSL = True
