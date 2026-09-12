@@ -455,6 +455,7 @@ def _entry_with_coordinator(
     coordinator.call_status_available = call_status_available
     coordinator.client = MagicMock()
     coordinator.client.grant_access = AsyncMock()
+    coordinator.client.answer_call = AsyncMock()
     coordinator.client.answer_ringing_call = AsyncMock(return_value=True)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     return entry, coordinator
@@ -549,7 +550,7 @@ async def test_incoming_call_ringing_can_include_answer(hass: HomeAssistant, moc
         {
             "entry_id": entry.entry_id,
             "event_type": "CallRinging",
-            "params": {"state": "ringing", "direction": "incoming"},
+            "params": {"state": "ringing", "direction": "incoming", "session": 42},
         },
     )
     await hass.async_block_till_done()
@@ -559,6 +560,7 @@ async def test_incoming_call_ringing_can_include_answer(hass: HomeAssistant, moc
     assert calls[0].data["data"]["actions"][0]["action"].startswith(
         f"DOORMAN_ANSWER|{entry.entry_id}|"
     )
+    assert calls[0].data["data"]["actions"][0]["action"].endswith("|42")
 
 
 async def test_outgoing_call_ringing_uses_doorbell_wording_without_answer(
@@ -745,11 +747,34 @@ async def test_companion_answer_action_answers_call(hass: HomeAssistant, mock_st
 
     hass.bus.async_fire(
         "mobile_app_notification_action",
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}|7"},
+    )
+    await hass.async_block_till_done()
+
+    coordinator.client.answer_call.assert_awaited_once_with(7)
+    coordinator.client.answer_ringing_call.assert_not_called()
+
+
+async def test_companion_answer_action_without_session_falls_back(
+    hass: HomeAssistant, mock_store
+):
+    """Legacy Answer ids without a session still use answer_ringing_call."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, coordinator = _entry_with_coordinator(hass)
+    coordinator.client.answer_ringing_call = AsyncMock(return_value=True)
+    await mock_store.set_notification_settings(
+        entry.entry_id, {CONF_DOORBELL_ANSWER_ACTION: True}
+    )
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        "mobile_app_notification_action",
         {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
     )
     await hass.async_block_till_done()
 
     coordinator.client.answer_ringing_call.assert_awaited_once()
+    coordinator.client.answer_call.assert_not_called()
 
 
 async def test_companion_unlock_ignored_when_disabled(hass: HomeAssistant, mock_store):
@@ -883,9 +908,7 @@ async def test_companion_answer_failure_notifies_targets(
 ):
     hass.data[f"{DOMAIN}_store"] = mock_store
     entry, coordinator = _entry_with_coordinator(hass)
-    coordinator.client.answer_ringing_call = AsyncMock(
-        side_effect=RuntimeError("busy")
-    )
+    coordinator.client.answer_call = AsyncMock(side_effect=RuntimeError("busy"))
     await mock_store.set_notification_settings(
         entry.entry_id,
         {
@@ -899,7 +922,7 @@ async def test_companion_answer_failure_notifies_targets(
 
     hass.bus.async_fire(
         "mobile_app_notification_action",
-        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}|3"},
     )
     await hass.async_block_till_done()
 
@@ -950,11 +973,11 @@ async def test_companion_answer_success_clears_notification(
 
     hass.bus.async_fire(
         "mobile_app_notification_action",
-        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}"},
+        {"action": f"DOORMAN_ANSWER|{entry.entry_id}|{int(time.time())}|9"},
     )
     await hass.async_block_till_done()
 
-    coordinator.client.answer_ringing_call.assert_awaited_once()
+    coordinator.client.answer_call.assert_awaited_once_with(9)
     assert any(
         c.data.get("message") == "clear_notification"
         and c.data.get("data", {}).get("tag") == f"doorman_doorbell_{entry.entry_id}"

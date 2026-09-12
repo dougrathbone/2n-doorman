@@ -6,7 +6,9 @@ refreshing (picture entity, glance card, notification attachment, ...).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
@@ -24,6 +26,10 @@ _LOGGER = logging.getLogger(__name__)
 # Preferred snapshot size; the device only accepts resolutions advertised by
 # /api/camera/caps, so fall back to the largest advertised one if absent.
 _PREFERRED_RESOLUTION = (640, 480)
+# Coalesce multi-phone Companion fetches after one doorbell ring — each phone
+# hits camera_proxy independently, and the 2N snapshot endpoint is slow/fragile
+# under concurrent load.
+_SNAPSHOT_CACHE_SECONDS = 2.0
 
 
 async def async_setup_entry(
@@ -57,6 +63,9 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
         self.entity_id = pinned_entity_id("camera", "camera", coordinator, entry)
         self._attr_device_info = build_device_info(coordinator, entry)
         self._width, self._height = self._pick_resolution()
+        self._snapshot_lock = asyncio.Lock()
+        self._snapshot_cache: bytes | None = None
+        self._snapshot_at = 0.0
 
     def _pick_resolution(self) -> tuple[int, int]:
         """Choose the preferred snapshot size, or the largest advertised one."""
@@ -73,11 +82,26 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return a JPEG snapshot; None on device error (HA shows unavailable)."""
-        try:
-            return await self.coordinator.client.get_camera_snapshot(
-                self._width, self._height
-            )
-        except DoormanApiError as err:
-            _LOGGER.warning("Doorman: camera snapshot failed (%s)", err)
-            return None
+        """Return a JPEG snapshot; None on device error (HA shows unavailable).
+
+        Concurrent and near-simultaneous callers share one device fetch for
+        ``_SNAPSHOT_CACHE_SECONDS`` so multi-target doorbell notifies don't
+        stampede ``/api/camera/snapshot``.
+        """
+        async with self._snapshot_lock:
+            now = time.monotonic()
+            if (
+                self._snapshot_cache is not None
+                and (now - self._snapshot_at) < _SNAPSHOT_CACHE_SECONDS
+            ):
+                return self._snapshot_cache
+            try:
+                image = await self.coordinator.client.get_camera_snapshot(
+                    self._width, self._height
+                )
+            except DoormanApiError as err:
+                _LOGGER.warning("Doorman: camera snapshot failed (%s)", err)
+                return None
+            self._snapshot_cache = image
+            self._snapshot_at = time.monotonic()
+            return image

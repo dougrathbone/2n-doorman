@@ -2,7 +2,7 @@
  * Notification settings tab for the Doorman panel.
  */
 
-import { define, ws, esc, BASE_CSS } from "./helpers.js";
+import { define, ws, esc, fillSelect, BASE_CSS } from "./helpers.js";
 
 // ─── Notifications Tab ───────────────────────────────────────────────────────
 //
@@ -398,33 +398,12 @@ class DoormanNotificationsTab extends HTMLElement {
               </p>
               <div class="row">
                 <label for="db-unlock-uuid">Attribute unlock to 2N user (access log)</label>
-                <select class="ns-select" id="db-unlock-uuid">
-                  <option value="">(none — anonymous in access log)</option>
-                  ${(() => {
-                    const current = s.doorbell_unlock_user_uuid || "";
-                    const known = new Set(this._users.map(u => u.uuid));
-                    const orphan = current && !known.has(current)
-                      ? `<option value="${esc(current)}" selected>(removed user) ${esc(current)}</option>`
-                      : "";
-                    return orphan + this._users.map(u => {
-                      const selected = current === u.uuid ? " selected" : "";
-                      return `<option value="${esc(u.uuid)}"${selected}>${esc(u.name || u.uuid)}</option>`;
-                    }).join("");
-                  })()}
-                </select>
+                <select class="ns-select" id="db-unlock-uuid"></select>
               </div>
               <div class="row">
                 <label for="db-unlock-ap">Access point</label>
                 ${this._accessPoints.length > 0 ? `
-                  <select class="ns-select" id="db-unlock-ap">
-                    ${this._accessPoints.map(ap => {
-                      const id = Number(ap.id);
-                      const selected = Number(s.doorbell_unlock_access_point_id ?? 1) === id
-                        ? " selected" : "";
-                      const label = ap.name || `Access point ${ap.id}`;
-                      return `<option value="${esc(String(ap.id))}"${selected}>${esc(label)}</option>`;
-                    }).join("")}
-                  </select>
+                  <select class="ns-select" id="db-unlock-ap"></select>
                 ` : `
                   <input type="number" id="db-unlock-ap" min="1" step="1"
                     value="${esc(String(s.doorbell_unlock_access_point_id ?? 1))}" />
@@ -503,7 +482,36 @@ class DoormanNotificationsTab extends HTMLElement {
 
     `;
 
+    this._fillUnlockSelects();
     this._wireEvents();
+  }
+
+  _fillUnlockSelects() {
+    const s = this._settings || {};
+    const uuidSelect = this.shadowRoot.getElementById("db-unlock-uuid");
+    if (uuidSelect) {
+      const current = s.doorbell_unlock_user_uuid || "";
+      const known = new Set(this._users.map(u => u.uuid));
+      const extra = current && !known.has(current)
+        ? [{ value: current, label: `(removed user) ${current}` }]
+        : [];
+      fillSelect(uuidSelect, {
+        items: this._users,
+        valueOf: (u) => u.uuid,
+        labelOf: (u) => u.name || u.uuid,
+        placeholder: "(none — anonymous in access log)",
+        selected: current,
+        extra,
+      });
+    }
+    const apSelect = this.shadowRoot.getElementById("db-unlock-ap");
+    if (apSelect && apSelect.tagName === "SELECT") {
+      fillSelect(apSelect, {
+        items: this._accessPoints,
+        labelOf: (ap) => ap.name || `Access point ${ap.id}`,
+        selected: String(s.doorbell_unlock_access_point_id ?? 1),
+      });
+    }
   }
 
   // Update the "Save" button + status text in place without touching the

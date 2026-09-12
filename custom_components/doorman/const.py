@@ -34,9 +34,10 @@ CONF_DOORBELL_ANSWER_ACTION = "doorbell_answer_action"
 CONF_DOORBELL_NOTIFY_ON_CALL_RINGING = "doorbell_notify_on_call_ringing"
 CONF_DOORBELL_TIME_SENSITIVE = "doorbell_time_sensitive"
 
-# Companion notification action prefixes. The entry_id (and for Unlock a
-# issued-at epoch) is appended after `|` so multi-device installs route to
-# the right intercom and stale Unlock taps can be rejected.
+# Companion notification action prefixes.
+# Unlock:  DOORMAN_UNLOCK|{entry_id}|{issued_at}
+# Answer:  DOORMAN_ANSWER|{entry_id}|{issued_at}|{session}
+#          (legacy Answer without session still falls back to "first ringing")
 ACTION_UNLOCK_PREFIX = "DOORMAN_UNLOCK|"
 ACTION_ANSWER_PREFIX = "DOORMAN_ANSWER|"
 

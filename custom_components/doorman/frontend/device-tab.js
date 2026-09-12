@@ -2,7 +2,7 @@
  * Device info / grant-access / call-control tab for the Doorman panel.
  */
 
-import { define, ws, svc, esc, BASE_CSS } from "./helpers.js";
+import { define, ws, svc, esc, fillSelect, BASE_CSS } from "./helpers.js";
 
 // ─── Device Tab ───────────────────────────────────────────────────────────────
 
@@ -131,38 +131,28 @@ class DoormanDeviceTab extends HTMLElement {
     `;
     const apSelect = this.shadowRoot.getElementById("grant-ap");
     if (apSelect) {
-      for (const ap of this._accessPoints) {
-        const opt = document.createElement("option");
-        opt.value = String(ap.id);
-        opt.textContent = ap.name || `Access point ${ap.id}`;
-        apSelect.appendChild(opt);
-      }
+      fillSelect(apSelect, {
+        items: this._accessPoints,
+        labelOf: (ap) => ap.name || `Access point ${ap.id}`,
+      });
     }
     const grantUserSelect = this.shadowRoot.getElementById("grant-user");
     if (grantUserSelect) {
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select user\u2026";
-      grantUserSelect.appendChild(placeholder);
-      for (const u of this._users) {
-        const opt = document.createElement("option");
-        opt.value = u.uuid;
-        opt.textContent = u.name || u.uuid;
-        grantUserSelect.appendChild(opt);
-      }
+      fillSelect(grantUserSelect, {
+        items: this._users,
+        valueOf: (u) => u.uuid,
+        labelOf: (u) => u.name || u.uuid,
+        placeholder: "Select user\u2026",
+      });
     }
     const dialUserSelect = this.shadowRoot.getElementById("dial-user");
     if (dialUserSelect) {
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Or dial a directory user\u2026";
-      dialUserSelect.appendChild(placeholder);
-      for (const u of this._users) {
-        const opt = document.createElement("option");
-        opt.value = u.uuid;
-        opt.textContent = u.name || u.uuid;
-        dialUserSelect.appendChild(opt);
-      }
+      fillSelect(dialUserSelect, {
+        items: this._users,
+        valueOf: (u) => u.uuid,
+        labelOf: (u) => u.name || u.uuid,
+        placeholder: "Or dial a directory user\u2026",
+      });
     }
     this.shadowRoot.getElementById("grant-btn")?.addEventListener("click", async () => {
       const apId = apSelect ? parseInt(apSelect.value, 10) : 1;

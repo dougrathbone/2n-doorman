@@ -85,6 +85,51 @@ export function localDateTimeWithOffset(localISO) {
   return `${localISO}:00${sign}${h}:${m}`;
 }
 
+/**
+ * Populate a <select> via DOM APIs (safe for device-controlled labels).
+ *
+ * @param {HTMLSelectElement} select
+ * @param {object} [opts]
+ * @param {Iterable} [opts.items]
+ * @param {(item: any) => string} [opts.valueOf]
+ * @param {(item: any) => string} [opts.labelOf]
+ * @param {string|null} [opts.placeholder]  empty-value first option, or null
+ * @param {string} [opts.selected]
+ * @param {{value: string, label: string}[]} [opts.extra]  inserted after placeholder
+ */
+export function fillSelect(select, {
+  items = [],
+  valueOf = (item) => String(item?.id ?? item?.uuid ?? ""),
+  labelOf = (item) => String(item?.name || valueOf(item)),
+  placeholder = null,
+  selected = "",
+  extra = [],
+} = {}) {
+  select.replaceChildren();
+  if (placeholder != null) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = placeholder;
+    if (selected === "") opt.selected = true;
+    select.appendChild(opt);
+  }
+  for (const row of extra) {
+    const opt = document.createElement("option");
+    opt.value = row.value;
+    opt.textContent = row.label;
+    if (String(selected) === String(row.value)) opt.selected = true;
+    select.appendChild(opt);
+  }
+  for (const item of items) {
+    const opt = document.createElement("option");
+    const value = valueOf(item);
+    opt.value = value;
+    opt.textContent = labelOf(item);
+    if (String(selected) === String(value)) opt.selected = true;
+    select.appendChild(opt);
+  }
+}
+
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
 export const BASE_CSS = `

@@ -221,6 +221,7 @@ def _doorbell_actions(
     *,
     kind: str,
     preview: bool = False,
+    call_session: int | None = None,
 ) -> list[dict[str, Any]]:
     """Build Companion action buttons for Unlock / Answer."""
     actions: list[dict[str, Any]] = []
@@ -241,30 +242,54 @@ def _doorbell_actions(
     if kind == "call" and settings.get(CONF_DOORBELL_ANSWER_ACTION):
         coordinator = _coordinator_for(hass, entry.entry_id)
         if coordinator is not None and coordinator.call_status_available:
+            if preview:
+                answer_action = "DOORMAN_PREVIEW_NOOP"
+            elif call_session is not None:
+                answer_action = (
+                    f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}|{call_session}"
+                )
+            else:
+                # No session on the event — fall back to "first ringing" at tap.
+                answer_action = f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}"
             actions.append(
                 {
-                    "action": (
-                        "DOORMAN_PREVIEW_NOOP"
-                        if preview
-                        else f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}"
-                    ),
+                    "action": answer_action,
                     "title": "Answer (preview)" if preview else "Answer",
                 }
             )
     return actions
 
 
-def _parse_action_payload(action: str, prefix: str) -> tuple[str, int] | None:
-    """Split ``PREFIX{entry_id}|{issued_at}``; reject legacy two-segment IDs."""
-    remainder = action.removeprefix(prefix)
+def _parse_unlock_payload(action: str) -> tuple[str, int] | None:
+    """Split ``DOORMAN_UNLOCK|{entry_id}|{issued_at}``."""
+    remainder = action.removeprefix(ACTION_UNLOCK_PREFIX)
     entry_id, sep, issued_raw = remainder.partition("|")
-    if not sep or not entry_id or not issued_raw:
+    if not sep or not entry_id or not issued_raw or "|" in issued_raw:
         return None
     try:
         issued_at = int(issued_raw)
     except ValueError:
         return None
     return entry_id, issued_at
+
+
+def _parse_answer_payload(action: str) -> tuple[str, int, int | None] | None:
+    """Split ``DOORMAN_ANSWER|{entry_id}|{issued_at}[|{session}]``."""
+    remainder = action.removeprefix(ACTION_ANSWER_PREFIX)
+    entry_id, sep, rest = remainder.partition("|")
+    if not sep or not entry_id or not rest:
+        return None
+    issued_raw, sep2, session_raw = rest.partition("|")
+    try:
+        issued_at = int(issued_raw)
+    except ValueError:
+        return None
+    if not sep2:
+        return entry_id, issued_at, None
+    try:
+        return entry_id, issued_at, int(session_raw)
+    except ValueError:
+        return None
 
 
 def _action_expired(issued_at: int) -> bool:
@@ -375,6 +400,15 @@ def _handle_doorbell_notify(
     if settings.get(CONF_DOORBELL_ATTACH_CAMERA, True):
         camera = camera_entity_id(hass, entry)
 
+    call_session: int | None = None
+    if kind == "call":
+        raw_session = (event.data.get("params") or {}).get("session")
+        if raw_session is not None:
+            try:
+                call_session = int(raw_session)
+            except (TypeError, ValueError):
+                call_session = None
+
     _dispatch(
         hass,
         targets,
@@ -386,7 +420,11 @@ def _handle_doorbell_notify(
             android_channel=settings.get(CONF_DOORBELL_CHANNEL_ANDROID, "") or "",
             camera_entity_id=camera,
             actions=_doorbell_actions(
-                hass, entry, settings, kind=kind
+                hass,
+                entry,
+                settings,
+                kind=kind,
+                call_session=call_session,
             )
             or None,
             time_sensitive=bool(settings.get(CONF_DOORBELL_TIME_SENSITIVE)),
@@ -401,7 +439,7 @@ async def _async_handle_notification_action(hass: HomeAssistant, event: Event) -
     action = event.data.get("action") or ""
     user_id = event.context.user_id if event.context else None
     if action.startswith(ACTION_UNLOCK_PREFIX):
-        parsed = _parse_action_payload(action, ACTION_UNLOCK_PREFIX)
+        parsed = _parse_unlock_payload(action)
         if parsed is None:
             _LOGGER.info("Doorman Unlock ignored — malformed or legacy action id")
             return
@@ -411,15 +449,15 @@ async def _async_handle_notification_action(hass: HomeAssistant, event: Event) -
             return
         await _async_unlock(hass, entry_id, user_id=user_id)
     elif action.startswith(ACTION_ANSWER_PREFIX):
-        parsed = _parse_action_payload(action, ACTION_ANSWER_PREFIX)
+        parsed = _parse_answer_payload(action)
         if parsed is None:
             _LOGGER.info("Doorman Answer ignored — malformed or legacy action id")
             return
-        entry_id, issued_at = parsed
+        entry_id, issued_at, session = parsed
         if _action_expired(issued_at):
             _LOGGER.info("Doorman Answer ignored — action expired for %s", entry_id)
             return
-        await _async_answer(hass, entry_id, user_id=user_id)
+        await _async_answer(hass, entry_id, session=session, user_id=user_id)
 
 
 async def _async_unlock(
@@ -477,7 +515,11 @@ async def _async_unlock(
 
 
 async def _async_answer(
-    hass: HomeAssistant, entry_id: str, *, user_id: str | None = None
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    session: int | None = None,
+    user_id: str | None = None,
 ) -> None:
     entry = _lookup_entry(hass, entry_id)
     coordinator = _coordinator_for(hass, entry_id)
@@ -491,7 +533,11 @@ async def _async_answer(
         return
 
     try:
-        answered = await coordinator.client.answer_ringing_call()
+        if session is not None:
+            await coordinator.client.answer_call(session)
+            answered = True
+        else:
+            answered = await coordinator.client.answer_ringing_call()
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("Doorman Answer failed on %s: %s", entry.title, err)
         _notify_action_failure(
@@ -500,8 +546,9 @@ async def _async_answer(
         return
     if answered:
         _LOGGER.info(
-            "Doorman Answer via notification on %s (ha_user=%s)",
+            "Doorman Answer via notification on %s (session=%s, ha_user=%s)",
             entry.title,
+            session,
             user_id,
         )
         _clear_doorbell_notifications(hass, entry, settings)

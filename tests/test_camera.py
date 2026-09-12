@@ -49,6 +49,18 @@ async def test_camera_returns_jpeg_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_camera_snapshot_coalesces_within_ttl(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Near-simultaneous image fetches share one device snapshot."""
+    await async_get_image(hass, "camera.doorman_1012345678_camera")
+    await async_get_image(hass, "camera.doorman_1012345678_camera")
+    assert mock_2n_client.get_camera_snapshot.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_camera_snapshot_prefers_supported_resolution(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,
