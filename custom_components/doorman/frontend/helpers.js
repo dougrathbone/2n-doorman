@@ -93,9 +93,9 @@ export function localDateTimeWithOffset(localISO) {
  * @param {Iterable} [opts.items]
  * @param {(item: any) => string} [opts.valueOf]
  * @param {(item: any) => string} [opts.labelOf]
- * @param {string|null} [opts.placeholder]  empty-value first option, or null
+ * @param {string|null} [opts.placeholder]
  * @param {string} [opts.selected]
- * @param {{value: string, label: string}[]} [opts.extra]  inserted after placeholder
+ * @param {{value: string, label: string}[]} [opts.extra]
  */
 export function fillSelect(select, {
   items = [],

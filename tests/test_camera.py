@@ -61,6 +61,23 @@ async def test_camera_snapshot_coalesces_within_ttl(
 
 
 @pytest.mark.asyncio
+async def test_camera_snapshot_failure_is_negatively_cached(
+    hass: HomeAssistant,
+    setup_doorman: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A device error cools down retries so multi-phone rings don't stampede."""
+    from custom_components.doorman.api_client import DoormanApiError
+
+    mock_2n_client.get_camera_snapshot.side_effect = DoormanApiError("busy")
+    with pytest.raises(Exception):  # HA wraps missing image
+        await async_get_image(hass, "camera.doorman_1012345678_camera")
+    with pytest.raises(Exception):
+        await async_get_image(hass, "camera.doorman_1012345678_camera")
+    assert mock_2n_client.get_camera_snapshot.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_camera_snapshot_prefers_supported_resolution(
     hass: HomeAssistant,
     doorman_config_entry: MockConfigEntry,

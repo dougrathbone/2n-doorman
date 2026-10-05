@@ -37,7 +37,7 @@ CONF_DOORBELL_TIME_SENSITIVE = "doorbell_time_sensitive"
 # Companion notification action prefixes.
 # Unlock:  DOORMAN_UNLOCK|{entry_id}|{issued_at}
 # Answer:  DOORMAN_ANSWER|{entry_id}|{issued_at}|{session}
-#          (legacy Answer without session still falls back to "first ringing")
+# (Parse still accepts Answer without session for in-flight pre-0.8.9 pushes.)
 ACTION_UNLOCK_PREFIX = "DOORMAN_UNLOCK|"
 ACTION_ANSWER_PREFIX = "DOORMAN_ANSWER|"
 

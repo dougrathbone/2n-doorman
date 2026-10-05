@@ -3,7 +3,7 @@
  */
 
 import {
-  define, ws, esc, formatDate, formatDateTime,
+  define, ws, esc, fillSelect, formatDate, formatDateTime,
   toDateTimeLocalValue, localDateTimeWithOffset, BASE_CSS,
 } from "./helpers.js";
 
@@ -396,17 +396,13 @@ class DoormanUsersTab extends HTMLElement {
     // Populate HA user select safely (HA usernames are untrusted text)
     const haUserSel = form.querySelector("#f-ha-user");
     if (haUserSel) {
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = "\u2014 Not linked \u2014";
-      haUserSel.appendChild(none);
-      for (const u of this._haUsers) {
-        const opt = document.createElement("option");
-        opt.value = u.id;
-        opt.textContent = u.name;
-        if (user.ha_user_id === u.id) opt.selected = true;
-        haUserSel.appendChild(opt);
-      }
+      fillSelect(haUserSel, {
+        items: this._haUsers,
+        valueOf: (u) => u.id,
+        labelOf: (u) => u.name,
+        placeholder: "\u2014 Not linked \u2014",
+        selected: user.ha_user_id || "",
+      });
     }
     // Populate notification checkboxes safely
     const notifyContainer = form.querySelector("#f-notify-targets");

@@ -26,9 +26,8 @@ _LOGGER = logging.getLogger(__name__)
 # Preferred snapshot size; the device only accepts resolutions advertised by
 # /api/camera/caps, so fall back to the largest advertised one if absent.
 _PREFERRED_RESOLUTION = (640, 480)
-# Coalesce multi-phone Companion fetches after one doorbell ring — each phone
-# hits camera_proxy independently, and the 2N snapshot endpoint is slow/fragile
-# under concurrent load.
+# Coalesce multi-phone Companion fetches (and brief failure cooldowns) so one
+# doorbell ring does not stampede /api/camera/snapshot.
 _SNAPSHOT_CACHE_SECONDS = 2.0
 
 
@@ -82,18 +81,10 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return a JPEG snapshot; None on device error (HA shows unavailable).
-
-        Concurrent and near-simultaneous callers share one device fetch for
-        ``_SNAPSHOT_CACHE_SECONDS`` so multi-target doorbell notifies don't
-        stampede ``/api/camera/snapshot``.
-        """
+        """Return a JPEG snapshot; None on device error (HA shows unavailable)."""
         async with self._snapshot_lock:
             now = time.monotonic()
-            if (
-                self._snapshot_cache is not None
-                and (now - self._snapshot_at) < _SNAPSHOT_CACHE_SECONDS
-            ):
+            if (now - self._snapshot_at) < _SNAPSHOT_CACHE_SECONDS:
                 return self._snapshot_cache
             try:
                 image = await self.coordinator.client.get_camera_snapshot(
@@ -101,6 +92,9 @@ class DoormanCamera(CoordinatorEntity[DoormanCoordinator], Camera):
                 )
             except DoormanApiError as err:
                 _LOGGER.warning("Doorman: camera snapshot failed (%s)", err)
+                # Negative cache: queued waiters must not each retry the device.
+                self._snapshot_cache = None
+                self._snapshot_at = time.monotonic()
                 return None
             self._snapshot_cache = image
             self._snapshot_at = time.monotonic()

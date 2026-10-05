@@ -3,7 +3,7 @@
  * Vanilla JS ES modules — no build step required.
  */
 
-import { PANEL_VERSION, define, ws, esc } from "./helpers.js";
+import { PANEL_VERSION, define, ws, esc, fillSelect } from "./helpers.js";
 import "./drawer.js";
 import "./users-tab.js";
 import "./log-tab.js";
@@ -305,13 +305,12 @@ class DoormanPanel extends HTMLElement {
     // Populate device selector safely (device names/serials are untrusted)
     const deviceSelect = this.shadowRoot.getElementById("device-select");
     if (deviceSelect) {
-      for (const d of this._devices) {
-        const opt = document.createElement("option");
-        opt.value = d.entry_id;
-        opt.textContent = d.device_name || d.serial_number;
-        if (d.entry_id === this._selectedEntryId) opt.selected = true;
-        deviceSelect.appendChild(opt);
-      }
+      fillSelect(deviceSelect, {
+        items: this._devices,
+        valueOf: (d) => d.entry_id,
+        labelOf: (d) => d.device_name || d.serial_number,
+        selected: this._selectedEntryId || "",
+      });
       deviceSelect.addEventListener("change", (e) => {
         this._selectedEntryId = e.target.value;
         sessionStorage.setItem("doorman_selected_entry_id", this._selectedEntryId);

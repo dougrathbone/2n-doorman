@@ -563,6 +563,38 @@ async def test_incoming_call_ringing_can_include_answer(hass: HomeAssistant, moc
     assert calls[0].data["data"]["actions"][0]["action"].endswith("|42")
 
 
+async def test_incoming_call_ringing_omits_answer_without_session(
+    hass: HomeAssistant, mock_store
+):
+    """Answer requires a pinned session — omit the button when the event has none."""
+    hass.data[f"{DOMAIN}_store"] = mock_store
+    entry, _coordinator = _entry_with_coordinator(hass)
+    await mock_store.set_notification_settings(
+        entry.entry_id,
+        {
+            CONF_DOORBELL_TARGETS: ["notify.mobile_app"],
+            CONF_DOORBELL_ATTACH_CAMERA: False,
+            CONF_DOORBELL_NOTIFY_ON_CALL_RINGING: True,
+            CONF_DOORBELL_ANSWER_ACTION: True,
+        },
+    )
+    calls = []
+    hass.services.async_register("notify", "mobile_app", lambda call: calls.append(call))
+    async_setup_notifications(hass)
+
+    hass.bus.async_fire(
+        f"{DOMAIN}_access",
+        {
+            "entry_id": entry.entry_id,
+            "event_type": "CallRinging",
+            "params": {"state": "ringing", "direction": "incoming"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert "actions" not in calls[0].data["data"]
+
+
 async def test_outgoing_call_ringing_uses_doorbell_wording_without_answer(
     hass: HomeAssistant, mock_store
 ):

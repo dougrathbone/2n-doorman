@@ -249,42 +249,49 @@ def _doorbell_actions(
                     f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}|{call_session}"
                 )
             else:
-                # No session on the event — fall back to "first ringing" at tap.
-                answer_action = f"{ACTION_ANSWER_PREFIX}{entry.entry_id}|{issued}"
-            actions.append(
-                {
-                    "action": answer_action,
-                    "title": "Answer (preview)" if preview else "Answer",
-                }
-            )
+                # Live CallRinging without a session can't pin Answer — omit.
+                answer_action = None
+            if answer_action is not None:
+                actions.append(
+                    {
+                        "action": answer_action,
+                        "title": "Answer (preview)" if preview else "Answer",
+                    }
+                )
     return actions
+
+
+def _parse_action_parts(
+    action: str, prefix: str
+) -> tuple[str, int, str | None] | None:
+    """Split ``PREFIX{entry_id}|{issued_at}[|{rest}]`` into parts."""
+    remainder = action.removeprefix(prefix)
+    entry_id, sep, rest = remainder.partition("|")
+    if not sep or not entry_id or not rest:
+        return None
+    issued_raw, sep2, extra = rest.partition("|")
+    try:
+        issued_at = int(issued_raw)
+    except ValueError:
+        return None
+    return entry_id, issued_at, (extra if sep2 else None)
 
 
 def _parse_unlock_payload(action: str) -> tuple[str, int] | None:
     """Split ``DOORMAN_UNLOCK|{entry_id}|{issued_at}``."""
-    remainder = action.removeprefix(ACTION_UNLOCK_PREFIX)
-    entry_id, sep, issued_raw = remainder.partition("|")
-    if not sep or not entry_id or not issued_raw or "|" in issued_raw:
+    parts = _parse_action_parts(action, ACTION_UNLOCK_PREFIX)
+    if parts is None or parts[2] is not None:
         return None
-    try:
-        issued_at = int(issued_raw)
-    except ValueError:
-        return None
-    return entry_id, issued_at
+    return parts[0], parts[1]
 
 
 def _parse_answer_payload(action: str) -> tuple[str, int, int | None] | None:
     """Split ``DOORMAN_ANSWER|{entry_id}|{issued_at}[|{session}]``."""
-    remainder = action.removeprefix(ACTION_ANSWER_PREFIX)
-    entry_id, sep, rest = remainder.partition("|")
-    if not sep or not entry_id or not rest:
+    parts = _parse_action_parts(action, ACTION_ANSWER_PREFIX)
+    if parts is None:
         return None
-    issued_raw, sep2, session_raw = rest.partition("|")
-    try:
-        issued_at = int(issued_raw)
-    except ValueError:
-        return None
-    if not sep2:
+    entry_id, issued_at, session_raw = parts
+    if session_raw is None:
         return entry_id, issued_at, None
     try:
         return entry_id, issued_at, int(session_raw)
@@ -535,33 +542,32 @@ async def _async_answer(
     try:
         if session is not None:
             await coordinator.client.answer_call(session)
-            answered = True
         else:
-            answered = await coordinator.client.answer_ringing_call()
+            if not await coordinator.client.answer_ringing_call():
+                _LOGGER.info(
+                    "Doorman Answer: no ringing incoming call on %s", entry.title
+                )
+                _notify_action_failure(
+                    hass,
+                    entry,
+                    settings,
+                    f"No ringing incoming call on {entry.title}",
+                )
+                return
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("Doorman Answer failed on %s: %s", entry.title, err)
         _notify_action_failure(
             hass, entry, settings, f"Answer failed on {entry.title}"
         )
         return
-    if answered:
-        _LOGGER.info(
-            "Doorman Answer via notification on %s (session=%s, ha_user=%s)",
-            entry.title,
-            session,
-            user_id,
-        )
-        _clear_doorbell_notifications(hass, entry, settings)
-    else:
-        _LOGGER.info(
-            "Doorman Answer: no ringing incoming call on %s", entry.title
-        )
-        _notify_action_failure(
-            hass,
-            entry,
-            settings,
-            f"No ringing incoming call on {entry.title}",
-        )
+
+    _LOGGER.info(
+        "Doorman Answer via notification on %s (session=%s, ha_user=%s)",
+        entry.title,
+        session,
+        user_id,
+    )
+    _clear_doorbell_notifications(hass, entry, settings)
 
 
 def _notify_action_failure(
