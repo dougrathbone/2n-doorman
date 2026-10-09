@@ -46,7 +46,7 @@ jobs:
     name: Unit tests & coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-manifest, lint]
+    needs: [validate-manifest, lint, frontend-lint]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -81,6 +81,35 @@ jobs:
           name: coverage-report
           path: coverage.xml
           retention-days: 14
+      # Optional: set repository secret CODECOV_TOKEN for coverage trends.
+      # Without it this step no-ops rather than failing the job.
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: unittests
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  frontend-lint:
+    name: Frontend lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # No bundler/ESLint stack — keep the panel zero-build. Syntax-check every
+      # ES module so a broken import or typo still fails CI.
+      - name: Syntax-check panel modules
+        run: |
+          set -euo pipefail
+          for f in custom_components/doorman/frontend/*.js; do
+            echo "node --check $f"
+            node --check "$f"
+          done
 
   # Declared floor from hacs.json ("homeassistant": "2024.11.0"). Primary
   # coverage stays on the current PHACC pin above; this leg proves we still
@@ -89,7 +118,7 @@ jobs:
     name: Unit tests (HA floor 2024.11.0)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-manifest, lint]
+    needs: [validate-manifest, lint, frontend-lint]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
