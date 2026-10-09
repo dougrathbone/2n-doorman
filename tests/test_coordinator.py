@@ -73,7 +73,41 @@ async def test_coordinator_fetch_returns_users_and_switches(
     assert coordinator.device_info == MOCK_DEVICE_INFO
     assert coordinator.data["has_write_permission"] is True
     assert coordinator.call_status_available is True
+    assert coordinator.switch_status_available is True
     assert coordinator.data["call_sessions"] == []
+
+
+@pytest.mark.asyncio
+async def test_coordinator_skips_switch_poll_when_probe_fails(
+    hass: HomeAssistant,
+) -> None:
+    """Denied Switch Control must not fail the whole poll (GitHub #37)."""
+    client = MagicMock()
+    client.get_system_info = AsyncMock(return_value=MOCK_DEVICE_INFO)
+    client.load_dir_template = AsyncMock(return_value=None)
+    client.check_directory_write_permission = AsyncMock(return_value=True)
+    client.get_access_point_caps = AsyncMock(return_value=[])
+    client.get_camera_caps = AsyncMock(return_value={})
+    client.get_io_caps = AsyncMock(return_value=[])
+    client.get_phone_status = AsyncMock(return_value=[])
+    client.get_system_status = AsyncMock(return_value={})
+    client.get_call_status = AsyncMock(return_value=[])
+    client.query_users = AsyncMock(return_value=MOCK_USERS)
+    client.get_switch_status = AsyncMock(
+        side_effect=DoormanAuthError("insufficient privileges")
+    )
+
+    coordinator = _make_coordinator(hass, client)
+    await coordinator.async_init_device_info()
+    assert coordinator.switch_status_available is False
+
+    client.get_switch_status.reset_mock()
+    client.get_switch_status.side_effect = DoormanAuthError("should not be called")
+    data = await coordinator._async_update_data()
+
+    assert data["users"] == MOCK_USERS
+    assert data["switches"] == []
+    client.get_switch_status.assert_not_called()
 
 
 @pytest.mark.asyncio

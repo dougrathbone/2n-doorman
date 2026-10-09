@@ -18,6 +18,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: DoormanCoordinator = hass.data[DOMAIN][entry.entry_id]
+    if not coordinator.switch_status_available:
+        return
     async_add_entities(
         DoormanRelay(coordinator, entry, sw)
         for sw in (coordinator.data or {}).get("switches", [])

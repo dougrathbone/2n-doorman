@@ -124,6 +124,10 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.phone_status_available: bool = False
         self.system_status_available: bool = False
         self.call_status_available: bool = False
+        # Switch Control is all-or-nothing on 2N (no Monitoring-only level).
+        # Accounts that deny it so HA cannot open the door must not fail the
+        # whole poll — see GitHub #37.
+        self.switch_status_available: bool = False
         self.has_write_permission: bool = True
         # Durable access-log history for this entry — survives restarts and
         # reloads, unlike the in-memory buffer it replaces.
@@ -149,10 +153,19 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.access_points: list[dict[str, Any]] = await self.client.get_access_point_caps()
         self.camera_caps: dict[str, Any] = await self._probe_camera_caps()
         self.io_ports: list[dict[str, Any]] = await self._probe_io_caps()
-        # Phone/system health probes — polled each cycle only when available.
+        # Phone/system/call/switch probes — polled each cycle only when available.
         self.phone_status_available: bool = await self._probe(self.client.get_phone_status)
         self.system_status_available: bool = await self._probe(self.client.get_system_status)
         self.call_status_available: bool = await self._probe(self.client.get_call_status)
+        self.switch_status_available: bool = await self._probe(
+            self.client.get_switch_status
+        )
+        if not self.switch_status_available:
+            _LOGGER.info(
+                "Doorman: Switch API unavailable for this user — relay switch "
+                "entities will not be created. Grant Switch Control on the "
+                "HTTP API user to enable relays (Monitoring alone does not exist)."
+            )
         if not self.has_write_permission:
             _LOGGER.warning(
                 "Doorman: directory write is unavailable for the API user. "
@@ -455,6 +468,8 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # them — devices/accounts without them don't pay for a failing
             # request every cycle.
             optional: dict[str, Any] = {}
+            if self.switch_status_available:
+                optional["switches"] = self.client.get_switch_status()
             if self.io_ports:
                 optional["io"] = self.client.get_io_status()
             if self.phone_status_available:
@@ -463,12 +478,12 @@ class DoormanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 optional["system_status"] = self.client.get_system_status()
             if self.call_status_available:
                 optional["call_sessions"] = self.client.get_call_status()
-            users, switches, *opt_results = await asyncio.gather(
+            users, *opt_results = await asyncio.gather(
                 self.client.query_users(),
-                self.client.get_switch_status(),
                 *optional.values(),
             )
             opt_data = dict(zip(optional, opt_results, strict=True))
+            switches = opt_data.get("switches", [])
         except DoormanAuthError as err:
             self._consecutive_auth_failures += 1
             if self._consecutive_auth_failures >= AUTH_FAILURE_THRESHOLD:

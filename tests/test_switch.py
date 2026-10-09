@@ -141,3 +141,24 @@ async def test_malformed_switch_payload_is_skipped(
     assert hass.states.get(RELAY_1) is not None
     # ... and is_on tolerates the malformed entry in coordinator data
     assert hass.states.get(RELAY_1).state == "off"
+
+
+@pytest.mark.asyncio
+async def test_no_relay_entities_without_switch_privilege(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """Denied Switch Control creates no relays; other platforms still load."""
+    from custom_components.doorman.api_client import DoormanAuthError
+    from homeassistant.config_entries import ConfigEntryState
+
+    mock_2n_client.get_switch_status.side_effect = DoormanAuthError("no switch")
+
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert doorman_config_entry.state is ConfigEntryState.LOADED
+    assert hass.states.get(RELAY_1) is None
+    assert hass.states.get(doorman_eid("sensor", "user_count")) is not None
