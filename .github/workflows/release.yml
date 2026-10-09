@@ -17,7 +17,7 @@ jobs:
     # looks like it is still working.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Get version from tag
         id: version
