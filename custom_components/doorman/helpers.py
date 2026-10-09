@@ -23,6 +23,21 @@ def device_slug(coordinator: DoormanCoordinator, entry: ConfigEntry) -> str:
     return sanitized
 
 
+def _slugify_object_id(object_id: str) -> str:
+    """Make ``object_id`` safe for HA entity IDs (lowercase, ``.`` → ``_``).
+
+    I/O module ports can be named ``modul1.input1``; embedding the raw name
+    produces invalid IDs that HA rejects from 2027.2 onward (GitHub #37).
+    """
+    sanitized = "".join(
+        c if c.isalnum() or c == "_" else "_"
+        for c in object_id.lower()
+    )
+    while "__" in sanitized:
+        sanitized = sanitized.replace("__", "_")
+    return sanitized.strip("_") or "entity"
+
+
 def pinned_entity_id(
     platform: str,
     object_id: str,
@@ -30,7 +45,8 @@ def pinned_entity_id(
     entry: ConfigEntry,
 ) -> str:
     """Build a device-scoped entity ID: ``{platform}.doorman_{slug}_{object_id}``."""
-    return f"{platform}.doorman_{device_slug(coordinator, entry)}_{object_id}"
+    safe = _slugify_object_id(object_id)
+    return f"{platform}.doorman_{device_slug(coordinator, entry)}_{safe}"
 
 
 def build_device_info(

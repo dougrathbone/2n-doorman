@@ -48,6 +48,15 @@ def test_pinned_entity_id_format() -> None:
     )
 
 
+def test_pinned_entity_id_slugifies_dotted_object_ids() -> None:
+    """I/O module ports like modul1.input1 must not keep the dot in the ID."""
+    entry = SimpleNamespace(entry_id="ignored-when-serial-long")
+    assert (
+        pinned_entity_id("binary_sensor", "input_modul1.input1", _coord(), entry)
+        == f"binary_sensor.doorman_{MOCK_DEVICE_SLUG}_input_modul1_input1"
+    )
+
+
 def test_build_device_info_http() -> None:
     entry = SimpleNamespace(
         entry_id="entry-1",
