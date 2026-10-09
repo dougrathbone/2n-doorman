@@ -150,8 +150,9 @@ async def test_no_relay_entities_without_switch_privilege(
     mock_2n_client,
 ) -> None:
     """Denied Switch Control creates no relays; other platforms still load."""
-    from custom_components.doorman.api_client import DoormanAuthError
     from homeassistant.config_entries import ConfigEntryState
+
+    from custom_components.doorman.api_client import DoormanAuthError
 
     mock_2n_client.get_switch_status.side_effect = DoormanAuthError("no switch")
 
