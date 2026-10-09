@@ -5,7 +5,7 @@
 # resolved to 0.13.316 / HA 2026.2.3 and left CI six months behind the HA users
 # actually run. Read "Home Assistant version compatibility" in AGENTS.md before
 # changing this line, and bump the CI Python version with it.
-pytest-homeassistant-custom-component==0.13.355
+pytest-homeassistant-custom-component==0.13.368
 
 # pytest, pytest-asyncio, pytest-cov and coverage are deliberately NOT listed
 # here. PHACC depends on them with exact pins (pytest==9.0.3,
