@@ -4,7 +4,10 @@ from __future__ import annotations
 import pytest
 from homeassistant.components.camera import async_get_image
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.doorman.api_client import DoormanApiError
 
 from .conftest import MOCK_JPEG
 
@@ -67,12 +70,10 @@ async def test_camera_snapshot_failure_is_negatively_cached(
     mock_2n_client,
 ) -> None:
     """A device error cools down retries so multi-phone rings don't stampede."""
-    from custom_components.doorman.api_client import DoormanApiError
-
     mock_2n_client.get_camera_snapshot.side_effect = DoormanApiError("busy")
-    with pytest.raises(Exception):  # HA wraps missing image
+    with pytest.raises(HomeAssistantError):
         await async_get_image(hass, "camera.doorman_1012345678_camera")
-    with pytest.raises(Exception):
+    with pytest.raises(HomeAssistantError):
         await async_get_image(hass, "camera.doorman_1012345678_camera")
     assert mock_2n_client.get_camera_snapshot.await_count == 1
 
