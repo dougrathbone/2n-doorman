@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an enhancement for Doorman
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What gap does this fill for 2N + Home Assistant users?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it work in the panel, entities, or services?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Firmware constraints, API endpoints, screenshots, etc.
+    validations:
+      required: false

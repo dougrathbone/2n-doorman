@@ -1,0 +1,55 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. For security issues, use
+        [private vulnerability reporting](https://github.com/dougrathbone/2n-doorman/security/advisories/new)
+        instead of a public issue.
+  - type: input
+    id: doorman_version
+    attributes:
+      label: Doorman version
+      description: From `custom_components/doorman/manifest.json` or HACS
+      placeholder: "0.8.10"
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.9.4"
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: 2N model and firmware
+      placeholder: "2N IP Verso / 2.50.2.76.6"
+    validations:
+      required: true
+  - type: textarea
+    id: privileges
+    attributes:
+      label: HTTP API privileges for the Doorman user
+      description: Which services are enabled (Directory, System Control, Switch, Camera, Phone, Access Log, I/O)?
+      placeholder: "Directory Control, System Control, Access Log; Switch denied"
+    validations:
+      required: false
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Expected vs actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Home Assistant logs
+      description: Filter for `custom_components.doorman` (redact passwords / PINs)
+      render: shell
+    validations:
+      required: false
