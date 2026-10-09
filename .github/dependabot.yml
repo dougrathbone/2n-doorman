@@ -15,9 +15,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    # PHACC is intentionally omitted: it selects the HA version under test and
+    # appears in both requirements_test.txt and requirements_test_floor.txt.
+    # Auto-bumps have wiped the floor pin (#40). Bump the current-HA pin by
+    # hand; leave the floor pin alone (see AGENTS.md).
     allow:
       - dependency-name: ruff
-      - dependency-name: pytest-homeassistant-custom-component
       - dependency-name: aiohttp
       - dependency-name: pytest
       - dependency-name: pytest-asyncio

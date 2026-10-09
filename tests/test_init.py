@@ -1326,9 +1326,14 @@ async def test_entities_attached_to_device_registry(
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
 
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, setup_doorman.entry_id)}
-    )
+    registry = dr.async_get(hass)
+    identifier = (DOMAIN, setup_doorman.entry_id)
+    # HA 2026.7+: identifiers are per-entry; scoped lookup replaces async_get_device.
+    by_identifier = getattr(registry, "async_get_device_by_identifier", None)
+    if by_identifier is not None:
+        device = by_identifier(identifier, setup_doorman.entry_id)
+    else:
+        device = registry.async_get_device(identifiers={identifier})
     assert device is not None
     assert device.manufacturer == "2N"
     assert device.name == setup_doorman.title

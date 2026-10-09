@@ -436,7 +436,7 @@ footers to commit messages. Keep commit messages focused on technical changes.
 ## Conventions
 
 - **Python**: CI runs **3.14** for both lint and unit tests — not a preference,
-  a requirement: `homeassistant` 2026.8.1 declares `requires-python >= 3.14.2`
+  a requirement: `homeassistant` 2026.10.0 declares `requires-python >= 3.14.2`
   and won't install below it. Ruff's `target-version` stays at `py312`
   deliberately and is a *different* number from the runner: see "Home Assistant
   version compatibility" below. Ruff is pinned exactly in both
@@ -472,8 +472,8 @@ for the first constantly; optimise for the second.
 ### Know what you are actually testing
 
 `requirements_test.txt` pins `pytest-homeassistant-custom-component` exactly,
-and **PHACC is what selects the Home Assistant version under test** — 0.13.355
-pins `homeassistant==2026.8.1`. Nothing else in the repo names an HA version.
+and **PHACC is what selects the Home Assistant version under test** — 0.13.371
+pins `homeassistant==2026.10.0`. Nothing else in the repo names an HA version.
 
 That pin is exact because a floor is not a choice, it's a coin flip resolved by
 pip. Concretely, this already went wrong: `>=0.13.205` plus a `python-version:

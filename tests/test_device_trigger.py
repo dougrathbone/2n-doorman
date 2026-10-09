@@ -20,9 +20,14 @@ async def test_get_triggers_lists_all_types(
     setup_doorman: MockConfigEntry,
 ) -> None:
     """Every trigger type is offered for the Doorman device."""
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, setup_doorman.entry_id)}
-    )
+    registry = dr.async_get(hass)
+    identifier = (DOMAIN, setup_doorman.entry_id)
+    # HA 2026.7+: identifiers are per-entry; scoped lookup replaces async_get_device.
+    by_identifier = getattr(registry, "async_get_device_by_identifier", None)
+    if by_identifier is not None:
+        device = by_identifier(identifier, setup_doorman.entry_id)
+    else:
+        device = registry.async_get_device(identifiers={identifier})
     assert device is not None
 
     triggers = await async_get_triggers(hass, device.id)
