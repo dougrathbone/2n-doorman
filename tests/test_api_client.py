@@ -219,7 +219,7 @@ from custom_components.doorman.api_client import (
 
 def test_raise_api_error_code_10_raises_auth_error():
     """Error code 10 (insufficient privilege) should raise DoormanAuthError."""
-    with pytest.raises(DoormanAuthError, match="System – Control"):
+    with pytest.raises(DoormanAuthError, match="Insufficient user privileges"):
         _raise_api_error({"code": 10}, {})
 
 
@@ -756,7 +756,7 @@ async def test_request_api_error_code_10_in_response():
     })
     client._session.request = MagicMock(return_value=resp_cm)
 
-    with pytest.raises(DoormanAuthError, match="System – Control"):
+    with pytest.raises(DoormanAuthError, match="Insufficient user privileges"):
         await client._request("GET", "dir/update")
 
 

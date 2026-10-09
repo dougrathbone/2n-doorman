@@ -38,16 +38,17 @@ class DoormanConnectionError(DoormanApiError):
 def _raise_api_error(err: dict, raw: dict) -> None:
     """Raise the appropriate exception for a 2N API error response.
 
-    Error code 10 is the standard "insufficient user privileges" error — the
-    HTTP API user lacks System – Control privilege for directory write operations.
+    Error code 10 is the standard "insufficient user privileges" error for
+    whatever endpoint was called (Directory write, Switch Control, Camera, …).
     """
     code = err.get("code")
     param = err.get("param", "")
     if code == 10:
         raise DoormanAuthError(
-            "Directory write unavailable — the HTTP API user lacks System – Control "
-            "privilege. In the 2N web UI go to Services → HTTP API → [username] and "
-            "enable System API with Control (not just Monitoring) access."
+            "Insufficient user privileges for this HTTP API endpoint. "
+            "In the 2N web UI go to Services → HTTP API → [username] and grant "
+            "the matching service privilege (e.g. Directory / System Control, "
+            "Switch Control, Camera, Phone Monitoring)."
         )
     param_info = f" (param={param!r})" if param else ""
     raise DoormanApiError(
