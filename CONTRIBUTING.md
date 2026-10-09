@@ -120,7 +120,7 @@ CI also runs a second unit-test job against the `hacs.json` HA floor (`requireme
 The integration talks to the 2N HTTP API directly. To test against a real device:
 
 1. Enable the HTTP API under **Services → HTTP API** on the device
-2. Create an API user with **Directory**, **System (Control)**, and **Access Log** permissions
+2. Create an API user with the privileges you want to exercise (see the privilege table in README — at minimum Directory, System Control, and Access Log; add Switch / Camera / Phone / I/O as needed)
 3. Set the host/username/password in HA and load the integration
 
 The mock server in `tests/integration/` can simulate device responses without hardware — see that directory's README for setup.

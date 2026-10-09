@@ -91,10 +91,20 @@ Enable the HTTP API on your 2N device:
 1. Log in to the 2N web interface
 2. Navigate to **Services → HTTP API**
 3. Enable **HTTP API**
-4. Create a user account with the following permissions:
-   - **Directory** — read + write (required for user management)
-   - **System** with **Control** access — required for create/edit/delete operations
-   - **Access Log** — required for the Access Log tab and event delivery
+4. Create a user account and grant the HTTP API services you need:
+
+   | Service | Privilege | Needed for |
+   |---------|-----------|------------|
+   | **Directory** | Monitoring + Control | View / create / edit / delete users |
+   | **System** | Control | Directory writes (create/edit/delete); restart button |
+   | **Access Log** | Monitoring | Access Log tab and live event delivery |
+   | **Switch** | Control | Relay switch entities (there is no Monitoring-only level — omit this if you do not want HA to open the door) |
+   | **Camera** | Monitoring | Camera entity / doorbell snapshot |
+   | **Phone** | Monitoring | SIP registration + call ringing/active sensors; Answer action |
+   | **I/O** | Monitoring | Hardware input binary sensors (when the device exposes them) |
+
+   Minimum for the panel alone: Directory + System Control + Access Log. Other services are optional — Doorman probes them at startup and skips entities when the privilege is missing (entities do not flap unavailable).
+
 5. Note the username and password for HA setup
 
 > If the **Directory** permission option is not visible, your device firmware is too old to support directory write via the HTTP API. See the firmware note in [Requirements](#requirements).
