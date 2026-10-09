@@ -46,7 +46,7 @@ jobs:
     name: Unit tests & coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [validate-manifest, lint, frontend-lint]
+    needs: [validate-manifest, lint, frontend-lint, brand-assets]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -111,6 +111,26 @@ jobs:
             node --check "$f"
           done
 
+  brand-assets:
+    name: Brand asset parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # Root brand/ (README/HACS) and custom_components/doorman/brand/ (HA Brands
+      # Proxy) must stay byte-identical for the shared PNGs. logo.svg is
+      # README-only and lives only under brand/.
+      - name: Compare brand PNG trees
+        run: |
+          set -euo pipefail
+          for f in icon.png "icon@2x.png" logo.png "logo@2x.png"; do
+            if ! cmp -s "brand/$f" "custom_components/doorman/brand/$f"; then
+              echo "::error file=brand/$f::$f differs between brand/ and custom_components/doorman/brand/"
+              exit 1
+            fi
+          done
+          echo "Brand PNG trees match."
+
   # Declared floor from hacs.json ("homeassistant": "2024.11.0"). Primary
   # coverage stays on the current PHACC pin above; this leg proves we still
   # import and pass unit tests against the oldest HA we claim to support.
@@ -118,7 +138,7 @@ jobs:
     name: Unit tests (HA floor 2024.11.0)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [validate-manifest, lint, frontend-lint]
+    needs: [validate-manifest, lint, frontend-lint, brand-assets]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

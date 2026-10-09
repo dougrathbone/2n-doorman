@@ -109,9 +109,10 @@ CI also runs a second unit-test job against the `hacs.json` HA floor (`requireme
 - One logical change per PR where practical
 - Brand assets: ship icons/logos under both repo-root `brand/` (README/HACS)
   and `custom_components/doorman/brand/` (HA 2026.3+ local Brands Proxy API).
-  Root `brand/logo.svg` is README/HACS-only; the Brands Proxy tree uses PNG.
-  Do not open PRs against `home-assistant/brands` for custom integrations —
-  that path is closed; local `brand/` is the source of truth.
+  The shared PNGs must stay byte-identical (CI `brand-assets` job enforces
+  this). Root `brand/logo.svg` is README/HACS-only; the Brands Proxy tree
+  uses PNG. Do not open PRs against `home-assistant/brands` for custom
+  integrations — that path is closed; local `brand/` is the source of truth.
 
 ---
 
