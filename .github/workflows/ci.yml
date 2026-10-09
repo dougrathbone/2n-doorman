@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Validate JSON
         run: python -c "import json, sys; json.load(open('custom_components/doorman/manifest.json')); print('manifest.json is valid')"
 
@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           cache: pip
@@ -48,8 +48,8 @@ jobs:
     timeout-minutes: 10
     needs: [validate-manifest, lint, frontend-lint, brand-assets]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           # Must track requirements_test.txt: pytest-homeassistant-custom-component
           # 0.13.355 requires Python >= 3.14, and the homeassistant 2026.8.1 it
@@ -85,7 +85,7 @@ jobs:
       # Without it this step no-ops rather than failing the job.
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           flags: unittests
@@ -97,8 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       # No bundler/ESLint stack — keep the panel zero-build. Syntax-check every
@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Root brand/ (README/HACS) and custom_components/doorman/brand/ (HA Brands
       # Proxy) must stay byte-identical for the shared PNGs. logo.svg is
       # README-only and lives only under brand/.
@@ -140,8 +140,8 @@ jobs:
     timeout-minutes: 15
     needs: [validate-manifest, lint, frontend-lint, brand-assets]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           # PHACC 0.13.181 / HA 2024.11.0 require Python >= 3.12.
           python-version: "3.12"
@@ -163,7 +163,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: HACS Action
         uses: hacs/action@main
         with:
@@ -174,5 +174,5 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: home-assistant/actions/hassfest@master
