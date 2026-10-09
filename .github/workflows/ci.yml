@@ -38,7 +38,7 @@ jobs:
       # fails main on unchanged source, which (via `needs: [..., lint]` below)
       # silently skips the unit tests too.
       - name: Install ruff
-        run: pip install ruff==0.16.3
+        run: pip install ruff==0.16.10
       - name: Run ruff
         run: ruff check custom_components/ tests/
 
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           # Must track requirements_test.txt: pytest-homeassistant-custom-component
-          # 0.13.355 requires Python >= 3.14, and the homeassistant 2026.8.1 it
+          # 0.13.371 requires Python >= 3.14, and the homeassistant 2026.10.0 it
           # pins requires >= 3.14.2. Lowering this does not fail the install — pip
           # quietly resolves to an older PHACC and an older HA, which is exactly
           # how this job spent six months testing HA 2026.2.3.
