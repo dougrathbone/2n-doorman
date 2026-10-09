@@ -78,13 +78,10 @@ jobs:
           cd custom_components
           zip -r ../doorman.zip doorman/ -x "**/__pycache__/*" -x "**/*.pyc"
 
-      # Pinned to the v3.0.2 commit: this action writes the published artifact
-      # in a job with `contents: write`, and the v3 tag moved three times in
-      # three months (3.0.0 2026-04-12 → 3.0.1 2026-06-19 → 3.0.2 2026-07-13),
-      # with 3.0.0 changing draft-handling semantics. See AGENTS.md for why
-      # hacs/action and hassfest are deliberately NOT pinned.
+      # Pinned to a release commit SHA (not the moving v3 tag). See AGENTS.md
+      # for why hacs/action and hassfest are deliberately NOT pinned.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: doorman.zip
           generate_release_notes: true
