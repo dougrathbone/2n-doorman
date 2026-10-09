@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    allow:
+      - dependency-name: ruff
+      - dependency-name: pytest-homeassistant-custom-component
+      - dependency-name: aiohttp
+      - dependency-name: pytest
+      - dependency-name: pytest-asyncio
+      - dependency-name: websockets
