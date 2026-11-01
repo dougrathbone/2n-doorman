@@ -22,7 +22,7 @@ pytest-homeassistant-custom-component==0.13.371
 # with no commit behind it. Because ci.yml runs `tests: needs: [..., lint]`,
 # that also skips the test job entirely. Bump this deliberately, not by drift,
 # and keep it identical to the version in .github/workflows/ci.yml.
-ruff==0.16.10
+ruff==0.17.3
 
 # PyTurboJPEG is a requirement of HA's built-in camera component (see its
 # manifest.json), which tests/test_camera.py imports. PHACC installs the
