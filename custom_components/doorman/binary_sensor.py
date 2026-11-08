@@ -5,8 +5,9 @@ Flavours:
 - The door sensor is event-driven: the 2N device emits ``DoorStateChanged``
   log events when a door contact is configured (Hardware → Digital Inputs →
   Door State). There is no HTTP endpoint to poll for it, so the sensor
-  listens on the ``doorman_access`` bus and stays ``unknown`` until the
-  first event arrives.
+  listens on the ``doorman_access`` bus. It restores its last known
+  open/closed state across restarts (the 2N only reports transitions), and
+  is ``unknown`` only until the first event on a fresh install.
 - One sensor per hardware input port from ``/api/io/caps`` (e.g. a REX
   button or an external contact), state polled via ``/api/io/status`` and
   updated instantly by ``InputChanged`` events through the coordinator.
@@ -20,9 +21,10 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import STATE_OFF, STATE_ON, EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -51,8 +53,12 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class DoormanDoorSensor(BinarySensorEntity):
-    """Physical door open/closed, driven by DoorStateChanged events."""
+class DoormanDoorSensor(BinarySensorEntity, RestoreEntity):
+    """Physical door open/closed, driven by DoorStateChanged events.
+
+    The 2N only emits transitions, so without restoring, every HA restart
+    would leave the sensor ``unknown`` until the door next moves.
+    """
 
     _attr_name = "Doorman Door"
     _attr_device_class = BinarySensorDeviceClass.DOOR
@@ -72,6 +78,12 @@ class DoormanDoorSensor(BinarySensorEntity):
         self._attr_is_on = None  # unknown until the first DoorStateChanged
 
     async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is not None and last.state in (
+            STATE_ON,
+            STATE_OFF,
+        ):
+            self._attr_is_on = last.state == STATE_ON
         self.async_on_remove(
             self.hass.bus.async_listen(f"{DOMAIN}_access", self._handle_bus_event)
         )
