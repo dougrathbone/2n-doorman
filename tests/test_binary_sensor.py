@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.core import HomeAssistant, State
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    mock_restore_cache,
+)
 
 from custom_components.doorman.const import DOMAIN
 
@@ -29,6 +32,57 @@ async def test_door_sensor_starts_unknown(
     state = hass.states.get("binary_sensor.doorman_1012345678_door")
     assert state is not None
     assert state.state == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restored", ["on", "off"])
+async def test_door_sensor_restores_last_state(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    restored: str,
+) -> None:
+    """The last open/closed state survives an HA restart (2N only reports transitions)."""
+    mock_restore_cache(hass, [State("binary_sensor.doorman_1012345678_door", restored)])
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.doorman_1012345678_door").state == restored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restored", ["unknown", "unavailable"])
+async def test_door_sensor_ignores_non_binary_restored_state(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+    restored: str,
+) -> None:
+    """A restored unknown/unavailable is not mistaken for open or closed."""
+    mock_restore_cache(hass, [State("binary_sensor.doorman_1012345678_door", restored)])
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.doorman_1012345678_door").state == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_door_sensor_event_overrides_restored_state(
+    hass: HomeAssistant,
+    doorman_config_entry: MockConfigEntry,
+    mock_2n_client,
+) -> None:
+    """A live DoorStateChanged after restart wins over the restored value."""
+    mock_restore_cache(hass, [State("binary_sensor.doorman_1012345678_door", "on")])
+    doorman_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(doorman_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    _fire(hass, doorman_config_entry.entry_id, "DoorStateChanged", {"state": "closed"})
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.doorman_1012345678_door").state == "off"
 
 
 @pytest.mark.asyncio
